@@ -520,7 +520,10 @@ impl MagnusBridgeGenerator {
         method
             .params
             .iter()
-            .map(|param| {
+            .filter_map(|param| {
+                if !param.is_ref && suffix.is_empty() {
+                    return None;
+                }
                 let conversion = if !param.is_ref {
                     param.name.clone()
                 } else {
@@ -531,7 +534,7 @@ impl MagnusBridgeGenerator {
                         _ => format!("{}.clone()", param.name),
                     }
                 };
-                format!("let {}{suffix} = {conversion};\n", param.name)
+                Some(format!("let {}{suffix} = {conversion};\n", param.name))
             })
             .collect()
     }
@@ -793,6 +796,37 @@ mod forwarding_tests {
                 .contains("RbOcrBackendBridgeDefaultSupportsTableDetection(self).supports_table_detection()"),
             "fallback must run the Rust default via the delegate:\n{}",
             output.code
+        );
+    }
+
+    #[test]
+    fn owned_param_bindings_skip_redundant_sync_rebindings() {
+        let generator = make_generator();
+        let method = crate::core::ir::MethodDef {
+            params: vec![
+                crate::core::ir::ParamDef {
+                    name: "owned".to_string(),
+                    ty: crate::core::ir::TypeRef::Bytes,
+                    is_ref: false,
+                    ..Default::default()
+                },
+                crate::core::ir::ParamDef {
+                    name: "borrowed".to_string(),
+                    ty: crate::core::ir::TypeRef::String,
+                    is_ref: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            generator.owned_param_bindings(&method, ""),
+            "let borrowed = borrowed.to_string();\n"
+        );
+        assert_eq!(
+            generator.owned_param_bindings(&method, "_owned"),
+            "let owned_owned = owned;\nlet borrowed_owned = borrowed.to_string();\n"
         );
     }
 }

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Magnus trait bridges:** synchronous callbacks no longer emit redundant `let value = value;`
+  bindings for already-owned parameters. The `move` callback can capture those parameters
+  directly; only borrowed parameters require an owned conversion. Generated bindings now pass
+  `clippy::redundant_locals` while asynchronous callbacks retain their distinct `_owned` names.
+
 - **publish (Ruby platform gems):** precompiled platform gemspecs now load the generated source
   gemspec as their metadata authority, then replace only the version, platform, files, and native
   extension build hook. The previous synthesized gemspec dropped required fields such as
