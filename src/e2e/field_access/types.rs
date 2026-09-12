@@ -128,6 +128,26 @@ pub struct FieldResolver {
     /// resolver, in which case `napi_tagged_object_discriminant` answers `None` and the previous
     /// scalar comparison stands.
     pub(super) napi_tagged_object_enums: HashMap<String, String>,
+    /// `napi_flattened_newtype_variants[enum_name] -> variant names` napi actually flattens
+    /// onto the tag-bearing object — i.e. `backends::napi::tagged_enum_flattened_newtype(...)
+    /// .is_some()` for that `(enum_def, variant)` pair. Populated once per crate IR via
+    /// `with_napi_flattened_newtype_variants`; empty for every non-node resolver and for any
+    /// node resolver built before that IR data was wired in, in which case
+    /// `napi_variant_is_flattened_newtype` answers `false` and the pre-existing nested
+    /// `container.{js_field}` rendering stands.
+    ///
+    /// Deliberately calls the napi backend's own predicate rather than the structural
+    /// `crate::codegen::serde_enum_repr::serde_flattens_newtype_payload` (the predicate
+    /// `variant_payload_tuple` reads, for Ruby's unconditional `#[serde(flatten)]` binding):
+    /// napi's predicate additionally requires the payload type to resolve via `ApiSurface`'s
+    /// `TypeDef`s, falling back to the old nested shape when it does not. An e2e generator that
+    /// flattened on the structural test alone would assume flattening in exactly the case the
+    /// real `.d.ts` still nests, diverging from the backend it is supposed to describe. This is
+    /// the same class of drift documented at `variant_payload_tuple`'s doc above (alef 0.85.11:
+    /// a binding flattened, a surface kept the old nested/`_0` shape, and every tagged-enum
+    /// payload assertion in a consumer's Ruby suite raised `KeyError`) — closing it for node by
+    /// reading the SAME authority the binding reads, instead of re-deriving the decision. ~keep
+    pub(super) napi_flattened_newtype_variants: HashMap<String, HashSet<String>>,
     /// Names of IR enum types `backends::magnus` (Ruby) lowers to a plain Ruby `Hash` via
     /// `serde_json::to_value` inside `IntoValue`, rather than a `Symbol` — i.e.
     /// `backends::magnus::gen_bindings::classes::gen_enum::gen_enum`'s own `has_data` predicate
@@ -329,14 +349,20 @@ pub struct IrEnumMap {
     /// payload value only makes sense for the first shape. ~keep
     pub variant_payload_is_collection: HashMap<String, HashSet<String>>,
     /// `variant_payload_tuple[enum_name]` — the subset of `variant_payload_types[enum_name]`'s
-    /// keys whose single payload field is *unnamed* (`Variant(Payload)`, not
-    /// `Variant { field: Payload }`).
+    /// keys whose single payload field serde actually flattens beside the discriminator, per
+    /// [`crate::codegen::serde_enum_repr::serde_flattens_newtype_payload`] — i.e. an internally
+    /// tagged (`#[serde(tag = "...")]`, no `content`) newtype (`Variant(Payload)`) variant.
     ///
-    /// Read from the same `EnumVariant::is_tuple` flag `backends::magnus`'s `flatten_newtype`
-    /// predicate reads, so the Ruby e2e generator and the Ruby binding backend cannot disagree
-    /// about which variants serde flattens. They did disagree once: alef 0.85.11 taught the
-    /// binding to flatten and left the e2e generator emitting the `_0` hop, which turned every
-    /// tagged-enum payload assertion in a consumer's Ruby suite into a `KeyError`. ~keep
+    /// NOT the same test as `EnumVariant::is_tuple` alone: an adjacently tagged
+    /// (`#[serde(tag = "..", content = "..")]`) or untagged newtype variant is *also*
+    /// `Variant(Payload)` shaped, but serde nests its payload under the `content` key (or bare,
+    /// for untagged) rather than flattening it beside the tag -- `is_tuple` alone cannot tell the
+    /// two apart. Read from the same predicate `backends::magnus`'s `flatten_newtype` reads, so
+    /// the Ruby e2e generator and the Ruby binding backend cannot disagree about which variants
+    /// serde flattens. They did disagree once, from a narrower version of this same gap: alef
+    /// 0.85.11 taught the binding to flatten and left the e2e generator emitting the `_0` hop
+    /// unconditionally, which turned every tagged-enum payload assertion in a consumer's Ruby
+    /// suite into a `KeyError`. ~keep
     pub variant_payload_tuple: HashMap<String, HashSet<String>>,
     /// `tagged_enum_wire[enum_name] -> (serde_tag, Rust variant -> serde wire value)`.
     /// Carries the exact discriminator spellings assertion generators need at runtime.

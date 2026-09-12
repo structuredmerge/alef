@@ -11,6 +11,11 @@ pub(crate) use gen_bindings::enums::is_tagged_data_enum;
 pub(crate) use gen_bindings::enums::string_enum_variant_js_value;
 pub(crate) use gen_bindings::enums::tagged_enum_binding_field_js_name;
 pub(crate) use gen_bindings::enums::tagged_enum_discriminant_js_name;
+/// Re-exported so e2e generation can decide node/wasm accessor and builder shape with the exact
+/// same resolution-aware predicate the napi backend itself flattens on, rather than a
+/// structural-only copy that would diverge in the unresolvable-payload fallback case. See
+/// `FieldResolver::napi_flattened_newtype_variants`'s field doc for the drift this closes.
+pub(crate) use gen_bindings::enums::tagged_enum_flattened_newtype;
 /// Re-exported so the TypeScript e2e snippet generator's tests can typecheck a generated
 /// snippet against the exact `.d.ts` union type this function produces, rather than a
 /// hand-guessed copy of it. See `internal_tagged_union_dts_lines`'s doc comment for why this

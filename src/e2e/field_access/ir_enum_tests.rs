@@ -509,3 +509,77 @@ fn enum_wire_variants_records_only_unambiguous_renames() {
         assert_eq!(got, case.expected, "case '{}'", case.name);
     }
 }
+
+/// `variant_payload_tuple` must answer whether serde actually FLATTENS a variant's payload
+/// beside the discriminator (`serde_enum_repr::serde_flattens_newtype_payload`), not merely
+/// whether the variant is tuple-shaped (`EnumVariant::is_tuple`). An internally tagged newtype
+/// variant flattens; an adjacently tagged, untagged, or externally tagged newtype variant does
+/// not, even though all four are `Variant(Payload)`-shaped on the Rust side. Getting this wrong
+/// once already turned every tagged-enum payload assertion in a consumer's Ruby suite into a
+/// `KeyError` (alef 0.85.11 -- see `types::IrEnumMap::variant_payload_tuple`'s doc comment).
+#[test]
+fn variant_payload_tuple_is_true_only_for_the_flattening_representation() {
+    fn newtype_variant(name: &str) -> EnumVariant {
+        EnumVariant {
+            name: name.to_string(),
+            fields: vec![field("_0", TypeRef::Named("Payload".to_string()))],
+            is_tuple: true,
+            ..EnumVariant::default()
+        }
+    }
+
+    let internal = EnumDef {
+        name: "Internal".to_string(),
+        serde_tag: Some("type".to_string()),
+        variants: vec![newtype_variant("Variant")],
+        ..EnumDef::default()
+    };
+    let adjacent = EnumDef {
+        name: "Adjacent".to_string(),
+        serde_tag: Some("type".to_string()),
+        serde_content: Some("payload".to_string()),
+        variants: vec![newtype_variant("Variant")],
+        ..EnumDef::default()
+    };
+    let untagged = EnumDef {
+        name: "Untagged".to_string(),
+        serde_untagged: true,
+        variants: vec![newtype_variant("Variant")],
+        ..EnumDef::default()
+    };
+    let external = EnumDef {
+        name: "External".to_string(),
+        variants: vec![newtype_variant("Variant")],
+        ..EnumDef::default()
+    };
+
+    let map = build_ir_enum_map(&[], &[internal, adjacent, untagged, external]);
+
+    assert!(
+        map.variant_payload_tuple
+            .get("Internal")
+            .is_some_and(|variants| variants.contains("Variant")),
+        "internal tagging flattens the newtype payload beside the tag: {:?}",
+        map.variant_payload_tuple
+    );
+    for name in ["Adjacent", "Untagged", "External"] {
+        assert!(
+            !map.variant_payload_tuple
+                .get(name)
+                .is_some_and(|variants| variants.contains("Variant")),
+            "{name} tagging must NOT be recorded as flattened: {:?}",
+            map.variant_payload_tuple
+        );
+    }
+
+    // The single-payload-type resolution itself is representation-agnostic and must still work
+    // for all four, since a caller may still need to walk into the payload's own fields under
+    // the non-flattened hop (`content` key, or the bare untagged payload).
+    for name in ["Internal", "Adjacent", "Untagged", "External"] {
+        assert_eq!(
+            map.variant_payload_types.get(name).and_then(|v| v.get("Variant")),
+            Some(&("_0".to_string(), "Payload".to_string())),
+            "{name} must still resolve the payload type regardless of flattening"
+        );
+    }
+}

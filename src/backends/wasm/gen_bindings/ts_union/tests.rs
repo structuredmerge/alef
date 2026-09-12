@@ -1017,3 +1017,121 @@ fn unit_only_enum_gets_no_variant_untagged_plan() {
     assert!(all_plans.plans.is_empty());
     assert!(all_plans.custom_section.is_empty());
 }
+
+// ---------------------------------------------------------------------------------------------
+// Fully-flattened internally-tagged enums (`is_fully_flattened_internal_enum`)
+// ---------------------------------------------------------------------------------------------
+
+/// `#[serde(tag = "format_type")] enum FormatMetadata { Excel(ExcelMetadata), Pdf }` -> each
+/// data variant intersects the tag literal with the payload's own structural shape, and a unit
+/// variant is just the tag literal.
+#[test]
+fn flattened_internal_enum_intersects_tag_literal_with_payload_shape() {
+    let enum_def = EnumDef {
+        name: "FormatMetadata".to_string(),
+        rust_path: "test_lib::FormatMetadata".to_string(),
+        serde_tag: Some("format_type".to_string()),
+        variants: vec![
+            tuple_variant("Excel", TypeRef::Named("ExcelMetadata".to_string())),
+            EnumVariant {
+                name: "Pdf".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let mut api = empty_api();
+    api.types = vec![TypeDef {
+        name: "ExcelMetadata".to_string(),
+        rust_path: "test_lib::ExcelMetadata".to_string(),
+        fields: vec![FieldDef {
+            name: "sheet_count".to_string(),
+            ty: TypeRef::Primitive(PrimitiveType::U32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    api.enums = vec![enum_def.clone()];
+    assert!(super::super::enums::is_fully_flattened_internal_enum(&enum_def));
+
+    let all_plans =
+        build_flattened_internal_enum_ts_plan_for_api(&api, &[], &AHashSet::default(), &AHashSet::default(), "Alef");
+    assert!(
+        all_plans.custom_section.contains(concat!(
+            "export type AlefFormatMetadata = ",
+            "({ format_type: \"Excel\" } & AlefExcelMetadataWire) | { format_type: \"Pdf\" };"
+        )),
+        "actual:\n{}",
+        all_plans.custom_section
+    );
+    assert!(
+        all_plans.custom_section.contains("interface AlefExcelMetadataWire"),
+        "actual:\n{}",
+        all_plans.custom_section
+    );
+    let plan = all_plans.plans.get("FormatMetadata").expect("plan for FormatMetadata");
+    assert!(
+        plan.extern_type_declaration
+            .contains(r#"typescript_type = "AlefFormatMetadata""#),
+        "actual:\n{}",
+        plan.extern_type_declaration
+    );
+}
+
+/// A mixed enum — some variants flattened newtypes, some struct-field variants with real field
+/// names — does not qualify: only `is_fully_flattened_internal_enum` (ALL data variants
+/// flattened) routes through the JsValue bridge; a mixed enum keeps its nominal
+/// `gen_tagged_enum_as_struct` type instead, so it must not appear in this plan.
+#[test]
+fn mixed_enum_is_not_a_flattened_internal_enum_and_gets_no_plan() {
+    let enum_def = EnumDef {
+        name: "AuthConfig".to_string(),
+        rust_path: "test_lib::AuthConfig".to_string(),
+        serde_tag: Some("type".to_string()),
+        variants: vec![
+            tuple_variant("Bearer", TypeRef::Named("BearerToken".to_string())),
+            EnumVariant {
+                name: "Basic".to_string(),
+                fields: vec![
+                    FieldDef {
+                        name: "username".to_string(),
+                        ty: TypeRef::String,
+                        ..Default::default()
+                    },
+                    FieldDef {
+                        name: "password".to_string(),
+                        ty: TypeRef::String,
+                        ..Default::default()
+                    },
+                ],
+                is_tuple: false,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    assert!(!super::super::enums::is_fully_flattened_internal_enum(&enum_def));
+
+    let mut api = empty_api();
+    api.enums = vec![enum_def];
+    let all_plans =
+        build_flattened_internal_enum_ts_plan_for_api(&api, &[], &AHashSet::default(), &AHashSet::default(), "Alef");
+    assert!(all_plans.plans.is_empty());
+    assert!(all_plans.custom_section.is_empty());
+}
+
+/// Adjacent (`tag`+`content`) tagging never flattens — the payload keeps a real key under
+/// `content` — so it must not be claimed by `is_fully_flattened_internal_enum` even though its
+/// single variant is otherwise newtype-shaped exactly like the internal case above.
+#[test]
+fn adjacent_tagging_is_not_a_flattened_internal_enum() {
+    let enum_def = EnumDef {
+        name: "DiffLine".to_string(),
+        rust_path: "test_lib::DiffLine".to_string(),
+        serde_tag: Some("kind".to_string()),
+        serde_content: Some("text".to_string()),
+        variants: vec![tuple_variant("Added", TypeRef::String)],
+        ..Default::default()
+    };
+    assert!(!super::super::enums::is_fully_flattened_internal_enum(&enum_def));
+}

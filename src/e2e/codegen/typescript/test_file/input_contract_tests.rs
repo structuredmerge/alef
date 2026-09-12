@@ -304,6 +304,13 @@ fn node_doc_request_arrays_lower_tagged_tuple_payloads_through_the_declared_inpu
         wasm_type_prefix: "",
         config: &Default::default(),
     });
-    assert!(body.contains("user: { content: \"proof\" }"), "{body}");
-    assert!(body.contains("role: \"user\""), "{body}");
+    // `Message` is internally tagged (`serde_tag = "role"`), so serde merges `UserMessage`'s
+    // own fields as siblings of the tag rather than nesting them under the variant name --
+    // which is exactly the shape this fixture's own input already uses. ~keep
+    assert!(
+        body.contains("{ role: \"user\", content: \"proof\" } as Message"),
+        "{body}"
+    );
+    // Negative control: the pre-flatten nested form must not come back. ~keep
+    assert!(!body.contains("user: { content:"), "{body}");
 }

@@ -7,6 +7,5 @@
     # @return [self]
     sig { params(hash: T::Hash[T.untyped, T.untyped]).returns(T.attached_class) }
     def self.from_hash(hash)
-      {{ from_hash_call }}
-    end
+{{ from_hash_body }}    end
   end

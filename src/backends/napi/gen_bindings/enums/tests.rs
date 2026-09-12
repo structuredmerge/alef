@@ -45,7 +45,7 @@ fn make_simple_enum(name: &str, variants: &[&str]) -> EnumDef {
 #[test]
 fn gen_enum_empty_variants_compiles() {
     let e = make_simple_enum("Status", &[]);
-    let result = gen_enum(&e, "", false, "", None);
+    let result = gen_enum(&e, "", false, "", None, &[]);
     assert!(result.contains("enum Status") || result.is_empty() || result.contains("Status"));
 }
 
@@ -53,7 +53,7 @@ fn gen_enum_empty_variants_compiles() {
 #[test]
 fn gen_enum_includes_variant_names() {
     let e = make_simple_enum("Color", &["Red", "Green", "Blue"]);
-    let result = gen_enum(&e, "", false, "", None);
+    let result = gen_enum(&e, "", false, "", None, &[]);
     assert!(result.contains("Red") || result.contains("red") || result.contains("RED"));
 }
 
@@ -137,7 +137,7 @@ fn gen_tagged_enum_unit_variant_uses_kind_discriminant() {
         version: Default::default(),
     };
 
-    let result = gen_enum(&e, "Js", true, "", None);
+    let result = gen_enum(&e, "Js", true, "", None, &[]);
 
     assert!(
         result.contains("js_name = \"annotation_type\""),
@@ -209,7 +209,7 @@ fn gen_tagged_enum_tuple_variant_uses_camel_case_value() {
         version: Default::default(),
     };
 
-    let result = gen_enum(&e, "Js", true, "", None);
+    let result = gen_enum(&e, "Js", true, "", None, &[]);
 
     assert!(
         result.contains("js_name = \"fontSize\"") && result.contains("pub font_size: Option<String>"),
@@ -281,7 +281,7 @@ fn gen_tagged_enum_struct_variant_emits_field_names() {
         version: Default::default(),
     };
 
-    let result = gen_enum(&e, "Js", true, "", None);
+    let result = gen_enum(&e, "Js", true, "", None, &[]);
 
     assert!(
         result.contains("reason"),
@@ -350,7 +350,7 @@ fn gen_enum_escapes_jsdoc_block_close_in_variant_docs() {
         version: Default::default(),
     };
 
-    let result = gen_enum(&e, "", false, "", None);
+    let result = gen_enum(&e, "", false, "", None, &[]);
     eprintln!("Generated code:\n{}\n", result);
 
     assert!(
@@ -392,7 +392,7 @@ fn adjacent_tagged_enum_uses_shared_content_field() {
         ..Default::default()
     };
 
-    let output = gen_enum(&enum_def, "Js", true, "", None);
+    let output = gen_enum(&enum_def, "Js", true, "", None, &[]);
     assert!(output.contains("pub type_tag: String"));
     assert!(output.contains("pub output: Option<String>"));
     assert!(!output.contains("pub custom: Option<String>"));
@@ -434,7 +434,7 @@ fn adjacent_tagged_enum_omits_spread_only_when_all_fields_are_set() {
         ..Default::default()
     };
 
-    let output = gen_enum(&enum_def, "Js", true, "", None);
+    let output = gen_enum(&enum_def, "Js", true, "", None, &[]);
 
     let skip_fn = output
         .split("pub fn visit_result_skip() -> JsVisitResult")
@@ -537,7 +537,7 @@ fn data_enum_with_a_bytes_payload_emits_a_compilable_buffer_round_trip() {
         version: Default::default(),
     };
 
-    let output = gen_enum(&e, "Js", true, "", None);
+    let output = gen_enum(&e, "Js", true, "", None, &[]);
 
     assert!(
         output.contains("pub binary: Option<napi::bindgen_prelude::Buffer>"),
@@ -554,8 +554,13 @@ fn data_enum_with_a_bytes_payload_emits_a_compilable_buffer_round_trip() {
 
     let struct_names: ahash::AHashSet<String> = ahash::AHashSet::new();
 
-    let binding_to_core =
-        crate::backends::napi::gen_bindings::methods::gen_tagged_enum_binding_to_core(&e, "demo", "Js", &struct_names);
+    let binding_to_core = crate::backends::napi::gen_bindings::methods::gen_tagged_enum_binding_to_core(
+        &e,
+        "demo",
+        "Js",
+        &struct_names,
+        &[],
+    );
     assert!(
         binding_to_core.contains("val.binary.map(|b| b.to_vec()).unwrap_or_default()"),
         "binding-to-core must copy the Buffer into the Vec<u8> the core variant wants; got:\n{binding_to_core}"
@@ -567,6 +572,7 @@ fn data_enum_with_a_bytes_payload_emits_a_compilable_buffer_round_trip() {
         "Js",
         &struct_names,
         None,
+        &[],
     );
     assert!(
         core_to_binding.contains("binary: Some(binary.into())"),
@@ -631,7 +637,7 @@ fn default_tagged_data_enum_preserves_custom_string_variant_payload_round_trip()
         version: Default::default(),
     };
 
-    let output = gen_enum(&e, "Js", true, "", None);
+    let output = gen_enum(&e, "Js", true, "", None, &[]);
     assert!(
         output.contains("pub struct JsFormatMetadata"),
         "a payload-carrying default-tagged enum must become a tagged object struct, \
@@ -649,8 +655,13 @@ fn default_tagged_data_enum_preserves_custom_string_variant_payload_round_trip()
     let struct_names: ahash::AHashSet<String> = ahash::AHashSet::new();
 
     // config/input direction: JS object -> core enum.
-    let binding_to_core =
-        crate::backends::napi::gen_bindings::methods::gen_tagged_enum_binding_to_core(&e, "demo", "Js", &struct_names);
+    let binding_to_core = crate::backends::napi::gen_bindings::methods::gen_tagged_enum_binding_to_core(
+        &e,
+        "demo",
+        "Js",
+        &struct_names,
+        &[],
+    );
     assert!(
         binding_to_core.contains(r#""Custom" => Self::Custom(val.custom.unwrap_or_default())"#),
         "binding-to-core conversion must forward the Custom payload, not discard it; got:\n{binding_to_core}"
@@ -663,6 +674,7 @@ fn default_tagged_data_enum_preserves_custom_string_variant_payload_round_trip()
         "Js",
         &struct_names,
         None,
+        &[],
     );
     assert!(
         core_to_binding.contains(
@@ -721,7 +733,7 @@ fn variant_level_untagged_data_variant_is_not_tagged_object() {
         "every data-carrying variant here is serde_untagged, so this must be claimed as a variant-untagged string enum"
     );
 
-    let output = gen_enum(&e, "Js", true, "", None);
+    let output = gen_enum(&e, "Js", true, "", None, &[]);
     assert!(
         output.contains("pub struct JsOutputFormat(pub serde_json::Value)"),
         "must route through the JSON passthrough wrapper, not #[napi(string_enum)] or a tagged object; got:\n{output}"
@@ -746,7 +758,7 @@ fn unit_only_enum_is_not_variant_untagged_string_enum() {
     assert!(!is_variant_untagged_string_enum(&e));
     assert!(!is_tagged_data_enum(&e));
 
-    let output = gen_enum(&e, "Js", false, "", None);
+    let output = gen_enum(&e, "Js", false, "", None, &[]);
     assert!(output.contains("#[napi(string_enum"));
 }
 
@@ -852,7 +864,7 @@ fn gen_enum_attaches_host_cfg_guard_to_wrapper_declaration() {
         ..Default::default()
     };
 
-    let output = gen_enum(&enum_def, "Js", true, "core_crate", None);
+    let output = gen_enum(&enum_def, "Js", true, "core_crate", None, &[]);
 
     assert!(
         output.contains("#[cfg(feature = \"extended-mode\")]\n    Extended,"),
@@ -892,7 +904,7 @@ fn gen_enum_drops_foreign_variant_proven_unreachable_by_configured_features() {
     };
     let configured: std::collections::HashSet<&str> = ["other-feature"].into_iter().collect();
 
-    let output = gen_enum(&enum_def, "Js", true, "core_crate", Some(&configured));
+    let output = gen_enum(&enum_def, "Js", true, "core_crate", Some(&configured), &[]);
 
     assert!(
         !output.contains("Extra"),
@@ -934,7 +946,7 @@ fn gen_enum_keeps_foreign_variant_not_ruled_out_by_configured_features() {
     };
     let configured: std::collections::HashSet<&str> = ["extra-tier"].into_iter().collect();
 
-    let output = gen_enum(&enum_def, "Js", true, "core_crate", Some(&configured));
+    let output = gen_enum(&enum_def, "Js", true, "core_crate", Some(&configured), &[]);
 
     assert!(
         output.contains("Extra,"),
@@ -973,7 +985,7 @@ fn gen_tagged_enum_default_impl_uses_the_default_variants_wire_value() {
         ..Default::default()
     };
 
-    let output = gen_enum(&enum_def, "Js", true, "test_core", None);
+    let output = gen_enum(&enum_def, "Js", true, "test_core", None, &[]);
 
     let expected_default_impl = "impl Default for JsOutcome {\n    \
         fn default() -> Self { Self { kind_tag: \"Retry\".to_string(),  } }\n\
@@ -985,5 +997,114 @@ fn gen_tagged_enum_default_impl_uses_the_default_variants_wire_value() {
     assert!(
         !output.contains("String::new()"),
         "the tag field must never default to an empty string -- it is not a valid variant, got:\n{output}"
+    );
+}
+
+/// A `FormatMetadata`-shaped fixture: `#[serde(tag = "format_type")]` with a single-tuple
+/// variant wrapping a Named struct (`Excel(ExcelMetadata)`). Serde's internal tagging flattens
+/// `ExcelMetadata`'s own fields onto the wire object as siblings of the tag --
+/// `{"format_type":"excel","sheet_count":2,"sheet_names":["Q1"]}` -- never nests them under an
+/// `"excel"` key.
+fn format_metadata_like_enum() -> EnumDef {
+    EnumDef {
+        name: "FormatMetadata".to_string(),
+        rust_path: "test::FormatMetadata".to_string(),
+        serde_tag: Some("format_type".to_string()),
+        serde_rename_all: Some("snake_case".to_string()),
+        has_serde: true,
+        variants: vec![EnumVariant {
+            name: "Excel".to_string(),
+            is_tuple: true,
+            fields: vec![FieldDef {
+                name: "_0".to_string(),
+                ty: TypeRef::Named("ExcelMetadata".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+fn excel_metadata_type_def() -> crate::core::ir::TypeDef {
+    crate::core::ir::TypeDef {
+        name: "ExcelMetadata".to_string(),
+        rust_path: "test::ExcelMetadata".to_string(),
+        fields: vec![
+            FieldDef {
+                name: "sheet_count".to_string(),
+                ty: TypeRef::Primitive(crate::core::ir::PrimitiveType::U32),
+                optional: true,
+                ..Default::default()
+            },
+            FieldDef {
+                name: "sheet_names".to_string(),
+                ty: TypeRef::Vec(Box::new(TypeRef::String)),
+                optional: true,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+/// The defect this task fixes: when `types` resolves the wrapped struct, the compiled napi
+/// object struct must expose `ExcelMetadata`'s OWN fields directly (`sheet_count`,
+/// `sheet_names`), not a nested `excel: Option<JsExcelMetadata>` property -- matching the real
+/// serde wire instead of a nominal per-variant union.
+#[test]
+fn gen_tagged_enum_flattens_single_tuple_named_variant_when_type_resolves() {
+    let enum_def = format_metadata_like_enum();
+    let types = [excel_metadata_type_def()];
+
+    let output = gen_enum(&enum_def, "Js", true, "test_core", None, &types);
+
+    assert!(
+        output.contains("pub sheet_count: Option<u32>,"),
+        "the wrapped struct's own field must be flattened onto the tagged-object struct, got:\n{output}"
+    );
+    assert!(
+        output.contains("#[napi(js_name = \"sheetCount\")]"),
+        "the flattened field must camelCase its JS name like every other napi field, got:\n{output}"
+    );
+    assert!(
+        !output.contains("excel: Option<JsExcelMetadata>"),
+        "a resolved single-tuple-Named variant must not keep the old nested field, got:\n{output}"
+    );
+}
+
+/// Negative control for the fallback path: when `types` does NOT contain the wrapped struct
+/// (unresolvable reference), the emitter must keep the pre-existing nested shape rather than
+/// silently dropping the payload's fields.
+#[test]
+fn gen_tagged_enum_keeps_nested_shape_when_wrapped_type_is_unresolved() {
+    let enum_def = format_metadata_like_enum();
+
+    let output = gen_enum(&enum_def, "Js", true, "test_core", None, &[]);
+
+    assert!(
+        output.contains("pub excel: Option<JsExcelMetadata>,"),
+        "an unresolvable wrapped type must fall back to the old nested field, got:\n{output}"
+    );
+    assert!(
+        !output.contains("pub sheet_count:"),
+        "no flattened field may appear without a resolved type, got:\n{output}"
+    );
+}
+
+/// Negative control: adjacent tagging (`#[serde(tag, content)]`) nests a newtype variant's
+/// payload under the `content` key by design -- unlike internal tagging, it must NEVER flatten,
+/// even when `types` resolves the wrapped struct.
+#[test]
+fn gen_tagged_enum_adjacent_tagging_keeps_nested_shape_even_when_type_resolves() {
+    let mut enum_def = format_metadata_like_enum();
+    enum_def.serde_content = Some("data".to_string());
+    let types = [excel_metadata_type_def()];
+
+    let output = gen_enum(&enum_def, "Js", true, "test_core", None, &types);
+
+    assert!(
+        !output.contains("pub sheet_count: Option<u32>,"),
+        "adjacent tagging must never flatten a newtype variant's payload, got:\n{output}"
     );
 }

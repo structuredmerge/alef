@@ -46,8 +46,12 @@ pub(super) fn can_emit_first_class_struct(
 ///   reachable only from `isize`, which is not a portable serde map key. A `Named` key is
 ///   excluded for the same reason, `Hashable` or not: a generated enum is not
 ///   `CodingKeyRepresentable`, so it also lands in the array encoding. ~keep
-/// - Path, Bytes, Duration, Char, Json — not representable as idiomatic Swift stored props
-///   without additional infra
+/// - Map<String, Json> specifically — `Json` (`serde_json::Value`) is otherwise rejected below,
+///   but as a Map *value* it renders as the Codable `JSONValue` stand-in (`swift_field_type`),
+///   not the `String` leaf-JSON convention `SwiftMapper::json()` uses everywhere else. A bare
+///   `Json` field stays rejected: only the Map-value position has a Codable substitute. ~keep
+/// - Path, Bytes, Duration, Char, Json (outside a Map value) — not representable as idiomatic
+///   Swift stored props without additional infra
 pub(crate) fn first_class_field_supported(ty: &TypeRef, known_dto_names: &HashSet<String>) -> bool {
     match ty {
         TypeRef::Primitive(_) | TypeRef::String => true,
@@ -55,8 +59,74 @@ pub(crate) fn first_class_field_supported(ty: &TypeRef, known_dto_names: &HashSe
         TypeRef::Vec(inner) => first_class_field_supported(inner, known_dto_names),
         TypeRef::Optional(inner) => first_class_field_supported(inner, known_dto_names),
         TypeRef::Map(key, value) => {
-            matches!(key.as_ref(), TypeRef::String) && first_class_field_supported(value, known_dto_names)
+            matches!(key.as_ref(), TypeRef::String)
+                && (matches!(value.as_ref(), TypeRef::Json) || first_class_field_supported(value, known_dto_names))
         }
+        _ => false,
+    }
+}
+
+/// Swift-side type string for a field, substituting the Codable `JSONValue` stand-in wherever a
+/// `Map<String, Json>` value position appears.
+///
+/// `mapper.map_type` alone renders that value position as `String` (`SwiftMapper::json()`) —
+/// correct for a *leaf* `Json` field, which is bridged as a raw, undecoded serde_json string, but
+/// wrong here: a `Map<String, Json>` field is JSON-bridged as a whole
+/// (`needs_json_bridge_for_swift`), so its value is decoded structurally by the SAME
+/// `JSONDecoder().decode(...)` call as the rest of the struct, and `String` throws
+/// `DecodingError` on the first non-string JSON value (a number, bool, array, object or null).
+/// Everything other than that one shape delegates straight to `mapper.map_type`, so this is a
+/// drop-in replacement at every call site that used to read the field's declared Swift type. ~keep
+pub(super) fn swift_field_type(mapper: &SwiftMapper, ty: &TypeRef) -> String {
+    match ty {
+        TypeRef::Map(key, value) if matches!(value.as_ref(), TypeRef::Json) => {
+            format!("[{}: JSONValue]", mapper.map_type(key))
+        }
+        TypeRef::Optional(inner) => format!("{}?", swift_field_type(mapper, inner)),
+        TypeRef::Vec(inner) => format!("[{}]", swift_field_type(mapper, inner)),
+        other => mapper.map_type(other),
+    }
+}
+
+/// Whether any first-class-eligible DTO field needs the Codable `JSONValue` support type emitted
+/// into the module (see `swift_field_type`). Gated on this rather than emitting `JSONValue`
+/// unconditionally: a crate with no `Map<String, Json>` field must stay byte-identical to its
+/// pre-existing output, or every crate's snapshot moves for support code nothing calls. ~keep
+pub(crate) fn api_needs_json_value_type(api: &ApiSurface, known_dto_names: &HashSet<String>) -> bool {
+    fn contains_json_map_value(ty: &TypeRef) -> bool {
+        match ty {
+            TypeRef::Map(_, value) => matches!(value.as_ref(), TypeRef::Json) || contains_json_map_value(value),
+            TypeRef::Optional(inner) | TypeRef::Vec(inner) => contains_json_map_value(inner),
+            _ => false,
+        }
+    }
+    api.types
+        .iter()
+        .filter(|t| known_dto_names.contains(&t.name))
+        .flat_map(|t| binding_fields(&t.fields))
+        .any(|field| contains_json_map_value(&field.ty))
+}
+
+/// A self-reference to `self_name` reached only through Swift-legal indirection (`Vec<Self>` /
+/// `Array`, or a Map value) — the same reasoning `struct Node: Codable { var children: [Node] }`
+/// relies on: `Array`/`Dictionary` box their elements, so the enclosing type still has a finite
+/// size. A *bare* `Named(self_name)` field (or an `Optional<Named(self_name)>`, which Swift's
+/// value-type `Optional` does not indirect) is deliberately NOT accepted here — Swift rejects
+/// `struct Foo { var next: Foo? }` outright, and this function must not paper over that. Only the
+/// fixed-point loop in `compute_first_class_dto_names` calls this, to bootstrap a type's own
+/// eligibility past the "referenced name must already be known" rule that would otherwise make
+/// self-reference permanently unresolvable. ~keep
+fn is_self_reference_through_indirection(ty: &TypeRef, self_name: &str) -> bool {
+    match ty {
+        TypeRef::Vec(inner) => {
+            matches!(inner.as_ref(), TypeRef::Named(n) if n == self_name)
+                || is_self_reference_through_indirection(inner, self_name)
+        }
+        TypeRef::Map(_, value) => {
+            matches!(value.as_ref(), TypeRef::Named(n) if n == self_name)
+                || is_self_reference_through_indirection(value, self_name)
+        }
+        TypeRef::Optional(inner) => is_self_reference_through_indirection(inner, self_name),
         _ => false,
     }
 }
@@ -66,9 +136,11 @@ pub(crate) fn first_class_field_supported(ty: &TypeRef, known_dto_names: &HashSe
 /// them in `emit`.
 ///
 /// A type is first-class iff it is non-opaque, has serde, non-trait, non-excluded, has visible
-/// fields, and every visible field's type is first-class-supported given the growing set. Unit
-/// serde enums and data-variant (tagged/untagged) serde enums seed the set — they are Codable
-/// and may appear as fields.
+/// fields, and every visible field's type is first-class-supported given the growing set — OR is
+/// a self-reference reached only through `Vec<Self>`/Map-value indirection
+/// (`is_self_reference_through_indirection`), which the growing-set check alone can never satisfy
+/// since a type's own name cannot enter `known` before it does. Unit serde enums and data-variant
+/// (tagged/untagged) serde enums seed the set — they are Codable and may appear as fields.
 ///
 /// This is the authoritative classifier shared by the Swift binding emitter (`gen_bindings`) and
 /// the swift-bridge Rust-crate getter emitter (`gen_rust_crate`): a `Vec<Named>` getter is
@@ -103,7 +175,10 @@ pub(crate) fn compute_first_class_dto_names(api: &ApiSurface, exclude_types: &Ha
             if known.contains(&ty.name) {
                 continue;
             }
-            if binding_fields(&ty.fields).all(|field| first_class_field_supported(&field.ty, &known)) {
+            if binding_fields(&ty.fields).all(|field| {
+                first_class_field_supported(&field.ty, &known)
+                    || is_self_reference_through_indirection(&field.ty, &ty.name)
+            }) {
                 known.insert(ty.name.clone());
             }
         }
@@ -145,7 +220,7 @@ pub(super) fn emit_first_class_struct(
         super::client::emit_doc_comment(&field.doc, "    ", &mut properties);
         let camel = swift_case_ident(&field.name.to_lower_camel_case());
         let already_optional = matches!(&field.ty, TypeRef::Optional(_));
-        let swift_ty = mapper.map_type(&field.ty);
+        let swift_ty = swift_field_type(mapper, &field.ty);
         let property_type = if field.optional && !already_optional {
             format!("{swift_ty}?")
         } else {
@@ -165,7 +240,7 @@ pub(super) fn emit_first_class_struct(
         .map(|field| {
             let camel = swift_case_ident(&field.name.to_lower_camel_case());
             let already_optional = matches!(&field.ty, TypeRef::Optional(_));
-            let swift_ty = mapper.map_type(&field.ty);
+            let swift_ty = swift_field_type(mapper, &field.ty);
             // The Rust default, when it has a Swift literal, beats the `nil`/required rendering
             // below. `Option<T>` carrying `Some(x)` reaches the IR as the bare literal (the
             // extractor unwraps `Some`), so without this an `Option<u32>` defaulting to
@@ -311,7 +386,7 @@ pub(super) fn emit_first_class_struct(
                  (({accessor_with_chain}).data(using: .utf8) ?? Data(\"null\".utf8)))"
             )
         } else if needs_json_bridge_for_swift(&field.ty) {
-            let swift_ty = mapper.map_type(&field.ty);
+            let swift_ty = swift_field_type(mapper, &field.ty);
             let swift_ty_with_opt = if is_optional && !matches!(&field.ty, TypeRef::Optional(_)) {
                 format!("{swift_ty}?")
             } else {
@@ -506,7 +581,7 @@ pub(crate) fn emit_decoder_init(
         let camel = swift_case_ident(&field.name.to_lower_camel_case());
         let already_optional = matches!(&field.ty, TypeRef::Optional(_));
         let is_optional = field.optional || already_optional;
-        let swift_ty = mapper.map_type(&field.ty);
+        let swift_ty = swift_field_type(mapper, &field.ty);
 
         let literal = field.typed_default.as_ref().and_then(swift_typed_default_literal);
 
@@ -1436,6 +1511,136 @@ mod tests {
         assert!(
             out.contains("self.metaTags = try JSONDecoder().decode([String: String].self"),
             "the FFI init must JSON-decode the getter's serde_json String:\n{out}"
+        );
+    }
+
+    /// GH#1594: `CodeDataNode { children: Vec<CodeDataNode>, .. }` is legitimately recursive --
+    /// `struct Node: Codable { var children: [Node] }` compiles in Swift because `Array` boxes
+    /// its elements. The fixed-point loop in `compute_first_class_dto_names` seeds only serde
+    /// enums, so without `is_self_reference_through_indirection` a type can never enter `known`
+    /// before checking its own fields, and a self-referencing struct is permanently excluded no
+    /// matter how many iterations run.
+    #[test]
+    fn a_struct_recursing_only_through_vec_of_self_stays_first_class() {
+        let node = serde_struct(
+            "CodeDataNode",
+            vec![
+                named_field("key", TypeRef::String),
+                named_field(
+                    "children",
+                    TypeRef::Vec(Box::new(TypeRef::Named("CodeDataNode".to_string()))),
+                ),
+            ],
+        );
+        let api = ApiSurface {
+            types: vec![node],
+            ..Default::default()
+        };
+
+        let known = compute_first_class_dto_names(&api, &HashSet::new());
+
+        assert!(
+            known.contains("CodeDataNode"),
+            "Vec<Self> is Swift-legal recursion and must not block first-class status: {known:?}"
+        );
+    }
+
+    /// A *bare* self-reference (`Option<Self>` etc.) is not Swift-legal for a struct — Swift's
+    /// value-type `Optional` does not indirect, so `struct Foo { var next: Foo? }` fails to
+    /// compile. `is_self_reference_through_indirection` must not treat this the same as the
+    /// `Vec<Self>` case above; the type stays excluded.
+    #[test]
+    fn a_struct_recursing_through_a_bare_optional_self_is_not_first_class() {
+        let node = serde_struct(
+            "LinkedNode",
+            vec![named_field(
+                "next",
+                TypeRef::Optional(Box::new(TypeRef::Named("LinkedNode".to_string()))),
+            )],
+        );
+        let api = ApiSurface {
+            types: vec![node],
+            ..Default::default()
+        };
+
+        let known = compute_first_class_dto_names(&api, &HashSet::new());
+
+        assert!(
+            !known.contains("LinkedNode"),
+            "a bare Optional<Self> is not Swift-legal recursion and must stay excluded: {known:?}"
+        );
+    }
+
+    /// GH#1594's second blocker: `DocxMetadata.custom_properties: Option<HashMap<String,
+    /// serde_json::Value>>`. `serde_json::Value` alone stays rejected (`TypeRef::Json` has no
+    /// Codable Swift form), but as a Map *value* it substitutes the Codable `JSONValue` stand-in,
+    /// so the field — and the struct carrying it — must stay first-class.
+    #[test]
+    fn a_map_with_arbitrary_json_values_stays_first_class() {
+        let map_of_json = TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::Json));
+        let known = HashSet::new();
+        assert!(
+            first_class_field_supported(&map_of_json, &known),
+            "Map<String, Json> has a Codable JSONValue stand-in and must be accepted"
+        );
+        assert!(
+            first_class_field_supported(&TypeRef::Optional(Box::new(map_of_json)), &known),
+            "Option<Map<String, Json>> must be accepted too"
+        );
+
+        let docx_metadata = serde_struct(
+            "DocxMetadata",
+            vec![named_field(
+                "custom_properties",
+                TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::Json)),
+            )],
+        );
+        let api = ApiSurface {
+            types: vec![docx_metadata],
+            ..Default::default()
+        };
+        let known = compute_first_class_dto_names(&api, &HashSet::new());
+        assert!(
+            known.contains("DocxMetadata"),
+            "a struct whose only exotic field is Map<String, Json> must be first-class: {known:?}"
+        );
+    }
+
+    /// The Map<String, Json> value position must render as `JSONValue`, not the `String` a bare
+    /// Json leaf renders as (`SwiftMapper::json()`) — `[String: String]` would throw decoding the
+    /// first non-string JSON value the real wire format actually carries.
+    #[test]
+    fn should_render_a_json_valued_map_field_using_the_json_value_stand_in() {
+        let ty = serde_struct(
+            "DocxMetadata",
+            vec![named_field(
+                "customProperties",
+                TypeRef::Map(Box::new(TypeRef::String), Box::new(TypeRef::Json)),
+            )],
+        );
+
+        let mut out = String::new();
+        emit_first_class_struct(
+            &ty,
+            &SwiftMapper,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            "DemoError",
+            &std::collections::HashSet::new(),
+            &mut out,
+        );
+
+        assert!(
+            out.contains("public let customProperties: [String: JSONValue]"),
+            "the Map<String, Json> field must be a [String: JSONValue] stored property:\n{out}"
+        );
+        assert!(
+            !out.contains("[String: String]"),
+            "the Json value must not fall back to the leaf-JSON String convention:\n{out}"
         );
     }
 }

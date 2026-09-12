@@ -307,6 +307,16 @@ impl Backend for SwiftBackend {
         let zero_arg_constructible_names =
             zero_arg_default::compute_zero_arg_constructible_names(api, &known_dto_names);
 
+        // Emitted once, before any DTO that might reference it, and only for crates that
+        // actually have a `Map<String, Json>` field -- see `dto::api_needs_json_value_type`. ~keep
+        if dto::api_needs_json_value_type(api, &known_dto_names) {
+            body.push_str(&crate::backends::swift::template_env::render(
+                "swift_json_value_type.swift.jinja",
+                minijinja::context! {},
+            ));
+            body.push('\n');
+        }
+
         let mut first_class_struct_names: Vec<String> = Vec::new();
         for ty in api
             .types

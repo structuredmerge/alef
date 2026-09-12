@@ -51,13 +51,19 @@ pub(in crate::e2e::codegen::typescript::test_file) fn ts_builder_expression(
 
 /// For a node-lang tagged-data enum whose matched variant wraps a single Named-type payload
 /// (`enum Message { User(UserMessage), .. }` with `#[serde(tag = "role")]`), napi's `.d.ts`
-/// union member nests that payload under a synthesized per-variant field
-/// (`{ role: 'user'; user: UserMessage }`) rather than flattening its fields alongside the
-/// tag (`{ role: 'user', content: '...' }`) — see `gen_tagged_enum_as_object`, which emits a
-/// dedicated `Option<{prefix}{inner}>` field for exactly this shape (one struct-payload tuple
-/// variant), keyed by `tagged_enum_binding_field_js_name` (variant/field `serde_rename`, else
-/// the lower-camel-case variant name). Building the flattened wire-shape object and casting it
-/// `as Message` type-checks against no union member, so `tsc` rejects it with TS2353.
+/// union member shape depends on whether the payload type resolves in `type_defs`, per
+/// `backends::napi::tagged_enum_flattened_newtype`:
+///
+/// * resolvable (the common case): the payload's own fields sit directly beside the tag
+///   (`{ role: 'user', content: '...' }`) — see `gen_tagged_enum_as_object`, which flattens
+///   exactly this shape onto the shared binding struct once it can resolve the wrapped type.
+/// * unresolvable: the `.d.ts` union member nests the payload under a synthesized per-variant
+///   field instead (`{ role: 'user'; user: UserMessage }`), keyed by
+///   `tagged_enum_binding_field_js_name` (variant/field `serde_rename`, else the lower-camel-case
+///   variant name).
+///
+/// Building the wrong one of these and casting it `as Message` type-checks against no union
+/// member, so `tsc` rejects it with TS2353 either way.
 ///
 /// Returns `None` for anything that doesn't need this treatment (unit variants, struct
 /// variants, multi-field tuple variants, or a tag value with no matching variant) so the
@@ -113,6 +119,52 @@ fn build_node_tagged_enum_variant_literal(
     let TypeRef::Named(inner_type_name) = &field.ty else {
         return None;
     };
+
+    // `backends::napi::tagged_enum_flattened_newtype` is the SAME resolution-aware predicate
+    // the runtime `#[napi(object)]` struct (`gen_tagged_enum_as_object`) and the authored
+    // `.d.ts` union (`internal_tagged_union_dts_lines`) flatten on: when the payload type
+    // resolves in `type_defs`, its own fields sit directly beside the tag on the wire, with no
+    // synthesized per-variant member at all. Reading it here rather than re-deriving the
+    // resolvability check keeps this builder from disagreeing with either surface it targets.
+    // See `FieldResolver::napi_flattened_newtype_variants`'s doc for the drift this class of gap
+    // caused once already. ~keep
+    if crate::backends::napi::tagged_enum_flattened_newtype(enum_def, variant, type_defs).is_some() {
+        let nested_with_cast = ts_builder_expression_inner(
+            &payload,
+            inner_type_name,
+            nested_types,
+            "node",
+            enum_fields,
+            bigint_fields,
+            type_defs,
+            enums,
+            "",
+            docs_files,
+            pointer,
+            depth + 1,
+            referenced_enums,
+        );
+        let cast_suffix = format!(" as {inner_type_name}");
+        let nested_expr = nested_with_cast.strip_suffix(&cast_suffix).unwrap_or(&nested_with_cast);
+        let inner_fields = nested_expr
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix('}'))
+            .map(str::trim)
+            .unwrap_or(nested_expr);
+
+        let tag_key = js_object_key(tag_field);
+        referenced_enums.insert(format!("type {type_name}"));
+        let tag_entry = format!(
+            "{tag_key}: {}",
+            serde_json::to_string(tag_value).expect("enum wire values serialize as JSON strings")
+        );
+        let body = if inner_fields.is_empty() {
+            tag_entry
+        } else {
+            format!("{tag_entry}, {inner_fields}")
+        };
+        return Some(format!("{{ {body} }} as {type_name}"));
+    }
 
     let payload_key = crate::backends::napi::tagged_enum_binding_field_js_name(enum_def, variant, field);
 

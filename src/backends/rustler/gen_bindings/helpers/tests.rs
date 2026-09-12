@@ -39,8 +39,13 @@ fn test_elixir_field_name_with_type_named_field() {
     assert_eq!(name, "reason");
 }
 
+/// The generated flat `NifStruct` (`gen_rustler_flat_data_enum`) keys a variant's payload as
+/// `pascal_to_snake(variant.name)` -- `pdf`, `docx` -- unconditionally; it is never derived from
+/// the payload type's own name. Before this fix the `@type` alias documented a DIFFERENT key
+/// (`metadata`, stripped from `PdfMetadata`/`DocxMetadata`), so a caller following the typespec
+/// wrote `format.metadata` and got `nil`; `format.pdf` is what actually works.
 #[test]
-fn test_gen_elixir_enum_module_data_enum_with_payload_derived_names() {
+fn should_key_a_flat_data_enum_variants_typespec_by_its_snake_cased_variant_name() {
     let format_enum = EnumDef {
         name: "FormatMetadata".to_string(),
         rust_path: "my_crate::FormatMetadata".to_string(),
@@ -141,13 +146,15 @@ fn test_gen_elixir_enum_module_data_enum_with_payload_derived_names() {
     let result = gen_elixir_enum_module(&format_enum, "SampleCrate");
 
     assert!(
-        result.contains("@type pdf :: %{type: :pdf, metadata: map()}"),
-        "should use payload-derived 'metadata' field name with concrete type map(); got:\n{result}"
+        result.contains("@type pdf :: %{type: :pdf, pdf: map()}"),
+        "should key the Pdf variant's payload as `pdf`, the real NifStruct field, not a \
+         payload-type-derived name; got:\n{result}"
     );
 
     assert!(
-        result.contains("@type docx :: %{type: :docx, metadata: map()}"),
-        "should use payload-derived 'metadata' field name with concrete type map(); got:\n{result}"
+        result.contains("@type docx :: %{type: :docx, docx: map()}"),
+        "should key the Docx variant's payload as `docx`, the real NifStruct field, not a \
+         payload-type-derived name; got:\n{result}"
     );
 
     assert!(
@@ -398,10 +405,18 @@ fn test_gen_elixir_enum_module_resolves_known_payload_types() {
         result.contains("SampleCrate.PdfMetadata.t()"),
         "should resolve PdfMetadata to SampleCrate.PdfMetadata.t(); got:\n{result}"
     );
+    // The real key on the generated flat `NifStruct` is `pascal_to_snake(variant.name)` --
+    // `pdf`, matching how `format.pdf` actually reads the payload, never a name guessed from
+    // stripping the variant name as a prefix of the payload type (`PdfMetadata` -> `metadata`).
+    assert!(
+        result.contains("pdf: SampleCrate.PdfMetadata.t()"),
+        "should key the Pdf variant's payload as `pdf`, not a type-derived name; got:\n{result}"
+    );
 
     assert!(
-        result.contains("value: map()"),
-        "should fall back to map() for unknown type; got:\n{result}"
+        result.contains("other: map()"),
+        "the flat struct's real key is pascal_to_snake(variant.name) (`other`), never a name \
+         guessed from the payload type -- got:\n{result}"
     );
 }
 

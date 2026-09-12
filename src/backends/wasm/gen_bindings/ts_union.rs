@@ -21,7 +21,7 @@ use crate::codegen::naming::ts_property_key::ts_property_key;
 use crate::codegen::naming::{wire_field_name, wire_variant_value};
 use crate::core::ir::{ApiSurface, EnumDef, EnumVariant, FieldDef, TypeDef, TypeRef};
 
-use super::enums::{is_untagged_data_enum, is_variant_untagged_string_enum};
+use super::enums::{is_fully_flattened_internal_enum, is_untagged_data_enum, is_variant_untagged_string_enum};
 
 /// One named auxiliary TS declaration a variant/field recursively depended on: a struct's
 /// interface, a fieldless enum's string-literal union, a nested untagged union's own alias, or
@@ -231,6 +231,133 @@ fn build_variant_untagged_string_enum_ts_plans(
             "ts_custom_section",
             minijinja::context! {
                 const_name => "ALEF_VARIANT_UNTAGGED_STRING_ENUMS_TS",
+                ts_body => ts_body.clone(),
+            },
+        )
+    };
+
+    AllUntaggedEnumsTsPlan {
+        plans,
+        ts_body,
+        custom_section,
+    }
+}
+
+/// `mod.rs` entry point for [`is_fully_flattened_internal_enum`] enums: filters `api.enums` down
+/// to the non-excluded ones and builds their combined plan. Reuses [`AllUntaggedEnumsTsPlan`]'s
+/// shape (and the same `ts_extern_value_type`/`ts_custom_section` templates the other two
+/// "no nominal `Wasm{Enum}` type" plans render) so `mod.rs` merges all three the same way -- but
+/// the declared TypeScript differs (each member merges the tag literal with the flattened
+/// payload's own shape), so this stays a separate builder. ~keep
+pub(super) fn build_flattened_internal_enum_ts_plan_for_api(
+    api: &ApiSurface,
+    exclude_types: &[String],
+    opaque_type_names: &AHashSet<String>,
+    text_field_enum_names: &AHashSet<String>,
+    prefix: &str,
+) -> AllUntaggedEnumsTsPlan {
+    let exclude_types_set: AHashSet<String> = exclude_types.iter().cloned().collect();
+    let enum_defs: Vec<&EnumDef> = api
+        .enums
+        .iter()
+        .filter(|e| gets_a_flattened_internal_enum_ts_union(e, &exclude_types_set, text_field_enum_names))
+        .collect();
+    build_flattened_internal_enum_ts_plans(&enum_defs, api, &exclude_types_set, opaque_type_names, prefix)
+}
+
+/// Whether this enum gets the tag-literal-intersected-with-payload TypeScript type rather than
+/// staying `any`. Same opt-out precedence as [`gets_a_ts_union`]: an explicit
+/// `untagged_union_text_types` entry pins the field type to plain `String` and must win over
+/// declaring a structural union here. ~keep
+fn gets_a_flattened_internal_enum_ts_union(
+    enum_def: &EnumDef,
+    exclude_types: &AHashSet<String>,
+    text_field_enum_names: &AHashSet<String>,
+) -> bool {
+    !exclude_types.contains(&enum_def.name)
+        && !text_field_enum_names.contains(&enum_def.name)
+        && is_fully_flattened_internal_enum(enum_def)
+}
+
+/// Build the full TS plan for every [`is_fully_flattened_internal_enum`] enum: one union member
+/// per variant. A unit variant is just the tag literal (`{ format_type: "pdf" }`); a data variant
+/// intersects the tag literal with its flattened payload's own structural shape (`{ format_type:
+/// "excel" } & ExcelMetadataWire`) -- the same recursive type mapping
+/// [`build_untagged_enum_ts_plans`] uses, so the payload's fields still get expanded into a
+/// nested interface declaration. `is_fully_flattened_internal_enum` guarantees every data variant
+/// has exactly one field, so there is no multi-field tuple / struct-variant case to handle here.
+/// ~keep
+fn build_flattened_internal_enum_ts_plans(
+    enum_defs: &[&EnumDef],
+    api: &ApiSurface,
+    exclude_types: &AHashSet<String>,
+    opaque_type_names: &AHashSet<String>,
+    prefix: &str,
+) -> AllUntaggedEnumsTsPlan {
+    let mut ctx = TsMapContext {
+        api,
+        exclude_types,
+        opaque_type_names,
+        prefix,
+        in_progress: AHashMap::default(),
+        resolved_names: AHashMap::default(),
+        decls: Vec::new(),
+    };
+    let mut plans = AHashMap::default();
+
+    for &enum_def in enum_defs {
+        let ts_type_name = format!("{prefix}{}", enum_def.name);
+        let tag_field = crate::codegen::serde_enum_repr::tagged_object_tag_key(enum_def);
+        let tag_key = ts_property_key(tag_field);
+        let members: Vec<String> = enum_def
+            .variants
+            .iter()
+            .map(|v| {
+                let tag_value =
+                    wire_variant_value(&v.name, v.serde_rename.as_deref(), enum_def.serde_rename_all.as_deref());
+                let tag_literal = format!("{{ {tag_key}: \"{tag_value}\" }}");
+                if v.fields.is_empty() {
+                    tag_literal
+                } else {
+                    let payload_ts = ctx.map_type(&v.fields[0].ty);
+                    format!("({tag_literal} & {payload_ts})")
+                }
+            })
+            .collect();
+        ctx.decls.push(TsAuxDecl::Alias {
+            name: ts_type_name.clone(),
+            members,
+        });
+
+        let value_type_name = format!("{ts_type_name}Value");
+        let extern_type_declaration = crate::backends::wasm::template_env::render(
+            "ts_extern_value_type",
+            minijinja::context! {
+                ts_type_name => ts_type_name,
+                value_type_name => value_type_name.clone(),
+            },
+        );
+        plans.insert(
+            enum_def.name.clone(),
+            UntaggedEnumTsPlan {
+                value_type_name,
+                extern_type_declaration,
+            },
+        );
+    }
+
+    let ts_body = if ctx.decls.is_empty() {
+        String::new()
+    } else {
+        ctx.decls.iter().map(render_aux_decl).collect::<Vec<_>>().join("\n\n")
+    };
+    let custom_section = if ts_body.is_empty() {
+        String::new()
+    } else {
+        crate::backends::wasm::template_env::render(
+            "ts_custom_section",
+            minijinja::context! {
+                const_name => "ALEF_FLATTENED_INTERNAL_ENUMS_TS",
                 ts_body => ts_body.clone(),
             },
         )

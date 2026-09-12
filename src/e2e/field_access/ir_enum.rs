@@ -213,7 +213,14 @@ fn build_variant_payload_types(
                     .or_default()
                     .insert(variant.name.clone());
             }
-            if variant.is_tuple {
+            // `is_tuple` alone answers "is this `Variant(Payload)` rather than
+            // `Variant { field: Payload }`" -- true for adjacent and untagged newtype variants
+            // too, neither of which serde flattens beside the discriminator. The accessor this
+            // feeds (`FieldResolver::union_variant_payload_is_tuple`) promises "the shape serde
+            // flattens on an internally tagged enum", so this must ask the predicate that
+            // actually answers that, not `is_tuple` alone -- see `types.rs`'s `variant_payload_tuple`
+            // doc for the `KeyError` drift this exact gap caused once already. ~keep
+            if crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant) {
                 variant_payload_tuple
                     .entry(enum_def.name.clone())
                     .or_default()

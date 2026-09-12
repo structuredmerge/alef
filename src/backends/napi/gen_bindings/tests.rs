@@ -280,8 +280,8 @@ fn sanitized_field_test_enum(ty: TypeRef, optional: bool) -> EnumDef {
 fn sanitized_field_conversions(enum_def: &EnumDef) -> (String, String) {
     let struct_names = AHashSet::new();
     (
-        gen_tagged_enum_binding_to_core(enum_def, "fixture_core", "Js", &struct_names),
-        gen_tagged_enum_core_to_binding(enum_def, "fixture_core", "Js", &struct_names, None),
+        gen_tagged_enum_binding_to_core(enum_def, "fixture_core", "Js", &struct_names, &[]),
+        gen_tagged_enum_core_to_binding(enum_def, "fixture_core", "Js", &struct_names, None, &[]),
     )
 }
 
@@ -446,7 +446,7 @@ fn core_to_binding_uses_shorthand_for_self_assigned_optional_field() {
     };
 
     let struct_names = AHashSet::new();
-    let core_to_binding = gen_tagged_enum_core_to_binding(&enum_def, "fixture_core", "Js", &struct_names, None);
+    let core_to_binding = gen_tagged_enum_core_to_binding(&enum_def, "fixture_core", "Js", &struct_names, None, &[]);
 
     assert!(
         !core_to_binding.contains("text: text"),
@@ -482,7 +482,7 @@ fn core_to_binding_keeps_expr_form_when_conversion_is_required() {
     };
 
     let struct_names = AHashSet::new();
-    let core_to_binding = gen_tagged_enum_core_to_binding(&enum_def, "fixture_core", "Js", &struct_names, None);
+    let core_to_binding = gen_tagged_enum_core_to_binding(&enum_def, "fixture_core", "Js", &struct_names, None, &[]);
 
     assert!(
         core_to_binding.contains("items: items.map(|v| v.into_iter().map(Into::into).collect())"),

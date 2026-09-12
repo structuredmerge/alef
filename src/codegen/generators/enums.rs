@@ -595,12 +595,58 @@ const RUST_KEYWORDS: &[&str] = &[
     "true", "try", "type", "typeof", "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
 ];
 
+/// A variant eligible for a typed PyO3 `#[getter]` accessor: a single-field tuple variant
+/// wrapping a `TypeRef::Named` type. Shared between the runtime `#[getter]` emitter
+/// ([`write_pyo3_variant_accessors`]) and the `.pyi` stub emitter so both derive the accessor
+/// set from the identical rule -- a stub declaring a property the pyclass doesn't have, or
+/// omitting one it does, is exactly the "stub contradicts runtime" defect this exists to avoid.
+///
+/// `is_boxed` mirrors the field's `Box<T>`/`Option<Box<T>>` wrapping and only matters to the
+/// runtime clone expression; the stub type annotation (`Inner | None`) is identical either way.
+pub(crate) struct VariantAccessor<'a> {
+    /// snake_case Python-visible getter name (before any `r#` raw-identifier escaping needed to
+    /// embed it as a Rust fn name).
+    pub(crate) py_name: String,
+    pub(crate) variant_pascal: &'a str,
+    pub(crate) inner_type_name: &'a str,
+    pub(crate) is_boxed: bool,
+}
+
+/// Returns the accessor description for `variant` when it qualifies for a typed `#[getter]`,
+/// or `None` when it must fall back to the dict-shaped getter (unit variant, multi-field tuple
+/// variant, struct variant, or a payload type alef could not resolve to a bare `TypeRef::Named`).
+pub(crate) fn variant_accessor(variant: &EnumVariant) -> Option<VariantAccessor<'_>> {
+    if variant.fields.len() != 1 {
+        return None;
+    }
+    let field = &variant.fields[0];
+    let is_tuple_field = field
+        .name
+        .strip_prefix('_')
+        .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()));
+    if !is_tuple_field {
+        return None;
+    }
+    let TypeRef::Named(inner_type_name) = &field.ty else {
+        return None;
+    };
+    Some(VariantAccessor {
+        py_name: crate::codegen::naming::pascal_to_snake(&variant.name),
+        variant_pascal: &variant.name,
+        inner_type_name,
+        is_boxed: field.is_boxed,
+    })
+}
+
+/// Collect the [`variant_accessor`]-eligible variants of a data enum, in declaration order.
+pub(crate) fn collect_variant_accessors(enum_def: &EnumDef) -> Vec<VariantAccessor<'_>> {
+    enum_def.variants.iter().filter_map(variant_accessor).collect()
+}
+
 /// Generate variant accessor properties for a data enum.
 /// For single-tuple variants with a Named inner type, returns the typed binding struct directly.
 /// For all other variants, returns the variant data as a Python dict, or None if not active.
 pub(crate) fn write_pyo3_variant_accessors(out: &mut String, enum_def: &EnumDef, core_path: &str, is_host_enum: bool) {
-    use crate::core::ir::TypeRef;
-
     for variant in &enum_def.variants {
         let variant_name_lower = crate::codegen::naming::pascal_to_snake(&variant.name);
         let fn_name = if RUST_KEYWORDS.contains(&variant_name_lower.as_str()) {
@@ -609,68 +655,62 @@ pub(crate) fn write_pyo3_variant_accessors(out: &mut String, enum_def: &EnumDef,
             variant_name_lower.clone()
         };
 
-        if variant.fields.len() == 1 {
-            let field = &variant.fields[0];
-            let is_tuple_field = field
-                .name
-                .strip_prefix('_')
-                .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()));
-            if is_tuple_field && let TypeRef::Named(inner_type_name) = &field.ty {
-                let variant_pascal = &variant.name;
-                let clone_expr = if field.is_boxed {
-                    "(**data).clone().into()".to_string()
-                } else {
-                    "data.clone().into()".to_string()
-                };
-                out.push('\n');
-                out.push_str("    #[getter]\n");
+        if let Some(accessor) = variant_accessor(variant) {
+            let inner_type_name = accessor.inner_type_name;
+            let variant_pascal = accessor.variant_pascal;
+            let clone_expr = if accessor.is_boxed {
+                "(**data).clone().into()".to_string()
+            } else {
+                "data.clone().into()".to_string()
+            };
+            out.push('\n');
+            out.push_str("    #[getter]\n");
+            out.push_str(&crate::codegen::template_env::render(
+                "generators/enums/getter_accessor.jinja",
+                minijinja::context! {
+                    fn_name => &fn_name,
+                    inner_type_name => inner_type_name,
+                },
+            ));
+            out.push_str("        match &self.inner {\n");
+            // A cfg-gated variant's match arm must not reference `core_path::Variant`
+            // unconditionally: a host-owned cfg is safe to re-emit verbatim (the crate's own
+            // `[features]` table forwards it), but a variant merged in from a foreign
+            // `[[crates.source_crates]]` crate carries a cfg this crate never declares as a
+            // Cargo feature, so the arm is dropped entirely instead -- mirroring
+            // `codegen::conversions::enums::emit_cfg_gated_arm`. The `_ => None` fallback
+            // already covers the dropped case. ~keep
+            let keep_arm = match variant.cfg.as_deref() {
+                None => true,
+                Some(_) if is_host_enum => true,
+                Some(cfg) => {
+                    tracing::debug!(
+                        enum_name = %enum_def.name,
+                        enum_rust_path = %enum_def.rust_path,
+                        variant_name = %variant.name,
+                        cfg = cfg,
+                        "dropping pyo3 variant-accessor match arm for a foreign-crate variant \
+                         behind a #[cfg(...)] this crate cannot declare as a Cargo feature; \
+                         the variant is unreachable from this accessor"
+                    );
+                    false
+                }
+            };
+            if keep_arm {
                 out.push_str(&crate::codegen::template_env::render(
-                    "generators/enums/getter_accessor.jinja",
+                    "generators/enums/match_variant.jinja",
                     minijinja::context! {
-                        fn_name => &fn_name,
-                        inner_type_name => inner_type_name,
+                        core_path => &core_path,
+                        variant_pascal => variant_pascal,
+                        clone_expr => &clone_expr,
+                        cfg => variant.cfg.as_deref(),
                     },
                 ));
-                out.push_str("        match &self.inner {\n");
-                // A cfg-gated variant's match arm must not reference `core_path::Variant`
-                // unconditionally: a host-owned cfg is safe to re-emit verbatim (the crate's own
-                // `[features]` table forwards it), but a variant merged in from a foreign
-                // `[[crates.source_crates]]` crate carries a cfg this crate never declares as a
-                // Cargo feature, so the arm is dropped entirely instead -- mirroring
-                // `codegen::conversions::enums::emit_cfg_gated_arm`. The `_ => None` fallback
-                // already covers the dropped case. ~keep
-                let keep_arm = match variant.cfg.as_deref() {
-                    None => true,
-                    Some(_) if is_host_enum => true,
-                    Some(cfg) => {
-                        tracing::debug!(
-                            enum_name = %enum_def.name,
-                            enum_rust_path = %enum_def.rust_path,
-                            variant_name = %variant.name,
-                            cfg = cfg,
-                            "dropping pyo3 variant-accessor match arm for a foreign-crate variant \
-                             behind a #[cfg(...)] this crate cannot declare as a Cargo feature; \
-                             the variant is unreachable from this accessor"
-                        );
-                        false
-                    }
-                };
-                if keep_arm {
-                    out.push_str(&crate::codegen::template_env::render(
-                        "generators/enums/match_variant.jinja",
-                        minijinja::context! {
-                            core_path => &core_path,
-                            variant_pascal => variant_pascal,
-                            clone_expr => &clone_expr,
-                            cfg => variant.cfg.as_deref(),
-                        },
-                    ));
-                }
-                out.push_str("            _ => None,\n");
-                out.push_str("        }\n");
-                out.push_str("    }\n");
-                continue;
             }
+            out.push_str("            _ => None,\n");
+            out.push_str("        }\n");
+            out.push_str("    }\n");
+            continue;
         }
 
         out.push('\n');

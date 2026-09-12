@@ -3,7 +3,7 @@ use crate::e2e::codegen::assertion_type_skip::{
     streaming_assertion_type_skip_line, streaming_assertion_value_skip_line,
 };
 use crate::e2e::codegen::field_skip::{FieldSkip, nested_wildcard_skip_line};
-use crate::e2e::field_access::is_format_metadata_variant_segment;
+use crate::e2e::field_access::push_owner_segment;
 
 mod chunks_synthetic;
 
@@ -23,20 +23,34 @@ enum Unwrap {
 const WILDCARD_MISSING_FIELD_ERROR: &str = "error.WildcardElementFieldMissing";
 
 fn json_path_expr(result_var: &str, field_path: &str, field_resolver: &FieldResolver) -> String {
-    json_path_expr_with(result_var, field_path, Unwrap::Panic, field_resolver)
+    json_path_expr_with(result_var, "", field_path, Unwrap::Panic, field_resolver)
 }
 
-fn json_path_expr_with(result_var: &str, field_path: &str, unwrap: Unwrap, field_resolver: &FieldResolver) -> String {
+/// `anchor_prefix` is the dotted path, from the call's declared result type, of whatever
+/// `result_var` already stands for — empty when `result_var` IS the call's result.
+///
+/// ~keep A wildcard element sub-path starts mid-tree (`_wce` is one element of `array_root`),
+/// and the IR walk deciding whether a segment names a serde variant rather than a JSON key can
+/// only anchor on the full path. Without the prefix that walk answers "unknown" for every
+/// wildcard element, which renders as a literal key lookup that can never match.
+fn json_path_expr_with(
+    result_var: &str,
+    anchor_prefix: &str,
+    field_path: &str,
+    unwrap: Unwrap,
+    field_resolver: &FieldResolver,
+) -> String {
     let segments: Vec<&str> = field_path.split('.').collect();
     let mut expr = result_var.to_string();
-    let mut prev_seg: Option<&str> = None;
+    let mut owner_path = anchor_prefix.to_string();
     for seg in &segments {
-        // Skip variant-name accessor segments that follow a `format` key.
-        // FormatMetadata is an internally-tagged enum (`#[serde(tag = "format_type")]`),
-        // so variant fields are flattened directly into the format object — there is no
-        // intermediate JSON key for the variant name.
-        if is_format_metadata_variant_segment(prev_seg, seg) {
-            prev_seg = Some(seg);
+        let bare = seg.split('[').next().unwrap_or(seg);
+        // Skip a segment naming a variant of an internally-tagged enum: serde flattens such a
+        // variant's fields beside the discriminator, so no JSON key for the variant name
+        // exists to look up. Answered from the consumer's IR — see
+        // `FieldResolver::is_internally_tagged_variant_segment`. ~keep
+        if field_resolver.is_internally_tagged_variant_segment(&owner_path, bare) {
+            push_owner_segment(&mut owner_path, bare);
             continue;
         }
         // Handle array accessor notation:
@@ -55,7 +69,7 @@ fn json_path_expr_with(result_var: &str, field_path: &str, unwrap: Unwrap, field
                 let idx = &seg[bracket_pos + 1..end_pos];
                 if idx.chars().all(|c| c.is_ascii_digit()) {
                     expr = format!("{}.array.items[{idx}]", json_get(&expr, key, unwrap, field_resolver));
-                    prev_seg = Some(seg);
+                    push_owner_segment(&mut owner_path, bare);
                     continue;
                 }
                 // Non-numeric bracket: HashMap<String, _> key access. FRB / serde
@@ -69,14 +83,14 @@ fn json_path_expr_with(result_var: &str, field_path: &str, unwrap: Unwrap, field
                     unwrap,
                     field_resolver,
                 );
-                prev_seg = Some(seg);
+                push_owner_segment(&mut owner_path, bare);
                 continue;
             }
             expr = json_get(&expr, seg, unwrap, field_resolver);
         } else {
             expr = json_get(&expr, seg, unwrap, field_resolver);
         }
-        prev_seg = Some(seg);
+        push_owner_segment(&mut owner_path, bare);
     }
     expr
 }
@@ -148,7 +162,9 @@ fn render_wildcard_json_assertion(
         return;
     }
 
-    let element_expr = json_path_expr_with("_wce", element_sub_path, Unwrap::Error, field_resolver);
+    // `_wce` is one element of `array_root`, so the element sub-path's IR anchor is that
+    // array's own path — see `json_path_expr_with`. ~keep
+    let element_expr = json_path_expr_with("_wce", array_root, element_sub_path, Unwrap::Error, field_resolver);
     // Wildcard loop elements are `Vec<T>` items, not the `Option<T>` field itself, so the
     // per-element assertion has no leaf-optionality of its own to consult here.
     let body = render_json_assertion_template(assertion, &element_expr, is_length_access, false);

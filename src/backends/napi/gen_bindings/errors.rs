@@ -355,7 +355,7 @@ pub(super) fn gen_dts(
                     }
                     lines.push("};".to_string());
                 } else if is_data_enum && e.variants.iter().any(|v| !v.fields.is_empty()) {
-                    lines.extend(internal_tagged_union_dts_lines(e, ts_name));
+                    lines.extend(internal_tagged_union_dts_lines(e, ts_name, &api.types));
                 } else if is_data_enum {
                     // Internal tagging, every variant a unit variant: `{"kind":"A"}` carries no
                     // payload fields to differentiate, so a single object with a union-valued tag
@@ -647,21 +647,24 @@ pub(super) fn dts_type(ty: &TypeRef) -> String {
 /// data-bearing variant: each variant serializes to its own flat object on the wire —
 /// `{"type":"basic","username":"...","password":"..."}` — with no other keys present, so a
 /// discriminated union of per-variant shapes matches the wire format exactly and gives callers
-/// real narrowing plus required fields. The compiled napi struct behind this still stores every
-/// variant's fields as one flattened `Option<T>` bag (`gen_tagged_enum_as_object`), but a
-/// constructed instance only ever populates its own variant's fields, so the union type is a
-/// faithful (if narrower) view of what a caller actually receives — the same relationship the
-/// adjacent-tagging branch relies on. Field naming reuses `tagged_enum_field_js_name` so a
-/// newtype variant's synthetic `_0` field still gets its variant-derived name, not a bare `0` —
-/// e.g. `Message::User(UserMessage)` renders as `{ role: 'user'; user: UserMessage }`, not a
-/// flattened `{ role: 'user'; content: string }`.
+/// real narrowing plus required fields.
+///
+/// A single-tuple field whose type is a Named struct (e.g. `FormatMetadata::Excel(ExcelMetadata)`)
+/// is the one shape that needs care: serde's internal tagging flattens THAT struct's own fields
+/// onto the wire object as siblings of the tag — never `{"type":"excel","excel":{...}}` — so this
+/// declares the SAME flattened member `enums::gen_tagged_enum_as_object`'s runtime struct now
+/// produces, via `enums::tagged_enum_flattened_newtype`/`tagged_enum_effective_fields`. Only an
+/// unresolvable reference (`types` doesn't contain the wrapped struct) falls back to the old
+/// nested `{ role: 'user'; user: UserMessage }` member. Field naming reuses
+/// `tagged_enum_field_js_name` so an ordinary (non-flattened) newtype variant's synthetic `_0`
+/// field still gets its variant-derived name, not a bare `0`.
 ///
 /// Exposed at `pub(crate)` (re-exported from `backends::napi`) so the TypeScript e2e snippet
 /// generator can typecheck a generated snippet's object literal against the exact union this
 /// function produces, rather than against a hand-guessed copy of it — see
 /// `e2e::codegen::typescript::test_file::builders`'s `node_tagged_enum_*` cross-generator
 /// tests. ~keep
-pub(crate) fn internal_tagged_union_dts_lines(e: &EnumDef, ts_name: &str) -> Vec<String> {
+pub(crate) fn internal_tagged_union_dts_lines(e: &EnumDef, ts_name: &str, types: &[TypeDef]) -> Vec<String> {
     let tag_field = crate::codegen::serde_enum_repr::tagged_object_tag_key(e);
     let mut lines = vec![format!("export type {ts_name} =")];
     for variant in &e.variants {
@@ -671,7 +674,8 @@ pub(crate) fn internal_tagged_union_dts_lines(e: &EnumDef, ts_name: &str) -> Vec
             e.serde_rename_all.as_deref(),
         );
         let mut obj_fields: Vec<String> = vec![format!("{tag_field}: '{tag_value}'")];
-        for field in &variant.fields {
+        let fields = enums::tagged_enum_effective_fields(e, variant, types);
+        for field in fields {
             let js_name = enums::tagged_enum_field_js_name(variant, field);
             let ts_ty = dts_type(&field.ty);
             if matches!(field.ty, TypeRef::Optional(_)) {

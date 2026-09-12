@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An externally tagged newtype variant is no longer flattened.** `tagged_enum_flattened_newtype`
+  gated only on `serde_content.is_none()`, which excludes adjacent tagging but is equally true of
+  serde's *default* external tagging -- so every externally tagged single-tuple variant had its
+  payload merged onto the discriminator object, when serde keys it under the variant name
+  (`{"type":"wrapped","wrapped":{...}}`). The function's own doc comment already said "only applies
+  to internal tagging"; the code did not implement it. It now asks
+  `serde_enum_repr` for `SerdeEnumRepr::Internal`, the same predicate the shared
+  `serde_flattens_newtype_payload` uses, so the four representations cannot drift apart per backend.
+  Affects the napi backend and every e2e generator that resolves field access through it.
+
+- **A Ruby adjacently tagged newtype variant deserialised to `nil`.** `from_hash` read `hash[:_0]`,
+  an alef-internal positional name that appears on no wire. The magnus extension serialises through
+  `serde_json::to_value`, so the hash it hands Ruby carries serde's keys -- for
+  `#[serde(tag = "kind", content = "text")]` that is `text`. Every variant of such an enum returned
+  `value: nil`. In xberg this is `DiffLine`, i.e. all three variants of every diff line. The
+  generator now reads the enum's declared `content` key, and keeps `_0` only for the
+  representations that genuinely write no key of their own.
+
+- **An internally tagged newtype payload no longer renders as `_0` in generated docs.** The shared
+  (`types.md`, `configuration.md`) and per-language (`api-{lang}.md`) pages both printed the IR's
+  synthesized positional field name, advertising a key no wire or binding emits. A new
+  `docs::enum_payload_fields` resolves the real field names once for both call sites, from
+  `serde_enum_repr`: internal tagging renders the payload type's own fields, adjacent tagging
+  renders the content key, and external/untagged keep the positional name because serde writes no
+  better one.
+
+- **The generated e2e `FormatMetadata` display helper read the pre-flatten shape.** It looked for
+  `record.image`, which internal tagging never emits, and silently fell back to returning the
+  variant name instead of the format. It now reads the flattened field directly, deliberately with
+  no nested fallback so a binding that regresses fails the assertion loudly.
+
+
 ## [0.85.21] - 2026-09-12
 
 ### Fixed

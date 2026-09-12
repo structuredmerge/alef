@@ -1,0 +1,2 @@
+      payload = hash.reject { |key, _| key.to_s == "{{ tag_field }}" }.transform_keys(&:to_sym)
+      new({{ attr_name }}: {{ payload_expr }})

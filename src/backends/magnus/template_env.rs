@@ -278,6 +278,10 @@ static TEMPLATES: &[(&str, &str)] = &[
         include_str!("templates/tagged_enum_variant_class.rb.jinja"),
     ),
     (
+        "tagged_enum_flattened_from_hash.rb.jinja",
+        include_str!("templates/tagged_enum_flattened_from_hash.rb.jinja"),
+    ),
+    (
         "tagged_enum_variant_doc.rb.jinja",
         include_str!("templates/tagged_enum_variant_doc.rb.jinja"),
     ),

@@ -100,6 +100,7 @@ impl FieldResolver {
             ir_enum_map: IrEnumMap::default(),
             wasm_untagged_enum_names: HashSet::new(),
             napi_tagged_object_enums: HashMap::new(),
+            napi_flattened_newtype_variants: HashMap::new(),
             java_wrapper_enum_names: HashSet::new(),
             ruby_hash_serialized_enum_names: HashSet::new(),
             ir_collection_map: IrCollectionMap::default(),
@@ -144,6 +145,7 @@ impl FieldResolver {
             ir_enum_map: IrEnumMap::default(),
             wasm_untagged_enum_names: HashSet::new(),
             napi_tagged_object_enums: HashMap::new(),
+            napi_flattened_newtype_variants: HashMap::new(),
             java_wrapper_enum_names: HashSet::new(),
             ruby_hash_serialized_enum_names: HashSet::new(),
             ir_collection_map: IrCollectionMap::default(),
@@ -198,6 +200,7 @@ impl FieldResolver {
             ir_enum_map: IrEnumMap::default(),
             wasm_untagged_enum_names: HashSet::new(),
             napi_tagged_object_enums: HashMap::new(),
+            napi_flattened_newtype_variants: HashMap::new(),
             java_wrapper_enum_names: HashSet::new(),
             ruby_hash_serialized_enum_names: HashSet::new(),
             ir_collection_map: IrCollectionMap::default(),
@@ -258,6 +261,7 @@ impl FieldResolver {
             ir_enum_map: IrEnumMap::default(),
             wasm_untagged_enum_names: HashSet::new(),
             napi_tagged_object_enums: HashMap::new(),
+            napi_flattened_newtype_variants: HashMap::new(),
             java_wrapper_enum_names: HashSet::new(),
             ruby_hash_serialized_enum_names: HashSet::new(),
             ir_collection_map: IrCollectionMap::default(),
@@ -302,6 +306,7 @@ impl FieldResolver {
             ir_enum_map: IrEnumMap::default(),
             wasm_untagged_enum_names: HashSet::new(),
             napi_tagged_object_enums: HashMap::new(),
+            napi_flattened_newtype_variants: HashMap::new(),
             java_wrapper_enum_names: HashSet::new(),
             ruby_hash_serialized_enum_names: HashSet::new(),
             ir_collection_map: IrCollectionMap::default(),
@@ -392,6 +397,38 @@ impl FieldResolver {
                     tagged_enum_discriminant_js_name(enum_def).to_string(),
                 )
             })
+            .collect();
+        self
+    }
+
+    /// Attach, per internally-tagged enum, the variant names napi actually flattens onto the
+    /// tag-bearing object rather than nesting under a synthesized per-variant field. Node/TS
+    /// e2e codegen is the only caller; every other backend's resolver leaves this empty. Reads
+    /// `backends::napi::tagged_enum_flattened_newtype` directly -- the same resolution-aware
+    /// predicate `gen_tagged_enum_as_object` and `internal_tagged_union_dts_lines` flatten on --
+    /// so a `(type resolves in `type_defs`)` disagreement between this and the real binding is
+    /// structurally impossible rather than merely unlikely. See
+    /// `napi_flattened_newtype_variants`'s field doc for why the structural
+    /// `serde_flattens_newtype_payload` predicate `variant_payload_tuple` uses is the wrong one
+    /// to read here.
+    pub(crate) fn with_napi_flattened_newtype_variants(
+        mut self,
+        enums: &[crate::core::ir::EnumDef],
+        type_defs: &[crate::core::ir::TypeDef],
+    ) -> Self {
+        use crate::backends::napi::tagged_enum_flattened_newtype;
+        self.napi_flattened_newtype_variants = enums
+            .iter()
+            .map(|enum_def| {
+                let flattened: HashSet<String> = enum_def
+                    .variants
+                    .iter()
+                    .filter(|variant| tagged_enum_flattened_newtype(enum_def, variant, type_defs).is_some())
+                    .map(|variant| variant.name.clone())
+                    .collect();
+                (enum_def.name.clone(), flattened)
+            })
+            .filter(|(_, variants)| !variants.is_empty())
             .collect();
         self
     }

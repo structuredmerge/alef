@@ -738,9 +738,14 @@ mod tests {
     fn tagged_union_field_is_navigable_end_to_end_from_real_ir() {
         use crate::e2e::field_access::{FieldResolver, JsonNavStep};
 
+        // Internally tagged (`#[serde(tag = "format_type")]`), matching the real
+        // `FormatMetadata` this fixture shape is drawn from -- required for
+        // `FieldResolver::is_internally_tagged_variant_segment` to recognise `excel` as a wire
+        // variant rather than a JSON key. ~keep
         let format_metadata_enum = crate::core::ir::EnumDef {
             name: "FormatMetadata".to_string(),
             has_serde: true,
+            serde_tag: Some("format_type".to_string()),
             variants: vec![named_enum_variant(
                 "Excel",
                 vec![named_field("excel", TypeRef::Named("ExcelMetadata".to_string()), false)],
@@ -764,13 +769,10 @@ mod tests {
             has_serde: true,
             ..Default::default()
         };
+        let type_defs = [extracted_document, metadata];
+        let enums = [format_metadata_enum];
 
-        let mut map = build_swift_first_class_map(
-            &[extracted_document, metadata],
-            &[format_metadata_enum],
-            &E2eConfig::default(),
-            &CallConfig::default(),
-        );
+        let mut map = build_swift_first_class_map(&type_defs, &enums, &E2eConfig::default(), &CallConfig::default());
         map.root_type = Some("ExtractedDocument".to_string());
 
         let resolver = FieldResolver::new_with_swift_first_class(
@@ -781,6 +783,13 @@ mod tests {
             &HashSet::new(),
             &HashMap::new(),
             map,
+        )
+        // The internally-tagged skip decision reads `ir_enum_map.tagged_enum_wire`, which
+        // `SwiftFirstClassMap` does not carry -- production wiring anchors it the same way in
+        // `presentation.rs`. ~keep
+        .with_ir_enum_map(
+            FieldResolver::ir_enum_fields(&type_defs, &enums),
+            Some("ExtractedDocument".to_string()),
         );
 
         let (leaf_field, steps) = resolver
@@ -790,7 +799,8 @@ mod tests {
         assert_eq!(leaf_field, "metadata.format");
         // `FormatMetadata` is internally tagged, so `excel` names a variant, not a JSON key --
         // there is no `"excel"` key on the wire to look up. See
-        // `field_access::format_metadata_variants` for the shared skip list.
+        // `FieldResolver::is_internally_tagged_variant_segment`, which derives this from the
+        // IR rather than a hardcoded consumer-specific variant list.
         assert_eq!(steps, vec![JsonNavStep::Key("sheet_count".to_string())]);
     }
 }

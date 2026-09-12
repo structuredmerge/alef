@@ -8,7 +8,11 @@ impl From<{{ core_path }}> for {{ binding_name }} {
     {%- if variant.is_empty %}
             {{ core_path }}::{{ variant.name }} => Self { {{ tag_field }}_tag: "{{ variant.tag_value }}".to_string(), {{ variant.all_fields_none | join(", ") }} },
     {%- elif variant.is_tuple %}
+        {%- if variant.destructure_let %}
+            {{ core_path }}::{{ variant.name }}({{ variant.destructured | join(", ") }}) => { {{ variant.destructure_let }} Self { {{ tag_field }}_tag: "{{ variant.tag_value }}".to_string(), {{ variant.field_inits | join(", ") }} } },
+        {%- else %}
             {{ core_path }}::{{ variant.name }}({{ variant.destructured | join(", ") }}) => Self { {{ tag_field }}_tag: "{{ variant.tag_value }}".to_string(), {{ variant.field_inits | join(", ") }} },
+        {%- endif %}
     {%- else %}
             {{ core_path }}::{{ variant.name }} { {{ variant.destructured | join(", ") }} } => Self { {{ tag_field }}_tag: "{{ variant.tag_value }}".to_string(), {{ variant.field_inits | join(", ") }} },
     {%- endif %}

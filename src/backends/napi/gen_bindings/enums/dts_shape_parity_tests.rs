@@ -55,7 +55,7 @@ fn sample_kind_enum() -> EnumDef {
 #[test]
 fn runtime_struct_is_tagged_object_for_default_tagged_data_enum() {
     let enum_def = sample_kind_enum();
-    let runtime = gen_enum(&enum_def, "Js", false, "test_core", None);
+    let runtime = gen_enum(&enum_def, "Js", false, "test_core", None, &[]);
 
     let expected = "\
 #[derive(Clone)]
@@ -119,7 +119,7 @@ fn dts_declaration_is_discriminated_union_for_default_tagged_data_enum() {
 fn dts_and_runtime_agree_on_discriminant_and_payload_field_names() {
     let enum_def = sample_kind_enum();
 
-    let runtime = gen_enum(&enum_def, "Js", false, "test_core", None);
+    let runtime = gen_enum(&enum_def, "Js", false, "test_core", None, &[]);
     let runtime_tag_line = runtime
         .lines()
         .find(|l| l.trim_start().starts_with("#[napi(js_name ="))

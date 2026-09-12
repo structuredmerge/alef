@@ -2,7 +2,7 @@ use super::{
     SHADOWABLE_BUILTIN_TYPES, pyi_docstring, python_safe_name, qualify_parameter_type, qualify_shadowed_builtin_types,
 };
 use crate::backends::pyo3::type_map::python_type;
-use crate::core::ir::{EnumDef, EnumVariant, TypeRef};
+use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeDef, TypeRef};
 use ahash::AHashSet;
 
 /// Map a data-enum factory-constructor param type to its stub annotation, widening dataclass-backed
@@ -33,17 +33,23 @@ fn to_python_enum_variant(name: &str) -> String {
 }
 
 /// Generate a Python enum stub.
+///
+/// `api_types` is the surface's `TypeDef` list: a variant whose payload serde flattens into the
+/// tag object contributes that payload type's OWN fields to the wire dict, and they can only be
+/// resolved from there (the variant itself holds one synthetic `_0` field, not the payload's
+/// keys). ~keep
 pub(super) fn gen_enum_stub(
     enum_def: &EnumDef,
     emit_docstrings: bool,
     coercible_dtos: &AHashSet<&str>,
     is_host_enum: bool,
+    api_types: &[TypeDef],
 ) -> String {
     use crate::codegen::generators::enum_has_data_variants;
     let mut lines = vec![];
 
     if enum_has_data_variants(enum_def) {
-        gen_data_enum_typeddicts(&mut lines, enum_def, coercible_dtos, is_host_enum);
+        gen_data_enum_typeddicts(&mut lines, enum_def, coercible_dtos, is_host_enum, api_types);
     } else {
         lines.push(format!("class {}:", enum_def.name));
         if emit_docstrings && let Some(docstring) = pyi_docstring(&enum_def.doc, "    ") {
@@ -84,16 +90,39 @@ fn adjacent_payload_type(lines: &mut Vec<String>, enum_def: &EnumDef, variant: &
     let payload_class = format!("{}{}Payload", enum_def.name, variant.name);
     lines.push(format!("class {payload_class}(TypedDict):"));
     for field in &variant.fields {
-        let field_type = python_type(&field.ty);
-        let field_type = if field.optional && !field_type.contains("| None") {
-            format!("{field_type} | None")
-        } else {
-            field_type
-        };
-        lines.push(format!("    {}: {}", python_safe_name(&field.name), field_type));
+        lines.push(typed_dict_field_line(field));
     }
     lines.push(String::new());
     Some(payload_class)
+}
+
+/// One `    name: annotation` line of a TypedDict body, widening an optional field's annotation
+/// with `| None` unless [`python_type`] already spelled it.
+fn typed_dict_field_line(field: &FieldDef) -> String {
+    let field_type = python_type(&field.ty);
+    let field_type = if field.optional && !field_type.contains("| None") {
+        format!("{field_type} | None")
+    } else {
+        field_type
+    };
+    format!("    {}: {}", python_safe_name(&field.name), field_type)
+}
+
+/// The fields a variant serde FLATTENS contributes to the tag object — the payload type's own
+/// fields, looked up in the surface by the payload's declared name.
+///
+/// `None` means the payload's fields are not knowable here: a payload that is not a plain
+/// [`TypeRef::Named`], or a named type this binding's surface does not declare. The caller then
+/// emits the discriminator alone, which is incomplete but true, rather than the synthetic `_0`
+/// key serde never writes. ~keep
+fn flattened_payload_fields<'a>(variant: &EnumVariant, api_types: &'a [TypeDef]) -> Option<&'a [FieldDef]> {
+    let TypeRef::Named(payload_type) = &variant.fields.first()?.ty else {
+        return None;
+    };
+    api_types
+        .iter()
+        .find(|typ| &typ.name == payload_type)
+        .map(|typ| typ.fields.as_slice())
 }
 
 /// Generate TypedDicts for each variant of a data enum, plus a Union type alias.
@@ -102,6 +131,7 @@ fn gen_data_enum_typeddicts(
     enum_def: &EnumDef,
     coercible_dtos: &AHashSet<&str>,
     is_host_enum: bool,
+    api_types: &[TypeDef],
 ) {
     let repr = crate::codegen::serde_enum_repr::serde_enum_repr(enum_def);
     let tag_field = repr.tag().unwrap_or(DEFAULT_TAG_FIELD);
@@ -127,20 +157,27 @@ fn gen_data_enum_typeddicts(
 
         lines.push(format!("    {}: Literal[\"{}\"]", tag_field, tag_value));
 
-        match (repr.content(), payload_type_name) {
-            (Some(content_field), Some(payload_type)) => {
+        // A flattened newtype variant carries the PAYLOAD's fields beside the tag and no key of
+        // its own, so declaring the synthetic `_0` advertised a key no payload ever has. ~keep
+        let flattened_fields = crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant)
+            .then(|| flattened_payload_fields(variant, api_types).unwrap_or_default());
+
+        match (repr.content(), payload_type_name, flattened_fields) {
+            (Some(content_field), Some(payload_type), _) => {
                 lines.push(format!("    {content_field}: {payload_type}"));
             }
-            (Some(_), None) => {}
-            (None, _) => {
+            (Some(_), None, _) => {}
+            (None, _, Some(payload_fields)) => {
+                for field in payload_fields {
+                    if python_safe_name(&field.name) == tag_field {
+                        continue;
+                    }
+                    lines.push(typed_dict_field_line(field));
+                }
+            }
+            (None, _, None) => {
                 for field in &variant.fields {
-                    let field_type = python_type(&field.ty);
-                    let field_type = if field.optional && !field_type.contains("| None") {
-                        format!("{} | None", field_type)
-                    } else {
-                        field_type
-                    };
-                    lines.push(format!("    {}: {}", python_safe_name(&field.name), field_type));
+                    lines.push(typed_dict_field_line(field));
                 }
             }
         }
@@ -150,6 +187,7 @@ fn gen_data_enum_typeddicts(
 
     lines.push(format!("class {}:", enum_def.name));
     lines.push(format!("    {}: str", tag_field));
+    gen_data_enum_variant_accessor_stubs(lines, enum_def);
     gen_data_enum_variant_constructor_stubs(lines, enum_def, coercible_dtos, is_host_enum);
     // The runtime wrapper exposes a `#[new]` accepting a tag string, a `{"type": ...}` dict, or
     // serde-based `#[new]` is omitted and the type is return-only. Mirror that here so a converter
@@ -160,6 +198,40 @@ fn gen_data_enum_typeddicts(
     }
     lines.push("    def __str__(self) -> str: ...".to_string());
     lines.push("    def __repr__(self) -> str: ...".to_string());
+}
+
+/// Emit a bare-annotation stub property for each typed `#[getter]` the PyO3 binding exposes on a
+/// data enum's wrapper `#[pyclass]` -- `write_pyo3_variant_accessors`
+/// (`codegen::generators::enums`) emits one such getter per single-tuple-field variant whose
+/// payload is a `TypeRef::Named` type (e.g. `FormatMetadata::Excel(ExcelMetadata)` becomes
+/// `metadata.format.excel: ExcelMetadata | None`). `collect_variant_accessors` shares the exact
+/// eligibility rule with that emitter, so this can never declare a property the runtime pyclass
+/// lacks or omit one it has.
+///
+/// A dict-shaped variant (unit, multi-field tuple, struct, or non-`Named` payload) also gets a
+/// runtime `#[getter]` via `write_pyo3_variant_accessors`, but it returns an untyped
+/// `dict[str, Any] | None` the stub can't usefully narrow beyond what mypy already infers for an
+/// unannotated attribute, so — matching every other stub emitter in this module, which declares
+/// only the typed surface — it is left undeclared here.
+///
+/// Bare annotation (not `@property`) matches the precedent `gen_type_stub`
+/// (`backends::pyo3::gen_stubs::classes`) already sets for `#[pyo3(get)]` struct fields.
+///
+/// The runtime getter is unconditional per variant: `write_pyo3_variant_accessors` iterates every
+/// variant with no cfg filter on the loop itself, and only drops the match ARM inside a
+/// foreign-cfg-gated variant's getter body (falling back to `_ => None`), never the getter method.
+/// So, unlike `gen_data_enum_variant_constructor_stubs`'s `@staticmethod`s (which really can be
+/// absent under some cfg), this property is always present and needs no `is_host_enum` filter.
+fn gen_data_enum_variant_accessor_stubs(lines: &mut Vec<String>, enum_def: &EnumDef) {
+    use crate::codegen::generators::collect_variant_accessors;
+
+    for accessor in collect_variant_accessors(enum_def) {
+        lines.push(format!(
+            "    {}: {} | None",
+            accessor.py_name,
+            python_type(&TypeRef::Named(accessor.inner_type_name.to_string()))
+        ));
+    }
 }
 
 /// Emit a `@staticmethod` stub for each per-variant constructor the PyO3 binding exposes.

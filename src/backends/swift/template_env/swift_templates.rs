@@ -8,6 +8,10 @@ pub(super) static TEMPLATES: &[(&str, &str)] = &[
         include_str!("../templates/first_class_struct.swift.jinja"),
     ),
     (
+        "swift_json_value_type.swift.jinja",
+        include_str!("../templates/swift_json_value_type.swift.jinja"),
+    ),
+    (
         "swift_struct_property.swift.jinja",
         include_str!("../templates/swift_struct_property.swift.jinja"),
     ),

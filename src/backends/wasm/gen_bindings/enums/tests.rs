@@ -722,11 +722,20 @@ fn gen_tagged_enum_struct_variant_preserves_optional_fields() {
 /// `non_snake_case` lint under `RUSTFLAGS="-D warnings"`.  The generated Rust
 /// identifier must be `set_field_0` (getter: `field_0`) while the JS-visible
 /// name is controlled by `js_name` and remains unchanged.
+///
+/// Adjacently tagged, because an INTERNALLY tagged newtype variant no longer gets a positional
+/// accessor at all — serde flattens its payload, so the `"0"` key this test pins is one no wire
+/// form of that enum carries (see
+/// `should_not_emit_a_positional_js_accessor_for_a_flattened_newtype_variant`). Adjacent tagging
+/// keeps a real key for the payload, so it is where the naming rule still has something to name.
 #[test]
 fn gen_tagged_enum_as_struct_positional_field_setter_snake_case() {
     use super::gen_tagged_enum_as_struct;
 
-    let e = make_tagged_tuple_enum();
+    let e = EnumDef {
+        serde_content: Some("payload".to_string()),
+        ..make_tagged_tuple_enum()
+    };
     let result = gen_tagged_enum_as_struct(&e, "Wasm");
 
     assert!(
@@ -908,4 +917,146 @@ fn gen_tagged_enum_binding_to_core_uses_serde_for_mixed_named_field() {
         result.contains("meta: val.meta.clone().map(Into::into).unwrap_or_default()"),
         "a wrapper-typed field must still use Into::into;\nactual:\n{result}"
     );
+}
+
+/// Internal tagging merges a newtype variant's payload into the tag object, so the wire is
+/// `{"role":"user","content":"hi"}` — there is no `"0"` property for a JS caller to read or set.
+/// The struct field survives (both `From` impls read `val._0`); only the fabricated accessor goes.
+#[test]
+fn should_not_emit_a_positional_js_accessor_for_a_flattened_newtype_variant() {
+    use super::gen_tagged_enum_as_struct;
+
+    let result = gen_tagged_enum_as_struct(&make_tagged_tuple_enum(), "Wasm");
+
+    assert!(
+        !result.contains("js_name = \"0\""),
+        "serde writes no `0` key for a flattened newtype payload;\nactual:\n{result}"
+    );
+    assert!(
+        !result.contains("fn field_0(") && !result.contains("fn set_field_0("),
+        "no getter/setter may advertise the synthetic positional field;\nactual:\n{result}"
+    );
+    assert!(
+        result.contains("pub(crate) _0: Option<JsValue>,"),
+        "the struct field itself must stay — the From impls read it;\nactual:\n{result}"
+    );
+    assert!(
+        result.contains("js_name = \"role\""),
+        "the discriminator accessor is unaffected;\nactual:\n{result}"
+    );
+}
+
+/// The positional accessor is CORRECT wherever serde keeps a real key for the payload. Adjacent
+/// tagging is the in-tree case (`DiffLine`); external tagging is the other (`EntityCategory`).
+#[test]
+fn should_keep_the_positional_js_accessor_for_representations_serde_does_not_flatten() {
+    use super::gen_tagged_enum_as_struct;
+
+    let adjacent = EnumDef {
+        serde_content: Some("payload".to_string()),
+        ..make_tagged_tuple_enum()
+    };
+    let external = EnumDef {
+        serde_tag: None,
+        ..make_tagged_tuple_enum()
+    };
+
+    for (case, enum_def) in [("adjacent", adjacent), ("external", external)] {
+        let result = gen_tagged_enum_as_struct(&enum_def, "Wasm");
+        assert!(
+            result.contains("js_name = \"0\"") && result.contains("fn field_0("),
+            "{case} tagging keeps a real key for the payload;\nactual:\n{result}"
+        );
+    }
+}
+
+/// `make_tagged_tuple_enum` (internal tag, every variant a flattened newtype) has no honest
+/// field name for a discriminator struct to expose -- every variant's `_0` collapses onto one
+/// shared, unusable slot (see `mixed_type_fields`). It must route through the JsValue bridge
+/// (`is_json_passthrough_data_enum`), NOT the discriminator-struct emitter
+/// (`is_tagged_data_enum`).
+#[test]
+fn fully_flattened_internal_enum_is_json_passthrough_not_a_tagged_data_enum() {
+    let e = make_tagged_tuple_enum();
+    assert!(super::is_fully_flattened_internal_enum(&e));
+    assert!(
+        !super::is_tagged_data_enum(&e),
+        "a fully-flattened internal enum must not claim the discriminator-struct shape"
+    );
+    assert!(
+        super::is_json_passthrough_data_enum(&e),
+        "a fully-flattened internal enum must claim the no-nominal-type JsValue bridge"
+    );
+}
+
+/// Adjacent and external tagging never flatten a variant's payload beside the discriminator --
+/// the payload keeps a real key (`content`, or the variant name itself) -- so both must keep
+/// claiming the discriminator-struct shape, exactly as before this fix.
+#[test]
+fn adjacent_and_external_tagging_keep_the_tagged_data_enum_shape() {
+    let adjacent = EnumDef {
+        serde_content: Some("payload".to_string()),
+        ..make_tagged_tuple_enum()
+    };
+    let external = EnumDef {
+        serde_tag: None,
+        ..make_tagged_tuple_enum()
+    };
+
+    for (case, enum_def) in [("adjacent", adjacent), ("external", external)] {
+        assert!(
+            !super::is_fully_flattened_internal_enum(&enum_def),
+            "{case} tagging must not be classified as fully-flattened-internal"
+        );
+        assert!(
+            super::is_tagged_data_enum(&enum_def),
+            "{case} tagging must keep the discriminator-struct shape"
+        );
+        assert!(
+            !super::is_json_passthrough_data_enum(&enum_def),
+            "{case} tagging must not route through the JsValue bridge"
+        );
+    }
+}
+
+/// A MIXED enum -- one flattened newtype variant plus one struct-field variant with real field
+/// names -- must keep its nominal type: only the struct-field variant needs a real accessor, and
+/// `gen_tagged_enum_as_struct` already unions it in correctly (`flattened_only_field_names`).
+#[test]
+fn mixed_flattened_and_struct_variant_enum_keeps_the_tagged_data_enum_shape() {
+    let mut e = make_tagged_tuple_enum();
+    e.variants.push(EnumVariant {
+        name: "Tool".to_string(),
+        fields: vec![
+            FieldDef {
+                name: "name".to_string(),
+                ty: TypeRef::String,
+                ..Default::default()
+            },
+            FieldDef {
+                name: "arguments".to_string(),
+                ty: TypeRef::String,
+                ..Default::default()
+            },
+        ],
+        is_tuple: false,
+        ..Default::default()
+    });
+
+    assert!(!super::is_fully_flattened_internal_enum(&e));
+    assert!(
+        super::is_tagged_data_enum(&e),
+        "a mixed enum must keep the discriminator-struct shape"
+    );
+    assert!(!super::is_json_passthrough_data_enum(&e));
+}
+
+/// A unit-only enum has no data variant to flatten at all, and must be unaffected by either
+/// predicate -- it stays a plain `#[wasm_bindgen]` C-style enum.
+#[test]
+fn unit_only_enum_is_not_fully_flattened_internal() {
+    let e = make_enum("Status", &["Active", "Inactive"]);
+    assert!(!super::is_fully_flattened_internal_enum(&e));
+    assert!(!super::is_tagged_data_enum(&e));
+    assert!(!super::is_json_passthrough_data_enum(&e));
 }

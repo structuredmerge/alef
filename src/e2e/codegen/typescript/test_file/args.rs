@@ -672,12 +672,18 @@ mod tests {
     /// Regression for the E3 message-shape defect: an array-typed `json_object` arg (the real
     /// site of the 108 x TS2353 failures, e.g. `messages: Message[]`) used to skip the typed
     /// builder entirely and dump each element through `json_to_js_camel` — a pure key-casing
-    /// pass with no notion of a tagged-data enum's variant nesting. Each element must instead
-    /// go through `ts_builder_expression`, the same builder a single typed object uses, so an
-    /// array of `Message` gets the same `{ role: 'user', user: { content } }` nesting a lone
-    /// `Message` argument does.
+    /// pass with no notion of a tagged-data enum's variant nesting. Each element must instead go
+    /// through `ts_builder_expression`, the same builder a single typed object uses.
+    ///
+    /// Convention updated for the newtype-payload-flattening change
+    /// (`backends::napi::tagged_enum_flattened_newtype`): once `UserMessage` resolves in
+    /// `type_defs`, napi's wire shape flattens the payload's own fields beside the tag
+    /// (`{ role: 'user', content: '...' }`), and an array of `Message` must match that per
+    /// element rather than nest it under a synthesized `user` field. See
+    /// `node_array_of_tagged_enum_elements_nests_payload_when_type_unresolved` below for the
+    /// negative control covering the case that still nests.
     #[test]
-    fn node_array_of_tagged_enum_elements_nests_each_payload() {
+    fn node_array_of_tagged_enum_elements_flattens_each_payload_when_type_resolves() {
         let enums = [message_enum_def()];
         let type_defs = [user_message_type_def()];
         let fixture = fixture();
@@ -716,8 +722,59 @@ mod tests {
         );
 
         assert_eq!(
+            call_args, "[{ role: \"user\", content: \"Hello\" } as Message]",
+            "array element must flatten the payload beside the tag once the payload type resolves"
+        );
+    }
+
+    /// Negative control for the test above: when `UserMessage` does NOT resolve in `type_defs`
+    /// (the array-of-tagged-enum equivalent of napi's unresolvable-payload fallback in
+    /// `backends::napi::tagged_enum_flattened_newtype`), each element must keep nesting the
+    /// payload under its synthesized per-variant field — proving the flattening in the test
+    /// above is conditional on type resolution, not unconditional.
+    #[test]
+    fn node_array_of_tagged_enum_elements_nests_payload_when_type_unresolved() {
+        let enums = [message_enum_def()];
+        let type_defs: [TypeDef; 0] = [];
+        let fixture = fixture();
+        let input = serde_json::json!({ "messages": [{ "role": "user", "content": "Hello" }] });
+        let args = [ArgMapping {
+            name: "messages".into(),
+            field: "input.messages".into(),
+            arg_type: "json_object".into(),
+            optional: false,
+            owned: true,
+            element_type: Some("Message".into()),
+            go_type: None,
+            vec_inner_is_ref: false,
+            trait_name: None,
+        }];
+        let config = crate::core::config::ResolvedCrateConfig::default();
+
+        let (_setup_lines, call_args) = build_args_and_setup(
+            &input,
+            &args,
+            None,
+            &fixture,
+            &Default::default(),
+            "node",
+            &Default::default(),
+            &Default::default(),
+            None,
+            &type_defs,
+            &enums,
+            "",
+            &config,
+            true,
+            &mut Default::default(),
+            crate::e2e::codegen::call_ir::TargetParams::IrAbsent,
+            crate::e2e::codegen::call_ir::CallIr::default(),
+        );
+
+        assert_eq!(
             call_args, "[{ role: \"user\", user: { content: \"Hello\" } } as Message]",
-            "array element must nest the payload under the synthesized variant field, not flatten it"
+            "array element must nest the payload under the synthesized variant field when the \
+             payload type does not resolve"
         );
     }
 

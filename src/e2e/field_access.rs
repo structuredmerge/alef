@@ -4,7 +4,7 @@
 //! actual API struct paths (e.g., "metadata.document.title") and generates
 //! language-specific accessor expressions.
 
-mod format_metadata_variants;
+mod internally_tagged_variants;
 mod ir_collection;
 mod ir_enum;
 mod ir_result_fields;
@@ -17,7 +17,7 @@ mod renderers;
 mod resolver;
 mod types;
 
-pub(crate) use format_metadata_variants::is_format_metadata_variant_segment;
+pub(crate) use internally_tagged_variants::push_owner_segment;
 pub use leaf_anchor::LeafAnchor;
 pub(crate) use types::WasmEnumRepresentation;
 pub use types::{
@@ -100,3 +100,7 @@ mod is_array_ir_fallback_tests;
 #[cfg(test)]
 #[path = "field_access/byte_payload_result_tests.rs"]
 mod byte_payload_result_tests;
+
+#[cfg(test)]
+#[path = "field_access/internally_tagged_variant_tests.rs"]
+mod internally_tagged_variant_tests;

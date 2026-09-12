@@ -579,6 +579,17 @@ pub(in crate::backends::rustler::gen_bindings) fn gen_elixir_enum_module_with_kn
         // -- both are computed once, here, from the same function so the doc and the runtime
         // dispatch cannot disagree on the key name. ~keep
         let struct_type_discriminator = elixir_safe_atom(flat_data_enum_discriminator(enum_def));
+        // Whether `gen_rustler_flat_data_enum` (`gen_bindings/types.rs`) lowered this enum to the
+        // flat `NifStruct` -- one discriminator field plus one optional field per variant, each
+        // keyed by `pascal_to_snake(variant.name)`. When it did, that snake-cased variant name is
+        // the ONLY key the payload is ever reachable under, so the `@type` alias below must use
+        // it directly rather than guessing a name from the payload's own type (see
+        // `elixir_field_name_with_type`'s doc): that heuristic strips the variant name as a
+        // PREFIX of the type name (`Excel` + `ExcelMetadata` -> `metadata`), which is a real name
+        // for a `NifTaggedEnum` struct-variant field but not the flat struct's actual key, so it
+        // previously documented `metadata: Xberg.ExcelMetadata.t()` for a payload only reachable
+        // as `format.excel`. ~keep
+        let is_flat = is_flat_data_enum(enum_def);
         for variant in &declared_variants {
             let snake_name = crate::codegen::naming::pascal_to_snake(&variant.name);
             let variant_atom = format!(":{}", elixir_variant_atom(&variant.name));
@@ -626,8 +637,11 @@ pub(in crate::backends::rustler::gen_bindings) fn gen_elixir_enum_module_with_kn
                             _ => None,
                         };
 
-                        let field_name =
-                            elixir_field_name_with_type(&f.name, idx, type_name, &variant.name, variant.fields.len());
+                        let field_name = if is_flat {
+                            crate::codegen::naming::pascal_to_snake(&variant.name)
+                        } else {
+                            elixir_field_name_with_type(&f.name, idx, type_name, &variant.name, variant.fields.len())
+                        };
 
                         let field_type = if let TypeRef::Named(n) = &f.ty {
                             if known_types.contains(n) {

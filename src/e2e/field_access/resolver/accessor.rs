@@ -201,11 +201,25 @@ impl FieldResolver {
                 // re-deriving it. `None` when the enum carries no tag to test (declining, like
                 // the guard, rather than guessing a condition) -- unreachable in practice since
                 // this arm only runs for internally-tagged enums (see the doc comment above). ~keep
-                let js_field = crate::codegen::naming::to_node_name(&variant);
                 let wire = self.ir_enum_map.tagged_enum_wire.get(&union_type)?;
                 let wire_value = wire.variants.get(&variant)?;
                 let tag = &wire.tag;
-                let narrowed = format!("({container}.{tag} === \"{wire_value}\" ? {container}.{js_field} : undefined)");
+                // `napi_flattened_newtype_variants` mirrors `backends::napi::
+                // tagged_enum_flattened_newtype` exactly: when it resolves, the payload struct's
+                // own fields sit directly beside the tag on the wire and on the flattened
+                // `#[napi(object)]` struct -- there is no `{js_field}` member to read at all, the
+                // whole narrowed CONTAINER already is the payload. A bare `container.js_field`
+                // would name a member neither the runtime struct nor the `.d.ts` declares.
+                let is_flattened = self
+                    .napi_flattened_newtype_variants
+                    .get(&union_type)
+                    .is_some_and(|variants| variants.contains(&variant));
+                let narrowed = if is_flattened {
+                    format!("({container}.{tag} === \"{wire_value}\" ? {container} : undefined)")
+                } else {
+                    let js_field = crate::codegen::naming::to_node_name(&variant);
+                    format!("({container}.{tag} === \"{wire_value}\" ? {container}.{js_field} : undefined)")
+                };
                 if suffix.is_empty() {
                     return Some(narrowed);
                 }
@@ -273,17 +287,38 @@ impl FieldResolver {
             let last_segment = last_segment.split('[').next().unwrap_or(last_segment);
             crate::codegen::naming::to_node_name(last_segment)
         };
-        let js_field = crate::codegen::naming::to_node_name(&variant);
-        let expression = if suffix.is_empty() {
-            format!("{binding}.{js_field}")
+        // Same flattening test as `typescript_tagged_union_accessor`'s "node" arm -- see its
+        // comment. Once flattened, the payload's own fields sit directly on `binding`, so there
+        // is no synthesized `js_field` member between the narrowed binding and the suffix. ~keep
+        let is_flattened = self
+            .napi_flattened_newtype_variants
+            .get(&union_type)
+            .is_some_and(|variants| variants.contains(&variant));
+        let expression = if is_flattened {
+            if suffix.is_empty() {
+                binding.clone()
+            } else {
+                // `?.` from the first suffix segment on, not a plain `.`: unlike the non-flattened
+                // arm below, there is no guaranteed-present `js_field` hop to absorb the first
+                // dot -- the first suffix segment IS a payload field and can be `Option<T>` on
+                // its own, so it needs the same guarding as every segment after it. ~keep
+                let suffix_chain: Vec<String> = suffix.split('.').map(crate::codegen::naming::to_node_name).collect();
+                format!("{binding}?.{}", suffix_chain.join("?."))
+            }
         } else {
-            let suffix_chain: Vec<String> = suffix.split('.').map(crate::codegen::naming::to_node_name).collect();
-            // `?.` from here on, not a plain `.`, matching `typescript_tagged_union_accessor`'s
-            // own suffix rendering: `js_field` is a guaranteed-present key once the guard has
-            // narrowed the union, but a field further into the payload can still be its own
-            // `Option<T>` (`HtmlMetadata.title`), and a plain `.` chain into a SECOND such field
-            // would be the identical `TS2532`/`TS18048` this whole guard exists to avoid. ~keep
-            format!("{binding}.{js_field}?.{}", suffix_chain.join("?."))
+            let js_field = crate::codegen::naming::to_node_name(&variant);
+            if suffix.is_empty() {
+                format!("{binding}.{js_field}")
+            } else {
+                let suffix_chain: Vec<String> = suffix.split('.').map(crate::codegen::naming::to_node_name).collect();
+                // `?.` from here on, not a plain `.`, matching `typescript_tagged_union_accessor`'s
+                // own suffix rendering: `js_field` is a guaranteed-present key once the guard has
+                // narrowed the union, but a field further into the payload can still be its own
+                // `Option<T>` (`HtmlMetadata.title`), and a plain `.` chain into a SECOND such
+                // field would be the identical `TS2532`/`TS18048` this whole guard exists to
+                // avoid. ~keep
+                format!("{binding}.{js_field}?.{}", suffix_chain.join("?."))
+            }
         };
         let condition = format!("{binding}?.{tag} === \"{wire_value}\"");
         Some((binding, source, condition, expression))

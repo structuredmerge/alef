@@ -3,7 +3,8 @@
 //! swift-bridge JSON-bridged leaf, so the swift e2e backend can decode-and-navigate instead of
 //! refusing outright.
 
-use crate::e2e::field_access::{FieldResolver, JsonNavStep, SwiftFirstClassMap};
+use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeDef, TypeRef};
+use crate::e2e::field_access::{FieldResolver, IrEnumMap, JsonNavStep, SwiftFirstClassMap};
 use std::collections::{HashMap, HashSet};
 
 fn resolver_with_json_bridged_field(field_name: &str) -> FieldResolver {
@@ -20,6 +21,84 @@ fn resolver_with_json_bridged_field(field_name: &str) -> FieldResolver {
         &HashMap::new(),
         swift_first_class_map,
     )
+}
+
+fn ir_field(name: &str, ty: TypeRef) -> FieldDef {
+    FieldDef {
+        name: name.to_string(),
+        ty,
+        ..FieldDef::default()
+    }
+}
+
+fn ir_struct(name: &str, fields: Vec<FieldDef>) -> TypeDef {
+    TypeDef {
+        name: name.to_string(),
+        fields,
+        has_serde: true,
+        ..TypeDef::default()
+    }
+}
+
+/// The real `ExtractionResult -> ExtractedDocument -> Metadata -> FormatMetadata` chain, built
+/// through the production [`FieldResolver::ir_enum_fields`] so the tagged-enum wire facts come
+/// from the same code the generator runs rather than from a stub.
+///
+/// ~keep This IR is what makes the variant-segment skip fire at all: the verdict is derived
+/// from `FormatMetadata`'s `#[serde(tag = "format_type", rename_all = "snake_case")]`, not from
+/// a list of names, so a resolver with no IR wired in cannot know `excel` names a variant and
+/// correctly declines to skip it. Two tests below pin exactly that degradation.
+fn format_metadata_ir_enum_map() -> IrEnumMap {
+    let type_defs = vec![
+        ir_struct(
+            "ExtractionResult",
+            vec![ir_field(
+                "results",
+                TypeRef::Vec(Box::new(TypeRef::Named("ExtractedDocument".to_string()))),
+            )],
+        ),
+        ir_struct(
+            "ExtractedDocument",
+            vec![ir_field("metadata", TypeRef::Named("Metadata".to_string()))],
+        ),
+        ir_struct(
+            "Metadata",
+            vec![ir_field(
+                "format",
+                TypeRef::Optional(Box::new(TypeRef::Named("FormatMetadata".to_string()))),
+            )],
+        ),
+        ir_struct("ExcelMetadata", vec![ir_field("sheet_count", TypeRef::String)]),
+        ir_struct("HtmlMetadata", vec![ir_field("title", TypeRef::String)]),
+    ];
+    let enums = vec![EnumDef {
+        name: "FormatMetadata".to_string(),
+        has_serde: true,
+        serde_tag: Some("format_type".to_string()),
+        serde_rename_all: Some("snake_case".to_string()),
+        variants: vec![
+            newtype_variant("Excel", "ExcelMetadata"),
+            newtype_variant("Html", "HtmlMetadata"),
+        ],
+        ..EnumDef::default()
+    }];
+    FieldResolver::ir_enum_fields(&type_defs, &enums)
+}
+
+fn newtype_variant(name: &str, payload: &str) -> EnumVariant {
+    EnumVariant {
+        name: name.to_string(),
+        is_tuple: true,
+        fields: vec![ir_field("_0", TypeRef::Named(payload.to_string()))],
+        ..EnumVariant::default()
+    }
+}
+
+/// [`resolver_with_json_bridged_field`] plus the `FormatMetadata` IR, anchored at the call's
+/// declared result type — the wiring every real e2e call site performs via `with_ir_enum_map`.
+fn resolver_with_format_metadata_ir(field_name: &str) -> FieldResolver {
+    resolver_with_json_bridged_field(field_name)
+        .with_ir_enum_map(format_metadata_ir_enum_map(), Some("ExtractionResult".to_string()))
 }
 
 /// The exact shape from `fixtures/contract/language_detection_config.json`: an `equals` on a
@@ -56,11 +135,11 @@ fn dotted_key_after_the_bridged_leaf_yields_one_key_step() {
 /// `FormatMetadata`, an internally-tagged serde enum whose wire form flattens the variant's
 /// fields beside the `format_type` discriminator, so `html` is a typed-accessor variant
 /// segment, not a JSON key. `JSONSerialization` would look up a `"html"` key that does not
-/// exist. See `field_access::format_metadata_variants` for the full rationale; this is the
-/// bug documented in the "swift e2e JSON navigation" defect this test now covers correctly. ~keep
+/// exist. See `FieldResolver::is_internally_tagged_variant_segment` for the full rationale;
+/// this is the bug documented in the "swift e2e JSON navigation" defect. ~keep
 #[test]
 fn multiple_dotted_keys_chain_into_multiple_key_steps() {
-    let resolver = resolver_with_json_bridged_field("metadata");
+    let resolver = resolver_with_format_metadata_ir("metadata");
 
     let (leaf_field, steps) = resolver
         .swift_json_bridged_navigation("results[0].metadata.format.html.title")
@@ -76,15 +155,14 @@ fn multiple_dotted_keys_chain_into_multiple_key_steps() {
     );
 }
 
-/// CONTROL: a non-variant key that happens to follow `format` (i.e. `format` here is NOT the
-/// `FormatMetadata` field but an ordinary nested key on some other object) must still be kept
-/// as a real `Key` step -- the skip is anchored on the literal preceding segment being
-/// `"format"`, exactly as zig's reference implementation is, not on some broader "any enum
-/// variant name anywhere" rule. `revision` is not one of `FORMAT_METADATA_VARIANTS`, so it must
-/// survive even directly after a `format` segment.
+/// CONTROL: a key that follows `format` but is NOT one of `FormatMetadata`'s variants must
+/// still be kept as a real `Key` step. The skip is anchored on the preceding field's resolved
+/// TYPE and on that enum declaring this exact variant -- not on the preceding segment being
+/// spelled `format`, and not on some broader "any enum variant name anywhere" rule. `revision`
+/// is no variant of `FormatMetadata`, so it survives directly after a `format` segment.
 #[test]
 fn a_non_variant_key_after_format_is_still_kept() {
-    let resolver = resolver_with_json_bridged_field("metadata");
+    let resolver = resolver_with_format_metadata_ir("metadata");
 
     let (leaf_field, steps) = resolver
         .swift_json_bridged_navigation("results[0].metadata.format.revision")
@@ -106,7 +184,7 @@ fn a_non_variant_key_after_format_is_still_kept() {
 /// `"excel"` key on the wire at all.
 #[test]
 fn excel_variant_segment_is_skipped_not_turned_into_a_key_step() {
-    let resolver = resolver_with_json_bridged_field("metadata");
+    let resolver = resolver_with_format_metadata_ir("metadata");
 
     let (leaf_field, steps) = resolver
         .swift_json_bridged_navigation("results[0].metadata.format.excel.sheet_count")
@@ -130,7 +208,7 @@ fn excel_variant_segment_is_skipped_not_turned_into_a_key_step() {
 /// the two failing CI assertions this fix targets (`testMetadataAccess`).
 #[test]
 fn html_variant_segment_is_skipped_not_turned_into_a_key_step() {
-    let resolver = resolver_with_json_bridged_field("metadata");
+    let resolver = resolver_with_format_metadata_ir("metadata");
 
     let (leaf_field, steps) = resolver
         .swift_json_bridged_navigation("results[0].metadata.format.html.title")
@@ -255,6 +333,7 @@ fn resolver_anchored_on_extraction_result(root_type: Option<&str>) -> FieldResol
         &HashMap::new(),
         swift_first_class_map,
     )
+    .with_ir_enum_map(format_metadata_ir_enum_map(), root_type.map(str::to_string))
 }
 
 /// Regression for the flat-set poisoning: `metadata` is bridged on an unrelated type, so the
@@ -265,8 +344,8 @@ fn resolver_anchored_on_extraction_result(root_type: Option<&str>) -> FieldResol
 ///
 /// Here the bridge anchor IS `format` itself (unlike the other tests in this file, where it is
 /// `metadata`), so `excel` is the FIRST segment after the leaf and must still be recognized as
-/// a variant name -- the skip is keyed on the literal preceding segment being `"format"`,
-/// which this shape supplies via the leaf's own name rather than via an earlier `Key` step.
+/// a variant name -- the IR anchor for the skip comes from the leaf's own path rather than
+/// from an earlier `Key` step.
 #[test]
 fn should_anchor_json_bridge_on_owner_type_not_bare_field_name() {
     let resolver = resolver_anchored_on_extraction_result(Some("ExtractionResult"));
@@ -281,8 +360,18 @@ fn should_anchor_json_bridge_on_owner_type_not_bare_field_name() {
 
 /// CONTROL, pinning the documented fallback: with no `root_type` anywhere the per-segment
 /// cursor can never anchor, so every segment falls back to the flat, name-keyed
-/// `json_bridged_field_names` set exactly as before this fix — the walk stops at the bare
+/// `json_bridged_field_names` set exactly as before that fix — the walk stops at the bare
 /// `metadata` segment even though the type-aware map (unreachable here) says otherwise.
+///
+/// ~keep The variant-segment skip degrades in lockstep, and deliberately so: it is derived by
+/// walking the IR from the call's declared result type, so with no anchor there is no evidence
+/// that `excel` names a `FormatMetadata` variant rather than a real JSON key, and it stays a
+/// `Key` step. The superseded hard-coded list answered `true` here on the strength of the
+/// literal names `format` and `excel` alone — an answer that was right for one consumer and
+/// wrong for any other crate whose `format` field is an ordinary nested object. Every real e2e
+/// call site anchors the map (`zig/test_file.rs`, `swift/test_method.rs` both call
+/// `with_ir_enum_map` with `resolve_declared_result_type`), so this shape is the
+/// no-IR-wired-in fallback, not the generated-output path.
 #[test]
 fn should_fall_back_to_the_flat_set_when_the_cursor_cannot_be_anchored() {
     let resolver = resolver_anchored_on_extraction_result(None);
@@ -296,6 +385,7 @@ fn should_fall_back_to_the_flat_set_when_the_cursor_cannot_be_anchored() {
         steps,
         vec![
             JsonNavStep::Key("format".to_string()),
+            JsonNavStep::Key("excel".to_string()),
             JsonNavStep::Key("sheet_count".to_string()),
         ]
     );

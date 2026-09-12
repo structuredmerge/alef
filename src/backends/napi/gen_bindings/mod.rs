@@ -389,6 +389,7 @@ impl Backend for NapiBackend {
                 has_serde,
                 &core_import,
                 Some(&configured_features_set),
+                &api.types,
             ));
         }
 
@@ -576,6 +577,7 @@ impl Backend for NapiBackend {
                     &core_import,
                     &prefix,
                     &struct_names,
+                    &api.types,
                 ));
                 builder.add_item(&methods::gen_tagged_enum_core_to_binding(
                     e,
@@ -583,6 +585,7 @@ impl Backend for NapiBackend {
                     &prefix,
                     &struct_names,
                     Some(enabled_features.as_slice()),
+                    &api.types,
                 ));
             } else if is_json_passthrough_data_enum {
                 let binding_name = format!("{prefix}{}", e.name);

@@ -8,6 +8,7 @@ use super::descriptions::{
     generate_enum_variant_description, generate_error_variant_description, generate_field_description,
 };
 use super::doc_cleaning::{clean_doc_inline, demote_headings_to_start_at};
+use super::enum_payload_fields::variant_field_descriptions;
 use super::formatting::{doc_type_with_optional, escape_table_cell, format_field_default};
 use super::sorting::is_update_type;
 use super::{clean_doc, template_env, version_labels};
@@ -125,7 +126,7 @@ pub(super) fn generate_configuration_doc(
     if !referenced_enums.is_empty() {
         out.push_str("### Enums\n\n");
         for en in &referenced_enums {
-            out.push_str(&render_enum_for_shared_doc(en, Language::Python));
+            out.push_str(&render_enum_for_shared_doc(en, Language::Python, api));
             out.push_str("\n---\n\n");
         }
     }
@@ -266,7 +267,7 @@ pub(super) fn generate_types_doc(
 
         out.push_str("### Enums\n\n");
         for en in &sorted_enums {
-            out.push_str(&render_enum_for_shared_doc(en, Language::Rust));
+            out.push_str(&render_enum_for_shared_doc(en, Language::Rust, api));
             out.push_str("\n---\n\n");
         }
     }
@@ -282,7 +283,7 @@ pub(super) fn generate_types_doc(
 ///
 /// Uses Rust-canonical variant names and type representations, matching the
 /// style used by `generate_types_doc` and `generate_configuration_doc`.
-pub(super) fn render_enum_for_shared_doc(en: &EnumDef, lang: Language) -> String {
+pub(super) fn render_enum_for_shared_doc(en: &EnumDef, lang: Language, api: &ApiSurface) -> String {
     let mut out = String::new();
 
     out.push_str(&template_env::render(
@@ -343,14 +344,15 @@ pub(super) fn render_enum_for_shared_doc(en: &EnumDef, lang: Language) -> String
         };
         let variant_fields: Vec<_> = binding_fields(&variant.fields).collect();
         if !variant_fields.is_empty() {
-            let fields_desc: Vec<String> = variant_fields
-                .into_iter()
-                .map(|f| {
-                    let fty = format_type_ref_rust(&f.ty, false);
-                    format!("`{}`: `{}`", f.name, fty)
-                })
-                .collect();
-            vdoc = format!("{vdoc} — Fields: {}", fields_desc.join(", "));
+            let (fields_desc, fields_label) = variant_field_descriptions(
+                en,
+                variant,
+                &variant_fields,
+                api,
+                |name| name.to_string(),
+                |f| format_type_ref_rust(&f.ty, false),
+            );
+            vdoc = format!("{vdoc} — {fields_label}: {}", fields_desc.join(", "));
         }
         if has_wire_rename {
             let wire = crate::codegen::naming::wire_variant_value(

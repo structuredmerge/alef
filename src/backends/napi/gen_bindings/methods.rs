@@ -11,12 +11,12 @@ use crate::{
         },
         naming::wire_variant_value,
     },
-    core::ir::{EnumDef, EnumVariant, TypeRef},
+    core::ir::{EnumDef, EnumVariant, FieldDef, TypeDef, TypeRef},
 };
 
 use super::enums::{
     tagged_enum_binding_field_name, tagged_enum_binding_struct_fields, tagged_enum_field_is_tuple,
-    tagged_enum_mixed_named_fields, variant_data_field_names,
+    tagged_enum_flattened_newtype, tagged_enum_mixed_named_fields, variant_data_field_names,
 };
 use super::functions::{core_prim_str, needs_napi_cast};
 
@@ -101,20 +101,96 @@ fn napi_variant_cfg(enum_def: &EnumDef, variant: &EnumVariant, is_host_enum: boo
     Some(cfg.to_string())
 }
 
+/// Build the binding→core value expression for one field of a tagged-enum variant, whether that
+/// field is the variant's own (ordinary multi-field variant) or one flattened in from a wrapped
+/// struct's fields (single-tuple-Named variant, see `tagged_enum_flattened_newtype`). Reused by
+/// both call sites so the two shapes can never diverge on how a given field type converts.
+/// `binding_field_name` is the source expression's field on `val` (e.g. `val.sheet_count`);
+/// `has_binding`/`is_mixed` come from the enum-wide `tagged_enum_binding_struct_fields`/
+/// `tagged_enum_mixed_named_fields` lookups, keyed by the field's own name.
+fn binding_to_core_field_expr(
+    binding_field_name: &str,
+    field: &FieldDef,
+    has_binding: bool,
+    is_mixed: bool,
+    core_import: &str,
+) -> String {
+    if field.sanitized {
+        let expr = sanitized_binding_to_core_expr(binding_field_name, &field.ty, field.optional);
+        return if field.is_boxed {
+            format!("Box::new({expr})")
+        } else {
+            expr
+        };
+    }
+    if field.optional {
+        match &field.ty {
+            TypeRef::Path => format!("val.{binding_field_name}.map(std::path::PathBuf::from)"),
+            TypeRef::Named(n) if is_mixed => {
+                let core_type = format!("{core_import}::{n}");
+                format!("val.{binding_field_name}.and_then(|s| serde_json::from_str::<{core_type}>(&s).ok())")
+            }
+            TypeRef::Named(_) => format!("val.{binding_field_name}.map(|v| v.into())"),
+            TypeRef::Primitive(p) if needs_napi_cast(p) => {
+                let core_ty = core_prim_str(p);
+                format!("val.{binding_field_name}.map(|v| v as {core_ty})")
+            }
+            TypeRef::Vec(inner) if matches!(inner.as_ref(), TypeRef::Named(_)) => {
+                format!("val.{binding_field_name}.map(|v| v.into_iter().map(Into::into).collect())")
+            }
+            _ => format!("val.{binding_field_name}"),
+        }
+    } else {
+        let expr = match &field.ty {
+            TypeRef::Named(n) if is_mixed => {
+                let core_type = format!("{core_import}::{n}");
+                format!(
+                    "val.{binding_field_name}.and_then(|s| serde_json::from_str::<{core_type}>(&s).ok()).unwrap_or_default()"
+                )
+            }
+            TypeRef::Named(_) if has_binding => {
+                format!("val.{binding_field_name}.map(|v| v.into()).unwrap_or_default()")
+            }
+            TypeRef::Named(_) => format!("val.{binding_field_name}.map(|v| v.into()).unwrap_or_default()"),
+            TypeRef::Path => format!("val.{binding_field_name}.map(std::path::PathBuf::from).unwrap_or_default()"),
+            TypeRef::Primitive(p) if needs_napi_cast(p) => {
+                let core_ty = core_prim_str(p);
+                format!("val.{binding_field_name}.map(|v| v as {core_ty}).unwrap_or_default()")
+            }
+            TypeRef::Vec(inner) if matches!(inner.as_ref(), TypeRef::Named(_)) => {
+                format!("val.{binding_field_name}.map(|v| v.into_iter().map(Into::into).collect()).unwrap_or_default()")
+            }
+            // ~keep A byte payload is `napi::bindgen_prelude::Buffer` on the binding side (see
+            // `NapiMapper::bytes`), never `Vec<u8>`, so it needs an explicit copy back out. The
+            // catch-all below produced `val.f.unwrap_or_default()`, which is a `Buffer` where the
+            // core variant wants a `Vec<u8>` -- E0308 on every data-carrying enum with a bytes
+            // variant.
+            TypeRef::Bytes => format!("val.{binding_field_name}.map(|b| b.to_vec()).unwrap_or_default()"),
+            _ => format!("val.{binding_field_name}.unwrap_or_default()"),
+        };
+        if field.is_boxed {
+            format!("Box::new({expr})")
+        } else {
+            expr
+        }
+    }
+}
+
 /// Generate `From<JsTaggedEnum> for core::TaggedEnum` for a flattened struct representation.
 pub(super) fn gen_tagged_enum_binding_to_core(
     enum_def: &EnumDef,
     core_import: &str,
     prefix: &str,
     struct_names: &ahash::AHashSet<String>,
+    types: &[TypeDef],
 ) -> String {
     let core_path = crate::codegen::conversions::core_enum_path(enum_def, core_import);
     let binding_name = format!("{prefix}{}", enum_def.name);
     let tag_field = crate::codegen::serde_enum_repr::tagged_object_tag_key(enum_def);
     let is_host_enum = is_host_owned_rust_path(core_import, &enum_def.rust_path);
 
-    let fields_with_binding_struct = tagged_enum_binding_struct_fields(enum_def, struct_names);
-    let mixed_named_fields = tagged_enum_mixed_named_fields(enum_def);
+    let fields_with_binding_struct = tagged_enum_binding_struct_fields(enum_def, struct_names, types);
+    let mixed_named_fields = tagged_enum_mixed_named_fields(enum_def, types);
 
     let variants = enum_def
         .variants
@@ -141,6 +217,29 @@ pub(super) fn gen_tagged_enum_binding_to_core(
                     is_tuple => false,
                     cfg => cfg,
                 }
+            } else if let Some((inner_name, inner_fields)) = tagged_enum_flattened_newtype(enum_def, variant, types) {
+                // Single-tuple-Named variant, wrapped struct resolved: serde's internal tagging
+                // flattens `inner_fields` onto the wire, so the sole tuple constructor argument
+                // is a struct literal built from each of THOSE fields, not the outer `_0` field.
+                let inner_field_inits: Vec<String> = inner_fields
+                    .iter()
+                    .map(|f| {
+                        let has_binding = fields_with_binding_struct.contains(f.name.as_str());
+                        let is_mixed = mixed_named_fields.contains(f.name.as_str());
+                        let expr = binding_to_core_field_expr(&f.name, f, has_binding, is_mixed, core_import);
+                        format!("{}: {expr}", f.name)
+                    })
+                    .collect();
+                let field_exprs = vec![format!("{inner_name} {{ {} }}", inner_field_inits.join(", "))];
+
+                minijinja::context! {
+                    name => variant.name.clone(),
+                    tag_value => tag_value,
+                    is_empty => false,
+                    is_tuple => is_tuple,
+                    field_exprs => field_exprs,
+                    cfg => cfg,
+                }
             } else {
                 let field_exprs: Vec<String> = variant
                     .fields
@@ -148,88 +247,17 @@ pub(super) fn gen_tagged_enum_binding_to_core(
                     .map(|f| {
                         let binding_field_name = tagged_enum_binding_field_name(enum_def, variant, f);
                         let has_binding = fields_with_binding_struct.contains(f.name.as_str());
+                        // A single-tuple-Named field's synthetic `_0` name collides across every
+                        // such variant regardless of payload type -- never treat it as "mixed"
+                        // here. The unresolved-fallback path is the only place this branch still
+                        // sees that shape (a resolved one takes the `flattened` arm above), and
+                        // `mixed_named_fields` (flattened-aware) would otherwise flag it whenever
+                        // two or more unresolved variants share the synthetic name.
                         let is_single_tuple_named = variant.fields.len() == 1
                             && tagged_enum_field_is_tuple(f)
                             && matches!(&f.ty, TypeRef::Named(_));
                         let is_mixed = !is_single_tuple_named && mixed_named_fields.contains(&f.name);
-                        if f.sanitized {
-                            let expr = sanitized_binding_to_core_expr(&binding_field_name, &f.ty, f.optional);
-                            if f.is_boxed { format!("Box::new({expr})") } else { expr }
-                        } else if f.optional {
-                            match &f.ty {
-                                TypeRef::Path => {
-                                    format!("val.{binding_field_name}.map(std::path::PathBuf::from)")
-                                }
-                                TypeRef::Named(n) if is_mixed => {
-                                    let core_type = format!("{core_import}::{n}");
-                                    format!(
-                                        "val.{}.and_then(|s| serde_json::from_str::<{core_type}>(&s).ok())",
-                                        binding_field_name
-                                    )
-                                }
-                                TypeRef::Named(_) if has_binding => {
-                                    format!("val.{binding_field_name}.map(|v| v.into())")
-                                }
-                                TypeRef::Named(_) => {
-                                    format!("val.{binding_field_name}.map(|v| v.into())")
-                                }
-                                TypeRef::Primitive(p) if needs_napi_cast(p) => {
-                                    let core_ty = core_prim_str(p);
-                                    format!("val.{binding_field_name}.map(|v| v as {core_ty})")
-                                }
-                                TypeRef::Vec(inner) if matches!(inner.as_ref(), TypeRef::Named(_)) => {
-                                    format!(
-                                        "val.{binding_field_name}.map(|v| v.into_iter().map(Into::into).collect())"
-                                    )
-                                }
-                                _ => {
-                                    format!("val.{binding_field_name}")
-                                }
-                            }
-                        } else {
-                            let expr = match &f.ty {
-                                TypeRef::Named(n) if is_mixed => {
-                                    let core_type = format!("{core_import}::{n}");
-                                    format!(
-                                        "val.{}.and_then(|s| serde_json::from_str::<{core_type}>(&s).ok()).unwrap_or_default()",
-                                        binding_field_name
-                                    )
-                                }
-                                TypeRef::Named(_) if has_binding => {
-                                    format!("val.{binding_field_name}.map(|v| v.into()).unwrap_or_default()")
-                                }
-                                TypeRef::Named(_) => {
-                                    format!("val.{binding_field_name}.map(|v| v.into()).unwrap_or_default()")
-                                }
-                                TypeRef::Path => {
-                                    format!(
-                                        "val.{binding_field_name}.map(std::path::PathBuf::from).unwrap_or_default()"
-                                    )
-                                }
-                                TypeRef::Primitive(p) if needs_napi_cast(p) => {
-                                    let core_ty = core_prim_str(p);
-                                    format!("val.{binding_field_name}.map(|v| v as {core_ty}).unwrap_or_default()")
-                                }
-                                TypeRef::Vec(inner) if matches!(inner.as_ref(), TypeRef::Named(_)) => {
-                                    format!(
-                                        "val.{binding_field_name}.map(|v| v.into_iter().map(Into::into).collect()).unwrap_or_default()"
-                                    )
-                                }
-                                // ~keep A byte payload is `napi::bindgen_prelude::Buffer` on the
-                                // binding side (see `NapiMapper::bytes`), never `Vec<u8>`, so it
-                                // needs an explicit copy back out. The catch-all below produced
-                                // `val.f.unwrap_or_default()`, which is a `Buffer` where the core
-                                // variant wants a `Vec<u8>` -- E0308 on every data-carrying enum
-                                // with a bytes variant.
-                                TypeRef::Bytes => {
-                                    format!("val.{binding_field_name}.map(|b| b.to_vec()).unwrap_or_default()")
-                                }
-                                _ => {
-                                    format!("val.{binding_field_name}.unwrap_or_default()")
-                                }
-                            };
-                            if f.is_boxed { format!("Box::new({expr})") } else { expr }
-                        }
+                        binding_to_core_field_expr(&binding_field_name, f, has_binding, is_mixed, core_import)
                     })
                     .collect();
 
@@ -309,23 +337,82 @@ pub(super) fn gen_tagged_enum_binding_to_core(
 }
 
 /// Generate `From<core::TaggedEnum> for JsTaggedEnum` for a flattened struct representation.
+/// Build the core→binding field-init expression for one field of a tagged-enum variant, whether
+/// ordinary (`f` is a bare local bound by the outer destructure) or flattened in from a wrapped
+/// struct (`f` is a bare local bound by the inner `destructure_let`, see
+/// `gen_tagged_enum_core_to_binding`). Both shapes bind a local variable named exactly `f`, so
+/// this function is agnostic to which one produced it. Reused by both call sites so they can
+/// never diverge on how a given field type converts.
+fn core_to_binding_field_init(f: &str, field: &FieldDef, has_binding: bool, is_mixed: bool) -> String {
+    use crate::core::ir::TypeRef;
+    let boxed_deref = if field.is_boxed { "*" } else { "" };
+    if field.sanitized {
+        return sanitized_core_to_binding_expr(f, &field.ty, field.optional);
+    }
+    if field.optional {
+        match &field.ty {
+            TypeRef::Path => format!("{f}: {f}.map(|p| p.to_string_lossy().to_string())"),
+            TypeRef::Named(_) if is_mixed => format!("{f}: {f}.and_then(|v| serde_json::to_string(&v).ok())"),
+            TypeRef::Named(_) if has_binding => format!("{f}: {f}.map(|v| (*v).into())"),
+            TypeRef::Named(_) => format!("{f}: {f}.map(|v| v.into())"),
+            TypeRef::Vec(inner) if matches!(inner.as_ref(), TypeRef::Named(_)) => {
+                format!("{f}: {f}.map(|v| v.into_iter().map(Into::into).collect())")
+            }
+            // ~keep See the required-field arm: the binding side is a `Buffer`, so a byte
+            // payload needs a conversion here too.
+            TypeRef::Bytes => format!("{f}: {f}.map(Into::into)"),
+            // No cast or wrap needed: the destructured binding is already named `f`, identical
+            // to the field it fills, so this is true field-init shorthand, not `f: f`.
+            _ => f.to_string(),
+        }
+    } else {
+        match &field.ty {
+            TypeRef::Named(_) if is_mixed => format!("{f}: serde_json::to_string(&{f}).ok()"),
+            TypeRef::Named(_) => format!("{f}: Some(({boxed_deref}{f}).into())"),
+            TypeRef::Path => format!("{f}: Some({f}.to_string_lossy().to_string())"),
+            TypeRef::Primitive(p) if needs_napi_cast(p) => match p {
+                crate::core::ir::PrimitiveType::F32 => format!("{f}: Some({f} as f64)"),
+                crate::core::ir::PrimitiveType::U64
+                | crate::core::ir::PrimitiveType::Usize
+                | crate::core::ir::PrimitiveType::Isize => format!("{f}: Some({f} as i64)"),
+                _ => format!("{f}: Some({f})"),
+            },
+            TypeRef::Vec(inner) if matches!(inner.as_ref(), TypeRef::Named(_)) => {
+                format!("{f}: Some({f}.into_iter().map(Into::into).collect())")
+            }
+            // ~keep The binding field is `Option<Buffer>`, not `Option<Vec<u8>>` (see
+            // `NapiMapper::bytes`), so the core `Vec<u8>` has to be converted. `Some({f})`
+            // typechecked only while byte payloads were being dropped entirely.
+            TypeRef::Bytes => format!("{f}: Some({f}.into())"),
+            _ => format!("{f}: Some({f})"),
+        }
+    }
+}
+
 pub(super) fn gen_tagged_enum_core_to_binding(
     enum_def: &EnumDef,
     core_import: &str,
     prefix: &str,
     struct_names: &ahash::AHashSet<String>,
     configured_features: Option<&[String]>,
+    types: &[TypeDef],
 ) -> String {
     let core_path = crate::codegen::conversions::core_enum_path(enum_def, core_import);
     let binding_name = format!("{prefix}{}", enum_def.name);
     let tag_field = crate::codegen::serde_enum_repr::tagged_object_tag_key(enum_def);
     let is_host_enum = is_host_owned_rust_path(core_import, &enum_def.rust_path);
-    let fields_with_binding_struct = tagged_enum_binding_struct_fields(enum_def, struct_names);
-    let mixed_named_fields = tagged_enum_mixed_named_fields(enum_def);
+    let fields_with_binding_struct = tagged_enum_binding_struct_fields(enum_def, struct_names, types);
+    let mixed_named_fields = tagged_enum_mixed_named_fields(enum_def, types);
 
     let all_fields: Vec<String> = {
         let mut fields = std::collections::BTreeSet::new();
         for v in &enum_def.variants {
+            if let Some((_, inner_fields)) = tagged_enum_flattened_newtype(enum_def, v, types) {
+                for f in inner_fields {
+                    fields.insert(f.name.clone());
+                }
+                continue;
+            }
             for f in &v.fields {
                 if tagged_enum_field_is_tuple(f) && matches!(&f.ty, crate::core::ir::TypeRef::Named(_)) {
                     continue;
@@ -336,7 +423,7 @@ pub(super) fn gen_tagged_enum_core_to_binding(
         fields.into_iter().collect()
     };
 
-    let synth_field_names = variant_data_field_names(enum_def);
+    let synth_field_names = variant_data_field_names(enum_def, types);
 
     let variants = enum_def
         .variants
@@ -352,16 +439,20 @@ pub(super) fn gen_tagged_enum_core_to_binding(
                 variant.serde_rename.as_deref(),
                 enum_def.serde_rename_all.as_deref(),
             );
-            let this_synth_field = if variant.fields.len() == 1 {
-                let field = &variant.fields[0];
-                if tagged_enum_field_is_tuple(field) && matches!(&field.ty, crate::core::ir::TypeRef::Named(_)) {
-                    Some(tagged_enum_binding_field_name(enum_def, variant, field))
+            // Only the unresolved-fallback shape still needs a synthetic nested-object field: a
+            // resolved single-tuple-Named variant's fields are flattened directly (see the
+            // `flattened` branch below), so it has no synth field to fill in.
+            let this_synth_field =
+                if tagged_enum_flattened_newtype(enum_def, variant, types).is_none() && variant.fields.len() == 1 {
+                    let field = &variant.fields[0];
+                    if tagged_enum_field_is_tuple(field) && matches!(&field.ty, crate::core::ir::TypeRef::Named(_)) {
+                        Some(tagged_enum_binding_field_name(enum_def, variant, field))
+                    } else {
+                        None
+                    }
                 } else {
                     None
-                }
-            } else {
-                None
-            };
+                };
 
             if variant.fields.is_empty() {
                 let mut all_fields_none: Vec<String> = all_fields.iter().map(|f| format!("{f}: None")).collect();
@@ -377,89 +468,62 @@ pub(super) fn gen_tagged_enum_core_to_binding(
                     cfg => cfg,
                 })
             } else {
-                use crate::core::ir::TypeRef;
                 let is_tuple = crate::codegen::conversions::is_tuple_variant(&variant.fields);
-                let variant_field_map: std::collections::BTreeMap<String, &crate::core::ir::FieldDef> = variant
-                    .fields
-                    .iter()
-                    .map(|f| (tagged_enum_binding_field_name(enum_def, variant, f), f))
-                    .collect();
-                let destructured: Vec<String> = variant
-                    .fields
-                    .iter()
-                    .map(|f| {
-                        let binding_field_name = tagged_enum_binding_field_name(enum_def, variant, f);
-                        if f.sanitized && sanitized_field_to_binding_expr("_", &f.ty).is_none() {
-                            if is_tuple {
-                                format!("_{binding_field_name}")
+                let flattened = tagged_enum_flattened_newtype(enum_def, variant, types);
+                let (variant_field_map, destructured, destructure_let): (
+                    std::collections::BTreeMap<String, &FieldDef>,
+                    Vec<String>,
+                    Option<String>,
+                ) = if let Some((inner_name, inner_fields)) = flattened {
+                    // Single-tuple-Named variant, wrapped struct resolved: bind the whole struct
+                    // to one local (the outer tuple pattern still has exactly one slot), then
+                    // destructure ITS fields into bare locals with a `let` so the shared
+                    // `core_to_binding_field_init` -- which assumes `f` is already a bare local
+                    // named identically to the target field -- works unmodified.
+                    let outer_field = &variant.fields[0];
+                    let outer_var = tagged_enum_binding_field_name(enum_def, variant, outer_field);
+                    let map = inner_fields.iter().map(|f| (f.name.clone(), f)).collect();
+                    let bind_names: Vec<&str> = inner_fields.iter().map(|f| f.name.as_str()).collect();
+                    let let_line = if bind_names.is_empty() {
+                        None
+                    } else {
+                        Some(format!(
+                            "let {inner_name} {{ {}, .. }} = {outer_var};",
+                            bind_names.join(", ")
+                        ))
+                    };
+                    (map, vec![outer_var], let_line)
+                } else {
+                    let map = variant
+                        .fields
+                        .iter()
+                        .map(|f| (tagged_enum_binding_field_name(enum_def, variant, f), f))
+                        .collect();
+                    let destructured: Vec<String> = variant
+                        .fields
+                        .iter()
+                        .map(|f| {
+                            let binding_field_name = tagged_enum_binding_field_name(enum_def, variant, f);
+                            if f.sanitized && sanitized_field_to_binding_expr("_", &f.ty).is_none() {
+                                if is_tuple {
+                                    format!("_{binding_field_name}")
+                                } else {
+                                    format!("{}: _{}", f.name, f.name)
+                                }
                             } else {
-                                format!("{}: _{}", f.name, f.name)
+                                binding_field_name
                             }
-                        } else {
-                            binding_field_name
-                        }
-                    })
-                    .collect();
+                        })
+                        .collect();
+                    (map, destructured, None)
+                };
                 let mut field_inits: Vec<String> = all_fields
                     .iter()
                     .map(|f| {
                         if let Some(field) = variant_field_map.get(f) {
                             let has_binding = fields_with_binding_struct.contains(f.as_str());
                             let is_mixed = mixed_named_fields.contains(field.name.as_str());
-                            let boxed_deref = if field.is_boxed { "*" } else { "" };
-                            if field.sanitized {
-                                sanitized_core_to_binding_expr(f, &field.ty, field.optional)
-                            } else if field.optional {
-                                match &field.ty {
-                                    TypeRef::Path => format!("{f}: {f}.map(|p| p.to_string_lossy().to_string())"),
-                                    TypeRef::Named(_) if is_mixed => {
-                                        format!("{f}: {f}.and_then(|v| serde_json::to_string(&v).ok())")
-                                    }
-                                    TypeRef::Named(_) if has_binding => {
-                                        format!("{f}: {f}.map(|v| (*v).into())",)
-                                    }
-                                    TypeRef::Named(_) => {
-                                        format!("{f}: {f}.map(|v| v.into())")
-                                    }
-                                    TypeRef::Vec(inner) if matches!(inner.as_ref(), TypeRef::Named(_)) => {
-                                        format!("{f}: {f}.map(|v| v.into_iter().map(Into::into).collect())")
-                                    }
-                                    // ~keep See the required-field arm: the binding side is a
-                                    // `Buffer`, so a byte payload needs a conversion here too.
-                                    TypeRef::Bytes => format!("{f}: {f}.map(Into::into)"),
-                                    // No cast or wrap needed: the destructured binding is
-                                    // already named `f`, identical to the field it fills, so
-                                    // this is true field-init shorthand, not `f: f`.
-                                    _ => f.clone(),
-                                }
-                            } else {
-                                match &field.ty {
-                                    TypeRef::Named(_) if is_mixed => {
-                                        format!("{f}: serde_json::to_string(&{f}).ok()")
-                                    }
-                                    TypeRef::Named(_) if has_binding => {
-                                        format!("{f}: Some(({boxed_deref}{f}).into())")
-                                    }
-                                    TypeRef::Named(_) => format!("{f}: Some(({boxed_deref}{f}).into())"),
-                                    TypeRef::Path => format!("{f}: Some({f}.to_string_lossy().to_string())"),
-                                    TypeRef::Primitive(p) if needs_napi_cast(p) => match p {
-                                        crate::core::ir::PrimitiveType::F32 => format!("{f}: Some({f} as f64)"),
-                                        crate::core::ir::PrimitiveType::U64
-                                        | crate::core::ir::PrimitiveType::Usize
-                                        | crate::core::ir::PrimitiveType::Isize => format!("{f}: Some({f} as i64)"),
-                                        _ => format!("{f}: Some({f})"),
-                                    },
-                                    TypeRef::Vec(inner) if matches!(inner.as_ref(), TypeRef::Named(_)) => {
-                                        format!("{f}: Some({f}.into_iter().map(Into::into).collect())")
-                                    }
-                                    // ~keep The binding field is `Option<Buffer>`, not
-                                    // `Option<Vec<u8>>` (see `NapiMapper::bytes`), so the core
-                                    // `Vec<u8>` has to be converted. `Some({f})` typechecked only
-                                    // while byte payloads were being dropped entirely.
-                                    TypeRef::Bytes => format!("{f}: Some({f}.into())"),
-                                    _ => format!("{f}: Some({f})"),
-                                }
-                            }
+                            core_to_binding_field_init(f, field, has_binding, is_mixed)
                         } else {
                             format!("{f}: None")
                         }
@@ -486,6 +550,7 @@ pub(super) fn gen_tagged_enum_core_to_binding(
                     is_empty => false,
                     is_tuple => is_tuple,
                     destructured => destructured,
+                    destructure_let => destructure_let,
                     field_inits => field_inits,
                     cfg => cfg,
                 })
@@ -526,7 +591,7 @@ pub(super) fn gen_tagged_enum_core_to_binding(
 #[cfg(test)]
 mod tests {
     use super::{gen_tagged_enum_binding_to_core, gen_tagged_enum_core_to_binding};
-    use crate::core::ir::{EnumDef, EnumVariant};
+    use crate::core::ir::{EnumDef, EnumVariant, TypeRef};
 
     fn unit_variant(name: &str, cfg: Option<&str>) -> EnumVariant {
         EnumVariant {
@@ -572,7 +637,7 @@ mod tests {
         );
         let struct_names = ahash::AHashSet::new();
 
-        let binding_to_core = gen_tagged_enum_binding_to_core(&en, "mylib", "Js", &struct_names);
+        let binding_to_core = gen_tagged_enum_binding_to_core(&en, "mylib", "Js", &struct_names, &[]);
         assert!(
             binding_to_core.contains("Self::Thumbnail"),
             "the host-owned variant's arm must still be emitted, got:\n{binding_to_core}"
@@ -583,7 +648,7 @@ mod tests {
             "the host-owned variant's arm must carry its #[cfg] guard exactly once, got:\n{binding_to_core}"
         );
 
-        let core_to_binding = gen_tagged_enum_core_to_binding(&en, "mylib", "Js", &struct_names, None);
+        let core_to_binding = gen_tagged_enum_core_to_binding(&en, "mylib", "Js", &struct_names, None, &[]);
         assert!(
             core_to_binding.contains("mylib::VisitorResult::Thumbnail"),
             "the host-owned variant's arm must still be emitted, got:\n{core_to_binding}"
@@ -615,7 +680,7 @@ mod tests {
         );
         let struct_names = ahash::AHashSet::new();
 
-        let binding_to_core = gen_tagged_enum_binding_to_core(&en, "mylib", "Js", &struct_names);
+        let binding_to_core = gen_tagged_enum_binding_to_core(&en, "mylib", "Js", &struct_names, &[]);
         assert!(
             !binding_to_core.contains("#[cfg(feature = \"testkit\")]"),
             "no invalid #[cfg] naming an undeclared feature may be emitted, got:\n{binding_to_core}"
@@ -625,7 +690,7 @@ mod tests {
             "a foreign-crate cfg-gated variant must not be referenced, got:\n{binding_to_core}"
         );
 
-        let core_to_binding = gen_tagged_enum_core_to_binding(&en, "mylib", "Js", &struct_names, None);
+        let core_to_binding = gen_tagged_enum_core_to_binding(&en, "mylib", "Js", &struct_names, None, &[]);
         assert!(
             !core_to_binding.contains("#[cfg(feature = \"testkit\")]"),
             "no invalid #[cfg] naming an undeclared feature may be emitted, got:\n{core_to_binding}"
@@ -649,13 +714,13 @@ mod tests {
         );
         let struct_names = ahash::AHashSet::new();
 
-        let binding_to_core = gen_tagged_enum_binding_to_core(&en, "mylib", "Js", &struct_names);
+        let binding_to_core = gen_tagged_enum_binding_to_core(&en, "mylib", "Js", &struct_names, &[]);
         assert!(
             !binding_to_core.contains("#[cfg("),
             "ungated enum must not emit #[cfg(...)], got:\n{binding_to_core}"
         );
 
-        let core_to_binding = gen_tagged_enum_core_to_binding(&en, "mylib", "Js", &struct_names, None);
+        let core_to_binding = gen_tagged_enum_core_to_binding(&en, "mylib", "Js", &struct_names, None, &[]);
         assert!(
             !core_to_binding.contains("#[cfg("),
             "ungated enum must not emit #[cfg(...)], got:\n{core_to_binding}"
@@ -675,10 +740,132 @@ mod tests {
         );
         let struct_names = ahash::AHashSet::new();
 
-        let binding_to_core = gen_tagged_enum_binding_to_core(&en, "mylib", "Js", &struct_names);
+        let binding_to_core = gen_tagged_enum_binding_to_core(&en, "mylib", "Js", &struct_names, &[]);
         assert!(
             binding_to_core.contains("_ => Self::Continue,"),
             "the unconditional default must fall back to the ungated variant, got:\n{binding_to_core}"
+        );
+    }
+
+    fn format_metadata_like_enum() -> EnumDef {
+        EnumDef {
+            name: "FormatMetadata".to_string(),
+            rust_path: "test_core::FormatMetadata".to_string(),
+            serde_tag: Some("format_type".to_string()),
+            serde_rename_all: Some("snake_case".to_string()),
+            has_serde: true,
+            variants: vec![EnumVariant {
+                name: "Excel".to_string(),
+                is_tuple: true,
+                fields: vec![crate::core::ir::FieldDef {
+                    name: "_0".to_string(),
+                    ty: TypeRef::Named("ExcelMetadata".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn excel_metadata_type_def() -> crate::core::ir::TypeDef {
+        crate::core::ir::TypeDef {
+            name: "ExcelMetadata".to_string(),
+            rust_path: "test_core::ExcelMetadata".to_string(),
+            fields: vec![
+                crate::core::ir::FieldDef {
+                    name: "sheet_count".to_string(),
+                    ty: TypeRef::Primitive(crate::core::ir::PrimitiveType::U32),
+                    optional: true,
+                    ..Default::default()
+                },
+                crate::core::ir::FieldDef {
+                    name: "sheet_names".to_string(),
+                    ty: TypeRef::Vec(Box::new(TypeRef::String)),
+                    optional: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// `binding_to_core`: a resolved single-tuple-Named variant must reconstruct the wrapped
+    /// core struct from the FLATTENED binding fields (`val.sheet_count`, `val.sheet_names`),
+    /// not read a nested `val.excel`.
+    #[test]
+    fn binding_to_core_reconstructs_wrapped_struct_from_flattened_fields() {
+        let en = format_metadata_like_enum();
+        let types = [excel_metadata_type_def()];
+        let struct_names = ahash::AHashSet::new();
+
+        let binding_to_core = gen_tagged_enum_binding_to_core(&en, "test_core", "Js", &struct_names, &types);
+        assert!(
+            binding_to_core.contains("Self::Excel(ExcelMetadata { sheet_count:")
+                && binding_to_core.contains("sheet_names:"),
+            "must construct the wrapped struct inline from flattened fields, got:\n{binding_to_core}"
+        );
+        assert!(
+            !binding_to_core.contains("val.excel"),
+            "must never read a nested `excel` field once the wrapped type resolves, got:\n{binding_to_core}"
+        );
+    }
+
+    /// `core_to_binding`: a resolved single-tuple-Named variant must destructure the wrapped
+    /// core struct into its own fields with a `let` binding, then fill EACH flattened field --
+    /// never fill a single nested `excel: Some(excel.into())` field.
+    #[test]
+    fn core_to_binding_destructures_wrapped_struct_into_flattened_fields() {
+        let en = format_metadata_like_enum();
+        let types = [excel_metadata_type_def()];
+        let struct_names = ahash::AHashSet::new();
+
+        let core_to_binding = gen_tagged_enum_core_to_binding(&en, "test_core", "Js", &struct_names, None, &types);
+        assert!(
+            core_to_binding.contains("let ExcelMetadata { sheet_count, sheet_names, .. } = excel;"),
+            "must destructure the wrapped struct's own fields by name, got:\n{core_to_binding}"
+        );
+        // Each flattened field's own name must appear a second time inside the constructed
+        // `Self { ... }` literal (the field-init use), beyond its one appearance in the
+        // destructure-let above -- proving it was actually threaded into the binding struct.
+        assert_eq!(
+            core_to_binding.matches("sheet_count").count(),
+            2,
+            "sheet_count must appear once in the destructure and once as a field init, got:\n{core_to_binding}"
+        );
+        assert_eq!(
+            core_to_binding.matches("sheet_names").count(),
+            2,
+            "sheet_names must appear once in the destructure and once as a field init, got:\n{core_to_binding}"
+        );
+        assert!(
+            !core_to_binding.contains("excel: Some(excel.into())"),
+            "must never fill a single nested `excel` field once the wrapped type resolves, got:\n{core_to_binding}"
+        );
+    }
+
+    /// Negative control: when the wrapped type does not resolve (`types` empty), both
+    /// directions must keep the pre-existing nested shape -- the fallback this task relies on
+    /// to avoid silently dropping data for an unresolvable reference.
+    #[test]
+    fn unresolved_wrapped_type_keeps_nested_shape_in_both_directions() {
+        let en = format_metadata_like_enum();
+        let struct_names = ahash::AHashSet::new();
+
+        let binding_to_core = gen_tagged_enum_binding_to_core(&en, "test_core", "Js", &struct_names, &[]);
+        assert!(
+            binding_to_core.contains("Self::Excel(val.excel"),
+            "an unresolvable wrapped type must fall back to reading the nested field, got:\n{binding_to_core}"
+        );
+
+        let core_to_binding = gen_tagged_enum_core_to_binding(&en, "test_core", "Js", &struct_names, None, &[]);
+        assert!(
+            core_to_binding.contains("excel: Some(excel.into())"),
+            "an unresolvable wrapped type must fall back to filling the nested field, got:\n{core_to_binding}"
+        );
+        assert!(
+            !core_to_binding.contains("let ExcelMetadata"),
+            "no destructure-let may be emitted without a resolved type, got:\n{core_to_binding}"
         );
     }
 }

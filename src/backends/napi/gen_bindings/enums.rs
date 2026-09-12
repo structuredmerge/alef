@@ -1,7 +1,66 @@
 //! NAPI-RS enum code generation: plain enums and tagged union helpers.
 
 use crate::backends::napi::type_map::NapiMapper;
-use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeRef};
+use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeDef, TypeRef};
+
+/// Whether `variant` is the shape serde's internal tagging flattens for real: a single tuple
+/// field whose type is a Named struct/map. Matches `EnumVariant::Excel(ExcelMetadata)` under
+/// `#[serde(tag = "format_type")]` -- serde merges `ExcelMetadata`'s own fields as siblings of
+/// the tag key on the wire (`{"format_type":"excel","sheet_count":2,...}`), never nests them
+/// under an `"excel"` key. See `gen_tagged_enum_as_object`'s module docs for the full rationale.
+///
+/// Only applies to internal tagging, tested via [`serde_enum_repr`] rather than by the absence
+/// of a `content` key: adjacent tagging (`#[serde(tag, content)]`) nests a newtype variant's
+/// payload under the `content` key by design -- `{"tag":"excel","content":{"sheet_count":2}}` --
+/// and *external* tagging (no `tag` at all, serde's default) nests it under the variant name --
+/// `{"type":"wrapped","wrapped":{...}}` once napi synthesizes its discriminator. Flattening
+/// either would misdeclare the wire shape. Checking `serde_content.is_none()` alone excludes
+/// adjacent but silently admits external, which flattened every externally tagged newtype
+/// variant. ~keep
+///
+/// Returns `Some((inner_type_name, inner_fields))` only when `types` actually contains the
+/// referenced struct -- an unresolvable reference (the type is out of the IR's reach, or `types`
+/// is an empty slice as most pre-existing unit tests pass) falls back to `None`, which callers
+/// treat as "keep the old per-variant-nested shape" rather than silently dropping the payload's
+/// fields. ~keep
+pub(crate) fn tagged_enum_flattened_newtype<'a>(
+    enum_def: &EnumDef,
+    variant: &'a EnumVariant,
+    types: &'a [TypeDef],
+) -> Option<(&'a str, &'a [FieldDef])> {
+    if !matches!(
+        crate::codegen::serde_enum_repr::serde_enum_repr(enum_def),
+        crate::codegen::serde_enum_repr::SerdeEnumRepr::Internal { .. }
+    ) {
+        return None;
+    }
+    let [field] = variant.fields.as_slice() else {
+        return None;
+    };
+    if !tagged_enum_field_is_tuple(field) {
+        return None;
+    }
+    let TypeRef::Named(inner_name) = &field.ty else {
+        return None;
+    };
+    let inner = types.iter().find(|t| &t.name == inner_name)?;
+    Some((inner_name.as_str(), inner.fields.as_slice()))
+}
+
+/// `variant`'s effective wire fields: the wrapped struct's own fields when
+/// [`tagged_enum_flattened_newtype`] resolves, otherwise the variant's own `FieldDef`s verbatim.
+/// Used everywhere a tagged-object emitter needs to reason about "the fields this variant puts
+/// on the wire" without re-deriving the flatten decision.
+pub(super) fn tagged_enum_effective_fields<'a>(
+    enum_def: &EnumDef,
+    variant: &'a EnumVariant,
+    types: &'a [TypeDef],
+) -> &'a [FieldDef] {
+    match tagged_enum_flattened_newtype(enum_def, variant, types) {
+        Some((_, inner_fields)) => inner_fields,
+        None => variant.fields.as_slice(),
+    }
+}
 
 pub(super) fn tagged_enum_field_is_tuple(field: &FieldDef) -> bool {
     field
@@ -80,7 +139,7 @@ pub(crate) fn string_enum_variant_js_value(enum_def: &EnumDef, variant_name: &st
 /// where a variant carries a single-tuple Named field. These are the per-variant optional
 /// properties (e.g. `excel: Option<JsExcelMetadata>`) added on top of the discriminator and
 /// shared variant fields, enabling direct property access in TypeScript.
-pub(super) fn variant_data_field_names(enum_def: &EnumDef) -> Vec<String> {
+pub(super) fn variant_data_field_names(enum_def: &EnumDef, types: &[TypeDef]) -> Vec<String> {
     let mut names = Vec::new();
     for v in &enum_def.variants {
         if v.fields.len() != 1 {
@@ -88,6 +147,12 @@ pub(super) fn variant_data_field_names(enum_def: &EnumDef) -> Vec<String> {
         }
         let field = &v.fields[0];
         if !tagged_enum_field_is_tuple(field) {
+            continue;
+        }
+        // A resolved single-tuple-Named variant now has its wrapped struct's fields flattened
+        // directly onto the tagged-object struct (`tagged_enum_effective_fields`), so it no
+        // longer needs a synthetic nested-object field. Only the unresolved fallback still does.
+        if tagged_enum_flattened_newtype(enum_def, v, types).is_some() {
             continue;
         }
         if matches!(&field.ty, TypeRef::Named(_)) {
@@ -331,9 +396,10 @@ pub(super) fn gen_enum(
     has_serde: bool,
     core_import: &str,
     configured_features: Option<&std::collections::HashSet<&str>>,
+    types: &[TypeDef],
 ) -> String {
     if is_tagged_data_enum(enum_def) {
-        return gen_tagged_enum_as_object(enum_def, prefix, has_serde);
+        return gen_tagged_enum_as_object(enum_def, prefix, has_serde, types);
     }
 
     if is_json_passthrough_data_enum(enum_def) {
@@ -522,31 +588,47 @@ pub(super) fn gen_untagged_data_enum_as_value_wrapper(enum_def: &EnumDef, prefix
 /// Rust field is always named `{tag_field}_tag` (`type_tag` in the default case above, `role_tag`
 /// for `#[serde(tag = "role")]`) to avoid colliding with a same-named data field.
 ///
-/// For tagged enums where every non-empty variant is a single-tuple field with a Named type
-/// (e.g. `FormatMetadata`), a `#[napi]` impl block is additionally emitted with per-variant
-/// getter methods, enabling `result.metadata.format.excel.sheetCount`-style access.
+/// For a variant that is a single tuple field wrapping a Named struct (e.g. `FormatMetadata`'s
+/// `Excel(ExcelMetadata)`), serde's internal tagging flattens that struct's OWN fields onto the
+/// wire object as siblings of the tag -- `{"format_type":"excel","sheet_count":2,...}`, never
+/// `{"format_type":"excel","excel":{"sheet_count":2,...}}`. When `types` resolves the wrapped
+/// struct ([`tagged_enum_flattened_newtype`]), this emitter mirrors that: the struct's fields are
+/// flattened directly onto `{prefix}{enum_def.name}` alongside every other variant's fields,
+/// giving a JS caller direct `result.metadata.format.sheetCount` access with no intermediate
+/// `.excel`. An unresolvable reference falls back to the pre-existing nested
+/// `excel: Option<JsExcelMetadata>` shape instead of silently dropping data.
 /// Does the object form of this tagged enum carry at least one field that maps to napi's
 /// `Buffer`? Mirrors the field-type derivation in [`gen_tagged_enum_as_object`] so the derive
 /// decision and the emitted fields cannot disagree.
-fn tagged_enum_object_carries_buffer_field(enum_def: &EnumDef, prefix: &str) -> bool {
+fn tagged_enum_object_carries_buffer_field(enum_def: &EnumDef, prefix: &str, types: &[TypeDef]) -> bool {
     use crate::codegen::type_mapper::TypeMapper;
     let mapper = NapiMapper::new(prefix.to_string());
-    let mixed_named_fields = tagged_enum_mixed_named_fields(enum_def);
+    let mixed_named_fields = tagged_enum_mixed_named_fields(enum_def, types);
     enum_def.variants.iter().any(|variant| {
-        variant.fields.iter().any(|field| {
-            if tagged_enum_field_is_tuple(field) && matches!(&field.ty, TypeRef::Named(_)) {
-                return false;
-            }
-            let field_name = tagged_enum_binding_field_name(enum_def, variant, field);
-            if (field.sanitized || mixed_named_fields.contains(&field_name)) && matches!(&field.ty, TypeRef::Named(_)) {
-                return false;
-            }
-            mapper.map_type(&field.ty).contains("Buffer")
-        })
+        let flattened = tagged_enum_flattened_newtype(enum_def, variant, types);
+        tagged_enum_effective_fields(enum_def, variant, types)
+            .iter()
+            .any(|field| {
+                if flattened.is_none() && tagged_enum_field_is_tuple(field) && matches!(&field.ty, TypeRef::Named(_)) {
+                    return false;
+                }
+                let field_name = tagged_enum_binding_field_name(enum_def, variant, field);
+                if (field.sanitized || mixed_named_fields.contains(&field_name))
+                    && matches!(&field.ty, TypeRef::Named(_))
+                {
+                    return false;
+                }
+                mapper.map_type(&field.ty).contains("Buffer")
+            })
     })
 }
 
-pub(super) fn gen_tagged_enum_as_object(enum_def: &EnumDef, prefix: &str, has_serde: bool) -> String {
+pub(super) fn gen_tagged_enum_as_object(
+    enum_def: &EnumDef,
+    prefix: &str,
+    has_serde: bool,
+    types: &[TypeDef],
+) -> String {
     use crate::codegen::type_mapper::TypeMapper;
     let mapper = NapiMapper::new(prefix.to_string());
 
@@ -559,7 +641,7 @@ pub(super) fn gen_tagged_enum_as_object(enum_def: &EnumDef, prefix: &str, has_se
     // `Deserialize`, so emitting those derives on a struct that carries one produces a struct
     // that cannot compile at all -- which is what a data-carrying enum with a `Vec<u8>` variant
     // used to generate. Derive only what every field can actually satisfy.
-    let carries_buffer_field = tagged_enum_object_carries_buffer_field(enum_def, prefix);
+    let carries_buffer_field = tagged_enum_object_carries_buffer_field(enum_def, prefix, types);
     let derive = if carries_buffer_field {
         None
     } else if has_serde {
@@ -591,12 +673,13 @@ pub(super) fn gen_tagged_enum_as_object(enum_def: &EnumDef, prefix: &str, has_se
     }
     lines.push(format!("    pub {tag_field}_tag: String,"));
 
-    let mixed_named_fields = tagged_enum_mixed_named_fields(enum_def);
+    let mixed_named_fields = tagged_enum_mixed_named_fields(enum_def, types);
 
     let mut seen_fields: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for variant in &enum_def.variants {
-        for field in &variant.fields {
-            if tagged_enum_field_is_tuple(field) && matches!(&field.ty, TypeRef::Named(_)) {
+        let flattened = tagged_enum_flattened_newtype(enum_def, variant, types);
+        for field in tagged_enum_effective_fields(enum_def, variant, types) {
+            if flattened.is_none() && tagged_enum_field_is_tuple(field) && matches!(&field.ty, TypeRef::Named(_)) {
                 continue;
             }
             let field_name = tagged_enum_binding_field_name(enum_def, variant, field);
@@ -621,12 +704,18 @@ pub(super) fn gen_tagged_enum_as_object(enum_def: &EnumDef, prefix: &str, has_se
         }
     }
 
+    // Fallback nested emission for a single-tuple-Named variant whose wrapped struct `types`
+    // could not resolve -- `tagged_enum_flattened_newtype` already flattened every OTHER such
+    // variant into the main loop above, so this only ever fires for the unresolved case.
     enum_def.variants.iter().for_each(|v| {
         if v.fields.len() != 1 {
             return;
         }
         let field = &v.fields[0];
         if !tagged_enum_field_is_tuple(field) {
+            return;
+        }
+        if tagged_enum_flattened_newtype(enum_def, v, types).is_some() {
             return;
         }
         if let TypeRef::Named(inner_type_name) = &field.ty {
@@ -646,7 +735,7 @@ pub(super) fn gen_tagged_enum_as_object(enum_def: &EnumDef, prefix: &str, has_se
 
     lines.push("}".to_string());
 
-    let synth_fields = variant_data_field_names(enum_def);
+    let synth_fields = variant_data_field_names(enum_def, types);
     let default_inits: Vec<String> = seen_fields
         .iter()
         .cloned()
@@ -679,30 +768,6 @@ pub(super) fn gen_tagged_enum_as_object(enum_def: &EnumDef, prefix: &str, has_se
         default_inits.join(", ")
     ));
     lines.push("}".to_string());
-
-    // #[napi] impl block with per-variant getters so callers can do `.excel.sheetCount` etc.
-    let _tuple_named_variants: Vec<(&crate::core::ir::EnumVariant, &str)> = enum_def
-        .variants
-        .iter()
-        .filter_map(|v| {
-            if v.fields.len() != 1 {
-                return None;
-            }
-            let field = &v.fields[0];
-            let is_tuple = field
-                .name
-                .strip_prefix('_')
-                .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()));
-            if !is_tuple {
-                return None;
-            }
-            if let TypeRef::Named(inner_type_name) = &field.ty {
-                Some((v, inner_type_name.as_str()))
-            } else {
-                None
-            }
-        })
-        .collect();
 
     if enum_def.serde_content.is_some() {
         // Total distinct fields on the binding struct: the tag plus every shared/synthesized
@@ -763,12 +828,12 @@ pub(super) fn gen_tagged_enum_as_object(enum_def: &EnumDef, prefix: &str, has_se
 }
 
 /// Generate a free function binding.
-pub(super) fn tagged_enum_mixed_named_fields(enum_def: &EnumDef) -> ahash::AHashSet<String> {
+pub(super) fn tagged_enum_mixed_named_fields(enum_def: &EnumDef, types: &[TypeDef]) -> ahash::AHashSet<String> {
     use crate::core::ir::TypeRef;
     let mut field_types: std::collections::HashMap<&str, ahash::AHashSet<&str>> = std::collections::HashMap::new();
 
     for variant in &enum_def.variants {
-        for field in &variant.fields {
+        for field in tagged_enum_effective_fields(enum_def, variant, types) {
             if field.sanitized {
                 continue;
             }
@@ -780,7 +845,7 @@ pub(super) fn tagged_enum_mixed_named_fields(enum_def: &EnumDef) -> ahash::AHash
 
     field_types
         .into_iter()
-        .filter(|(_, types)| types.len() > 1)
+        .filter(|(_, field_type_names)| field_type_names.len() > 1)
         .map(|(name, _)| name.to_string())
         .collect()
 }
@@ -793,13 +858,14 @@ pub(super) fn tagged_enum_mixed_named_fields(enum_def: &EnumDef) -> ahash::AHash
 pub(super) fn tagged_enum_binding_struct_fields<'a>(
     enum_def: &'a EnumDef,
     struct_names: &ahash::AHashSet<String>,
+    types: &'a [TypeDef],
 ) -> ahash::AHashSet<&'a str> {
     use crate::core::ir::TypeRef;
     let mut field_types: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     let mut sanitized_fields: ahash::AHashSet<&str> = ahash::AHashSet::new();
 
     for variant in &enum_def.variants {
-        for field in &variant.fields {
+        for field in tagged_enum_effective_fields(enum_def, variant, types) {
             if field.sanitized {
                 sanitized_fields.insert(&field.name);
             }

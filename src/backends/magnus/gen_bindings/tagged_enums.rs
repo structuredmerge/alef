@@ -24,6 +24,40 @@ fn sorbet_type_for_field(ty: &crate::core::ir::TypeRef, optional: bool) -> Strin
     if optional { format!("T.nilable({base})") } else { base }
 }
 
+/// The body of `from_hash` for a variant serde flattens (see
+/// [`crate::codegen::serde_enum_repr::serde_flattens_newtype_payload`]).
+///
+/// Internal tagging merges the payload's own fields into the tag object, so there is no `_0` key
+/// to read and the previous `hash[:_0] || hash["_0"]` resolved to `nil` for every such variant.
+/// The payload IS the hash minus the discriminator. Keys are symbolized because the generated
+/// Magnus constructor reads them with `kwargs.get(ruby.to_symbol(...))`, which a string-keyed
+/// Hash never matches, and `from_hash` accepts both spellings from its callers.
+///
+/// A payload that is not a plain `TypeRef::Named` has no Ruby class to construct, so the
+/// stripped hash is passed through rather than guessing at a constructor — serde itself rejects
+/// an internally tagged newtype whose payload is not a map, so this is a degenerate shape. ~keep
+fn flattened_newtype_from_hash_body(field: &crate::core::ir::FieldDef, tag_field: &str) -> String {
+    use crate::core::ir::TypeRef;
+
+    let payload_expr = match &field.ty {
+        TypeRef::Named(payload_type) => format!("{payload_type}.new(payload)"),
+        _ => "payload".to_string(),
+    };
+    let attr_name = if field.name == "_0" {
+        "value"
+    } else {
+        field.name.as_str()
+    };
+    crate::backends::magnus::template_env::render(
+        "tagged_enum_flattened_from_hash.rb.jinja",
+        minijinja::context! {
+            tag_field => tag_field,
+            attr_name => attr_name,
+            payload_expr => payload_expr,
+        },
+    )
+}
+
 /// Generate a Ruby marker module and Data.define variants for an internally-tagged enum.
 ///
 /// Emits:
@@ -152,29 +186,42 @@ pub(super) fn gen_tagged_enum_ruby_classes(enum_def: &crate::core::ir::EnumDef, 
             ));
         }
 
-        let field_args: Vec<String> = variant
-            .fields
-            .iter()
-            .map(|f| {
-                let key_sym = if f.name == "_0" {
-                    ":_0".to_string()
-                } else {
-                    format!(":{}", f.name)
-                };
-                let param_name = if f.name == "_0" {
-                    "value".to_string()
-                } else {
-                    f.name.clone()
-                };
-                let key_string = if f.name == "_0" { "_0" } else { f.name.as_str() };
-                let val_expr = format!("hash[{key_sym}] || hash[\"{key_string}\"]");
-                format!("{param_name}: {val_expr}")
-            })
-            .collect();
-        let from_hash_call = if field_args.is_empty() {
-            "new".to_string()
+        let from_hash_body = if crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant) {
+            flattened_newtype_from_hash_body(&variant.fields[0], tag_field)
         } else {
-            format!("new({})", field_args.join(", "))
+            // Under adjacent tagging (`tag = "t", content = "c"`) serde puts a newtype payload
+            // under the CONTENT key, never under the synthesized positional name -- `_0` is an
+            // alef-internal field name that appears on no wire. Reading `hash[:_0]` there yields
+            // nil for every such variant, the same defect the flattened branch above fixes for
+            // internal tagging (xberg's `DiffLine`, `tag="kind", content="text"`). ~keep
+            let positional_wire_key = crate::codegen::serde_enum_repr::serde_enum_repr(enum_def)
+                .content()
+                .map(str::to_string);
+            let field_args: Vec<String> = variant
+                .fields
+                .iter()
+                .map(|f| {
+                    let is_positional = f.name == "_0";
+                    let key_string = match (is_positional, positional_wire_key.as_deref()) {
+                        (true, Some(content)) => content,
+                        (true, None) => "_0",
+                        (false, _) => f.name.as_str(),
+                    };
+                    let param_name = if is_positional {
+                        "value".to_string()
+                    } else {
+                        f.name.clone()
+                    };
+                    let val_expr = format!("hash[:{key_string}] || hash[\"{key_string}\"]");
+                    format!("{param_name}: {val_expr}")
+                })
+                .collect();
+            let call = if field_args.is_empty() {
+                "new".to_string()
+            } else {
+                format!("new({})", field_args.join(", "))
+            };
+            format!("      {call}\n")
         };
 
         let doc_comment = doc_comment.replace("  # ", "  ## ");
@@ -188,7 +235,7 @@ pub(super) fn gen_tagged_enum_ruby_classes(enum_def: &crate::core::ir::EnumDef, 
                 class_name => class_name,
                 field_accessors => field_accessors,
                 predicate_methods => predicate_methods,
-                from_hash_call => from_hash_call,
+                from_hash_body => from_hash_body,
             },
         ));
     }

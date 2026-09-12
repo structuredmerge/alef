@@ -11,7 +11,7 @@
 //! Every backend that emits or parses the JSON form of an IR enum must classify it through
 //! [`serde_enum_repr`] so a future edit cannot reintroduce that divergence.
 
-use crate::core::ir::EnumDef;
+use crate::core::ir::{EnumDef, EnumVariant};
 
 /// serde's four enum representations, carrying the key names each one needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +177,136 @@ mod tagged_object_tag_key_tests {
     }
 }
 
+/// True when serde merges `variant`'s single positional payload into the tag-bearing object, so
+/// the wire carries the payload's own fields and NO key for the payload itself.
+///
+/// The `_0` in a newtype variant's `fields` (`Excel(ExcelMetadata)`) is synthesized by the
+/// extractor, never written by the user. Under internal tagging serde flattens the payload in
+/// beside the tag — `{"format_type":"excel","sheet_count":2}` — so a surface that renders that
+/// field name verbatim advertises a `_0` key nothing emits: a Ruby `hash[:_0]` that is always
+/// `nil`, a `.pyi` key no payload carries, a wasm `"0"` getter for an absent property.
+///
+/// Narrowed to [`SerdeEnumRepr::Internal`] on purpose — every other representation keeps a real
+/// key for the payload (external: the variant name; adjacent: the content key; untagged: the
+/// bare payload), so a tuple variant's `_0` is legitimate there and must keep working.
+///
+/// This exists as one predicate because the split already happened once: alef 0.85.11 taught the
+/// Magnus *binding* to emit `#[serde(flatten)]` here and left the surfaces that read the same
+/// variant still emitting the `_0` hop, which turned every tagged-enum payload assertion in a
+/// consumer's Ruby suite into a `KeyError` (recorded at
+/// `crate::e2e::field_access::types::FieldAccessIndex::variant_payload_tuple`). ~keep
+#[must_use]
+pub fn serde_flattens_newtype_payload(enum_def: &EnumDef, variant: &EnumVariant) -> bool {
+    variant.is_tuple && variant.fields.len() == 1 && matches!(serde_enum_repr(enum_def), SerdeEnumRepr::Internal { .. })
+}
+
+#[cfg(test)]
+mod serde_flattens_newtype_payload_tests {
+    use super::*;
+    use crate::core::ir::{FieldDef, TypeRef};
+
+    fn enum_with(tag: Option<&str>, content: Option<&str>, untagged: bool, variant: EnumVariant) -> EnumDef {
+        EnumDef {
+            name: "FormatMetadata".to_string(),
+            serde_tag: tag.map(str::to_string),
+            serde_content: content.map(str::to_string),
+            serde_untagged: untagged,
+            variants: vec![variant],
+            ..EnumDef::default()
+        }
+    }
+
+    fn variant(is_tuple: bool, field_names: &[&str]) -> EnumVariant {
+        EnumVariant {
+            name: "Excel".to_string(),
+            is_tuple,
+            fields: field_names
+                .iter()
+                .map(|name| FieldDef {
+                    name: (*name).to_string(),
+                    ty: TypeRef::Named("ExcelMetadata".to_string()),
+                    ..FieldDef::default()
+                })
+                .collect(),
+            ..EnumVariant::default()
+        }
+    }
+
+    /// One row: case name, tag, content, untagged, the variant, and whether serde flattens it.
+    type FlattenCase<'a> = (&'a str, Option<&'a str>, Option<&'a str>, bool, EnumVariant, bool);
+
+    #[test]
+    fn should_flatten_only_an_internally_tagged_newtype_variant() {
+        let cases: [FlattenCase<'_>; 7] = [
+            (
+                "internally tagged newtype is the flattened shape",
+                Some("format_type"),
+                None,
+                false,
+                variant(true, &["_0"]),
+                true,
+            ),
+            (
+                "adjacent tagging keeps the payload under the content key",
+                Some("format_type"),
+                Some("payload"),
+                false,
+                variant(true, &["_0"]),
+                false,
+            ),
+            (
+                "untagged writes the bare payload",
+                None,
+                None,
+                true,
+                variant(true, &["_0"]),
+                false,
+            ),
+            (
+                "external tagging keys the payload on the variant name",
+                None,
+                None,
+                false,
+                variant(true, &["_0"]),
+                false,
+            ),
+            (
+                "untagged wins over a stray tag, so the payload is still not flattened",
+                Some("format_type"),
+                None,
+                true,
+                variant(true, &["_0"]),
+                false,
+            ),
+            (
+                "a struct variant's fields are already flat and carry real names",
+                Some("format_type"),
+                None,
+                false,
+                variant(false, &["sheet_count"]),
+                false,
+            ),
+            (
+                "a multi-field tuple variant is not a newtype",
+                Some("format_type"),
+                None,
+                false,
+                variant(true, &["_0", "_1"]),
+                false,
+            ),
+        ];
+
+        for (case, tag, content, untagged, variant, expected) in cases {
+            let enum_def = enum_with(tag, content, untagged, variant);
+            assert_eq!(
+                serde_flattens_newtype_payload(&enum_def, &enum_def.variants[0]),
+                expected,
+                "{case}"
+            );
+        }
+    }
+}
+
 /// The inverse of [`crate::codegen::naming::wire_variant_value`]: given a value read off the
 /// JSON/wire surface (an e2e fixture's enum-typed input, a recorded response body), return the
 /// Rust variant name that produces it — which is also the public member identifier every binding
@@ -214,7 +344,6 @@ pub fn variant_name_for_wire<'a>(enum_def: &'a EnumDef, wire: &str) -> Option<&'
 #[cfg(test)]
 mod variant_name_for_wire_tests {
     use super::*;
-    use crate::core::ir::EnumVariant;
 
     fn output_format(rename_all: Option<&str>, variants: &[(&str, Option<&str>)]) -> EnumDef {
         EnumDef {

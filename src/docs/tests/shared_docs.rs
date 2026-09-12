@@ -257,7 +257,7 @@ fn html_theme_enum_with_rename_all() -> EnumDef {
 #[test]
 fn test_render_enum_for_shared_doc_emits_wire_value_column_when_rename_all_set() {
     let en = html_theme_enum_with_rename_all();
-    let out = render_enum_for_shared_doc(&en, Language::Rust);
+    let out = render_enum_for_shared_doc(&en, Language::Rust, &ApiSurface::default());
     assert!(out.contains("| Variant | Wire value | Description |"));
     assert!(out.contains("| `Default` | `default` |"));
     assert!(out.contains("| `Github` | `github` |"));
@@ -300,7 +300,7 @@ fn test_render_enum_for_shared_doc_demotes_internal_headings() {
         excluded_variants: vec![],
         version: Default::default(),
     };
-    let out = render_enum_for_shared_doc(&en, Language::Rust);
+    let out = render_enum_for_shared_doc(&en, Language::Rust, &ApiSurface::default());
     assert!(
         out.contains("#### Variants"),
         "internal heading must be demoted to #### (was ##): {out}"

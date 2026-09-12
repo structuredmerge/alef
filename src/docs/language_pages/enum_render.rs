@@ -3,6 +3,7 @@ use crate::core::config::{Language, ResolvedCrateConfig};
 use crate::core::ir::{ApiSurface, EnumDef};
 use crate::docs::descriptions::generate_enum_variant_description;
 use crate::docs::doc_cleaning::{clean_doc_inline, demote_headings_to_start_at};
+use crate::docs::enum_payload_fields::variant_field_descriptions;
 use crate::docs::formatting::escape_table_cell;
 use crate::docs::naming::{enum_variant_name, field_name, lang_code_fence, type_name};
 use crate::docs::{clean_doc, doc_type, template_env, version_labels};
@@ -92,15 +93,15 @@ pub(super) fn render_enum(
             binding_fields(&variant.fields).collect()
         };
         if !variant_fields.is_empty() {
-            let fields_desc: Vec<String> = variant_fields
-                .into_iter()
-                .map(|f| {
-                    let fname = field_name(&f.name, lang);
-                    let fty = doc_type(&f.ty, lang, ffi_prefix);
-                    format!("`{fname}`: `{fty}`")
-                })
-                .collect();
-            vdoc = format!("{vdoc} — Fields: {}", fields_desc.join(", "));
+            let (fields_desc, fields_label) = variant_field_descriptions(
+                en,
+                variant,
+                &variant_fields,
+                api,
+                |name| field_name(name, lang),
+                |f| doc_type(&f.ty, lang, ffi_prefix),
+            );
+            vdoc = format!("{vdoc} — {fields_label}: {}", fields_desc.join(", "));
         }
         if let Some(ref since) = variant.version.since {
             let since = version_labels::major_minor(since);

@@ -1651,10 +1651,21 @@ fn test_tagged_enum_different_named_types_per_variant_uses_into_not_serde_json()
         !content.contains("serde_json::to_string"),
         "core→binding conversion should use typed .into() conversion for single-tuple Named variants"
     );
+    // `Message` is internally tagged, so serde merges each payload's own fields as siblings of
+    // the tag instead of nesting them under a per-variant key -- there is no `system:`/`user:`
+    // field to assert any more. The property this test exists to protect is unchanged: the
+    // payload reaches the binding as its CONCRETE type, never a `serde_json` round-trip. Assert
+    // that on the flattened field and on both typed destructures. ~keep
     assert!(
-        content.contains("system: Option<JsSystemMessage>") && content.contains("user: Option<JsUserMessage>"),
-        "variant-specific fields must retain concrete binding payload types"
+        content.contains("pub content: Option<String>"),
+        "flattened payload field must keep its concrete binding type\n--- GENERATED ---\n{content}"
     );
+    for payload in ["SystemMessage", "UserMessage"] {
+        assert!(
+            content.contains(&format!("let {payload} {{ content, .. }} =")),
+            "core->binding conversion must destructure the concrete {payload}\n--- GENERATED ---\n{content}"
+        );
+    }
 }
 
 fn make_trait_def_napi(name: &str, methods: Vec<MethodDef>) -> TypeDef {

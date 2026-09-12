@@ -89,6 +89,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn render_test_case(
     .with_ir_enum_map(FieldResolver::ir_enum_fields(type_defs, enums), call_root_type.clone())
     .with_wasm_enum_representations(enums)
     .with_napi_tagged_object_enums(enums)
+    .with_napi_flattened_newtype_variants(enums, type_defs)
     .with_ir_collection_map(FieldResolver::ir_collection_fields(type_defs), call_root_type)
     .with_collection_element_metadata(type_defs)
     .with_ir_fields(ir_reachable_fields, ir_known_excluded_fields, ir_optional_fields)

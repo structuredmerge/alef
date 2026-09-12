@@ -17,9 +17,12 @@ fn assert_strict_typescript_compiles(source: &str) {
     else {
         return;
     };
+    // tsc reports diagnostics on stdout, not stderr -- printing only stderr renders every
+    // rejection as an empty message and hides the error that caused it. ~keep
     assert!(
         output.status.success(),
-        "strict TypeScript rejected generated snippet:\n{}",
+        "strict TypeScript rejected generated snippet:\n{}\n{}\n--- source ---\n{source}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -82,7 +85,7 @@ fn user_message_type_def() -> TypeDef {
 }
 
 #[test]
-fn node_tagged_enum_variant_nests_payload_under_synthesized_field() {
+fn node_tagged_enum_variant_flattens_payload_onto_container_when_resolvable() {
     let enums = [message_enum_def()];
     let type_defs = [user_message_type_def()];
     let expression = ts_builder_expression(
@@ -95,6 +98,33 @@ fn node_tagged_enum_variant_nests_payload_under_synthesized_field() {
         &Default::default(),
         &Default::default(),
         &type_defs,
+        &enums,
+        "",
+        &[],
+        &mut Default::default(),
+    );
+
+    assert_eq!(expression, "{ role: \"user\", content: \"Hello\" } as Message");
+}
+
+/// Negative control for the resolvability requirement itself: with `UserMessage` absent from
+/// `type_defs`, `backends::napi::tagged_enum_flattened_newtype` cannot resolve the payload and
+/// falls back to the old nested-under-a-synthesized-field shape -- the exact shape the real
+/// napi backend also falls back to in this case (see its own doc comment). Proves the flattening
+/// above is conditioned on resolvability, not unconditional for every internally tagged newtype.
+#[test]
+fn node_tagged_enum_variant_nests_payload_when_type_unresolvable() {
+    let enums = [message_enum_def()];
+    let expression = ts_builder_expression(
+        serde_json::json!({"role": "user", "content": "Hello"})
+            .as_object()
+            .expect("object"),
+        "Message",
+        &Default::default(),
+        "node",
+        &Default::default(),
+        &Default::default(),
+        &[],
         &enums,
         "",
         &[],
@@ -213,21 +243,27 @@ fn node_tagged_enum_snippet_typechecks_against_the_generated_dts_union() {
         &mut Default::default(),
     );
 
-    let dts = crate::backends::napi::internal_tagged_union_dts_lines(&enums[0], "Message").join("\n");
+    // Hand the `.d.ts` emitter the SAME resolvable `type_defs` the builder above got. Passing
+    // `&[]` here (as the unresolvable-payload negative control below deliberately does) makes
+    // the union declare the nested shape while the literal is flattened, so the two disagree
+    // by construction and tsc rejects a snippet that is correct in production. ~keep
+    let dts = crate::backends::napi::internal_tagged_union_dts_lines(&enums[0], "Message", &type_defs).join("\n");
     let source = format!(
         "interface UserMessage {{ content: string }}\n{dts}\nconst message: Message = {expression};\nvoid message;\n"
     );
     assert_strict_typescript_compiles(&source);
 }
 
-/// Negative control proving the guard above is not vacuous: the pre-fix flattened shape
-/// (`{ role: 'user', content: 'Hello' }`, the actual output before this change) is rejected
-/// by `tsc` against the same generated `.d.ts` union that the positive test compiles clean
-/// against.
+/// Negative control proving the positive test above is not vacuous, for the OTHER branch of
+/// the resolvability split: with `UserMessage` unresolvable (`internal_tagged_union_dts_lines`
+/// called with `&[]` types, same as this suite's other unresolvable-payload cases), the `.d.ts`
+/// union member falls back to the nested-under-a-synthesized-field shape, so the flattened
+/// literal (`{ role: 'user', content: 'Hello' }` -- correct only when the payload resolves) is
+/// rejected by `tsc` against it.
 #[test]
-fn node_flattened_message_literal_fails_the_generated_dts_union() {
+fn node_flattened_message_literal_fails_the_generated_dts_union_when_type_unresolvable() {
     let enums = [message_enum_def()];
-    let dts = crate::backends::napi::internal_tagged_union_dts_lines(&enums[0], "Message").join("\n");
+    let dts = crate::backends::napi::internal_tagged_union_dts_lines(&enums[0], "Message", &[]).join("\n");
     let flattened = "{ role: \"user\", content: \"Hello\" } as Message";
     let source = format!(
         "interface UserMessage {{ content: string }}\n{dts}\nconst message: Message = {flattened};\nvoid message;\n"
@@ -1085,7 +1121,8 @@ fn node_nested_tagged_struct_variant_survives_binding_to_an_unannotated_const() 
     let literal = expression
         .strip_suffix(" as EngineConfig")
         .expect("node builder expressions end in an `as <type>` assertion");
-    let dts = crate::backends::napi::internal_tagged_union_dts_lines(&auth_config_enum_def(), "AuthConfig").join("\n");
+    let dts =
+        crate::backends::napi::internal_tagged_union_dts_lines(&auth_config_enum_def(), "AuthConfig", &[]).join("\n");
     let source = format!(
         "{dts}\n\
          interface EngineConfig {{ auth: AuthConfig; respectRobotsTxt: boolean }}\n\
@@ -1110,7 +1147,8 @@ fn node_nested_tagged_struct_variant_without_its_assertion_is_rejected() {
         !literal.contains("as AuthConfig"),
         "neutralisation must remove the nested assertion, got: {literal}"
     );
-    let dts = crate::backends::napi::internal_tagged_union_dts_lines(&auth_config_enum_def(), "AuthConfig").join("\n");
+    let dts =
+        crate::backends::napi::internal_tagged_union_dts_lines(&auth_config_enum_def(), "AuthConfig", &[]).join("\n");
     let source = format!(
         "{dts}\n\
          interface EngineConfig {{ auth: AuthConfig; respectRobotsTxt: boolean }}\n\

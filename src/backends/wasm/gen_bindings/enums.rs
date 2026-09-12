@@ -23,12 +23,17 @@ use super::functions::emit_rustdoc;
 /// name to "type" like `gen_tagged_enum_as_struct` already does -- UNLESS every data-carrying
 /// variant opts out of that struct shape with its own `#[serde(untagged)]`, in which case
 /// [`is_variant_untagged_string_enum`] claims it instead (see that function for why the
-/// discriminator-struct shape would be wrong there). ~keep
+/// discriminator-struct shape would be wrong there), OR every data-carrying variant's payload
+/// flattens into the tag object under internal tagging, in which case
+/// [`is_fully_flattened_internal_enum`] claims it instead -- a discriminator struct keyed on the
+/// synthesized `_0` field name cannot represent a wire shape with no `_0` key at all (see that
+/// function's doc comment). ~keep
 pub(crate) fn is_tagged_data_enum(enum_def: &EnumDef) -> bool {
     let has_data_variants = enum_def.variants.iter().any(|v| !v.fields.is_empty());
     has_data_variants
         && (enum_def.serde_tag.is_some() || !enum_def.serde_untagged)
         && !is_variant_untagged_string_enum(enum_def)
+        && !is_fully_flattened_internal_enum(enum_def)
 }
 
 /// True if this enum is a serde-untagged data enum (`#[serde(untagged)]` with at least one
@@ -70,15 +75,49 @@ pub(crate) fn is_variant_untagged_string_enum(enum_def: &EnumDef) -> bool {
         && data_variants.clone().all(|v| v.serde_untagged)
 }
 
+/// True when EVERY data-carrying variant of this internally-tagged enum has its single
+/// positional payload flattened into the tag object by serde (see
+/// [`crate::codegen::serde_enum_repr::serde_flattens_newtype_payload`]), e.g.
+/// `#[serde(tag = "format_type")] enum FormatMetadata { Excel(ExcelMetadata), Csv(CsvMetadata) }`
+/// serializing as `{"format_type":"excel","sheet_count":2}` with no key anywhere for the payload
+/// itself.
+///
+/// `gen_tagged_enum_as_struct`'s discriminator-struct shape unions every variant's fields by
+/// name, but a newtype variant's only field is the extractor-synthesized `_0` -- every flattened
+/// variant collapses onto that ONE shared name, which `mixed_type_fields` then degrades to a
+/// single `Option<JsValue>` with no honest JS property name, because no wire form of this enum
+/// has a `"0"` key (nor a `"_0"` key, nor any key besides the payload's own flattened-in fields).
+/// The struct is representable in Rust but not usable from JS: there is no accessor a consumer
+/// could call to read or write the payload.
+///
+/// Like [`is_untagged_data_enum`] and [`is_variant_untagged_string_enum`], the fix is "no nominal
+/// `Wasm{Enum}` type at all" -- bridge every field/param/return of this type as `JsValue` via
+/// `serde_wasm_bindgen`, generic over whatever the real core type's own internally-tagged serde
+/// impl produces on the wire. A MIXED enum (some flattened newtype variants, some struct-field
+/// variants with their own real field names) does NOT qualify here -- only the struct-field
+/// variants would need real accessors, and `gen_tagged_enum_as_struct` already unions those in
+/// correctly alongside the flattened variants' now-hidden fields (see `flattened_only_field_names`
+/// there), so a mixed enum keeps its nominal type. ~keep
+pub(crate) fn is_fully_flattened_internal_enum(enum_def: &EnumDef) -> bool {
+    let data_variants: Vec<&EnumVariant> = enum_def.variants.iter().filter(|v| !v.fields.is_empty()).collect();
+    !data_variants.is_empty()
+        && data_variants
+            .iter()
+            .all(|v| crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, v))
+}
+
 /// Either flavor of "no nominal `Wasm{Enum}` type; bridge as `JsValue` via `serde_wasm_bindgen`"
-/// data enum -- [`is_untagged_data_enum`] (container-level) or [`is_variant_untagged_string_enum`]
-/// (variant-level). The runtime/field-bridging codegen is generic over the payload shape either
-/// one produces, so every call site that exists to answer "does this enum need JsValue bridging
+/// data enum -- [`is_untagged_data_enum`] (container-level), [`is_variant_untagged_string_enum`]
+/// (variant-level), or [`is_fully_flattened_internal_enum`] (internally tagged, every payload
+/// flattened). The runtime/field-bridging codegen is generic over the payload shape any of these
+/// produces, so every call site that exists to answer "does this enum need JsValue bridging
 /// rather than a real wasm-bindgen type" asks this instead of re-deriving the disjunction. Only
-/// the `.d.ts` declaration differs between the two, which is why they stay separate predicates.
+/// the `.d.ts` declaration differs between the three, which is why they stay separate predicates.
 /// ~keep
 pub(crate) fn is_json_passthrough_data_enum(enum_def: &EnumDef) -> bool {
-    is_untagged_data_enum(enum_def) || is_variant_untagged_string_enum(enum_def)
+    is_untagged_data_enum(enum_def)
+        || is_variant_untagged_string_enum(enum_def)
+        || is_fully_flattened_internal_enum(enum_def)
 }
 
 /// Detect every [`is_json_passthrough_data_enum`] in `api` and default its `type_overrides`
@@ -297,6 +336,28 @@ pub(super) fn variant_tag_value(
     wire_variant_value(variant_name, serde_rename, serde_rename_all)
 }
 
+/// Field names contributed ONLY by variants whose payload serde flattens into the tag object
+/// (see [`crate::codegen::serde_enum_repr::serde_flattens_newtype_payload`]).
+///
+/// The struct unions every variant's fields under one name apiece, so a name a non-flattened
+/// variant also contributes still needs its JS accessor and is excluded here. Under internal
+/// tagging that overlap is unreachable in practice — `serde_derive` rejects a tuple variant of
+/// any other arity outright — but the union is keyed on the name alone, so the set is narrowed
+/// rather than assumed. ~keep
+fn flattened_only_field_names(enum_def: &EnumDef) -> std::collections::BTreeSet<&str> {
+    let mut flattened: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut plain: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for variant in &enum_def.variants {
+        let target = if crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant) {
+            &mut flattened
+        } else {
+            &mut plain
+        };
+        target.extend(variant.fields.iter().map(|field| field.name.as_str()));
+    }
+    &flattened - &plain
+}
+
 /// Generate a wasm-bindgen tagged-enum representation as a flat `#[wasm_bindgen]` struct.
 ///
 /// Serde-tagged data enums (e.g. `#[serde(tag = "type")] enum AuthConfig { Basic { ... }, ...}`)
@@ -383,7 +444,14 @@ pub(super) fn gen_tagged_enum_as_struct(enum_def: &EnumDef, prefix: &str) -> Str
         "    pub fn {setter_ident_escaped}(&mut self, value: String) {{ self.{tag_field_ident} = value; }}"
     ));
 
+    let flattened_only = flattened_only_field_names(enum_def);
     for (name, ty) in &field_entries {
+        // serde flattens this variant's payload into the tag object, so the `"0"` key a
+        // positional field's accessor advertised exists on no wire form of this enum. The struct
+        // field itself stays — both `From` impls read it — it just gets no JS property. ~keep
+        if flattened_only.contains(name.as_str()) {
+            continue;
+        }
         let js_name_for_field = to_node_name(name);
         let field_name = name.as_str();
         let rust_getter_ident = if field_name.starts_with('_')

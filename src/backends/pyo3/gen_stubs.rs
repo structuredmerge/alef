@@ -368,7 +368,13 @@ pub fn gen_stubs(
     let core_import = config.core_import_name();
     for enum_def in &api.enums {
         let is_host_enum = crate::codegen::cfg::is_host_owned_rust_path(&core_import, &enum_def.rust_path);
-        body_lines.push(gen_enum_stub(enum_def, emit_docstrings, &coercible_dtos, is_host_enum));
+        body_lines.push(gen_enum_stub(
+            enum_def,
+            emit_docstrings,
+            &coercible_dtos,
+            is_host_enum,
+            &api.types,
+        ));
         body_lines.push("".to_string());
     }
 

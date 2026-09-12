@@ -402,6 +402,21 @@ impl Backend for WasmBackend {
             builder.add_item(&variant_untagged_ts_plan.custom_section);
         }
         untagged_ts_plan.plans.extend(variant_untagged_ts_plan.plans);
+        // Same "no nominal Wasm{Enum} type" treatment again, for an internally-tagged data enum
+        // every one of whose data variants serde flattens into the tag object -- see
+        // `enums::is_fully_flattened_internal_enum`. Merged into `untagged_ts_plan.plans` for the
+        // same reason as `variant_untagged_ts_plan` above. ~keep
+        let flattened_internal_ts_plan = ts_union::build_flattened_internal_enum_ts_plan_for_api(
+            api,
+            &exclude_types,
+            &opaque_types,
+            &text_field_enum_names,
+            &prefix,
+        );
+        if !flattened_internal_ts_plan.custom_section.is_empty() {
+            builder.add_item(&flattened_internal_ts_plan.custom_section);
+        }
+        untagged_ts_plan.plans.extend(flattened_internal_ts_plan.plans);
         let untagged_ts_value_types = ts_union::value_type_names(&untagged_ts_plan);
 
         let core_to_binding_convertible_for_structs =

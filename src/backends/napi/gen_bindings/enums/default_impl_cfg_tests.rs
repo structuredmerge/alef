@@ -50,7 +50,7 @@ fn gen_enum_default_impl_reachable_when_only_later_variant_feature_enabled() {
         ],
     );
 
-    let output = gen_enum(&enum_def, "Js", true, "test", None);
+    let output = gen_enum(&enum_def, "Js", true, "test", None, &[]);
 
     assert_eq!(
         output.matches("impl Default for JsSearchAlgorithm {").count(),
@@ -103,7 +103,7 @@ fn gen_enum_default_impl_cascade_accumulates_negation_across_many_gated_variants
             .collect();
         let enum_def = host_enum_with_gated_variants("SearchAlgorithm", &variant_cfgs);
 
-        let output = gen_enum(&enum_def, "Js", true, "test", None);
+        let output = gen_enum(&enum_def, "Js", true, "test", None, &[]);
 
         assert_eq!(
             output.matches("impl Default for JsSearchAlgorithm {").count(),
@@ -147,7 +147,7 @@ fn gen_enum_default_impl_cascade_terminates_at_unconditional_variant() {
         ],
     );
 
-    let output = gen_enum(&enum_def, "Js", true, "test", None);
+    let output = gen_enum(&enum_def, "Js", true, "test", None, &[]);
 
     assert_eq!(
         output.matches("impl Default for JsSearchAlgorithm {").count(),
@@ -175,7 +175,7 @@ fn gen_enum_default_impl_cascade_terminates_at_unconditional_variant() {
 fn gen_enum_default_impl_stays_unconditional_when_ungated() {
     let enum_def = host_enum_with_gated_variants("SearchAlgorithm", &[("Alpha", None), ("Beta", None)]);
 
-    let output = gen_enum(&enum_def, "Js", true, "test", None);
+    let output = gen_enum(&enum_def, "Js", true, "test", None, &[]);
 
     assert_eq!(
         output.matches("impl Default for JsSearchAlgorithm {").count(),

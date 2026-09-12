@@ -97,12 +97,16 @@ impl FieldResolver {
     /// non-empty field name to walk the payload type's own fields, and correctly answers `false`
     /// for an empty one. This is the distinct question a caller must ask instead once it finds
     /// the suffix is empty — see `csharp`/`kotlin`'s `try_render_generic_union_assertion`. ~keep
-    /// Whether `variant`'s single payload field is unnamed (`Variant(Payload)`), which is exactly
-    /// the shape serde flattens beside the discriminator on an internally tagged enum — and
-    /// exactly the shape `backends::magnus` emits `#[serde(flatten)]` for.
+    /// Whether `variant`'s single payload field is the shape serde flattens beside the
+    /// discriminator on an internally tagged enum — and exactly the shape `backends::magnus`
+    /// emits `#[serde(flatten)]` for.
     ///
-    /// Reads the same `EnumVariant::is_tuple` flag that backend's `flatten_newtype` predicate
-    /// reads, so an e2e assertion and the binding it asserts against cannot drift apart. ~keep
+    /// Reads [`crate::codegen::serde_enum_repr::serde_flattens_newtype_payload`], the same
+    /// predicate that backend's `flatten_newtype` reads, so an e2e assertion and the binding it
+    /// asserts against cannot drift apart. Deliberately narrower than `Variant(Payload)`
+    /// (`EnumVariant::is_tuple`) alone: an adjacently tagged or untagged newtype variant is also
+    /// tuple-shaped, but serde does not flatten either of those, so this answers `false` for
+    /// them. ~keep
     pub fn union_variant_payload_is_tuple(&self, union_type: &str, variant: &str) -> bool {
         self.ir_enum_map
             .variant_payload_tuple

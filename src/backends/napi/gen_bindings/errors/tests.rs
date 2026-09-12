@@ -329,6 +329,142 @@ fn internally_tagged_newtype_variants_declare_discriminated_union() {
     );
 }
 
+/// The `FormatMetadata` defect this task fixes: when `ApiSurface::types` resolves the wrapped
+/// struct, an internally-tagged newtype variant's `.d.ts` union member must flatten that
+/// struct's OWN fields onto the tag object -- `{"format_type":"excel","sheet_count":2,...}` is
+/// the real serde wire, never `{"format_type":"excel","excel":{"sheet_count":2,...}}`.
+#[test]
+fn internally_tagged_newtype_variant_flattens_wrapped_struct_when_type_resolves() {
+    let api = ApiSurface {
+        enums: vec![EnumDef {
+            name: "FormatMetadata".to_string(),
+            serde_tag: Some("format_type".to_string()),
+            serde_rename_all: Some("snake_case".to_string()),
+            variants: vec![EnumVariant {
+                name: "Excel".to_string(),
+                fields: vec![FieldDef {
+                    name: "_0".to_string(),
+                    ty: TypeRef::Named("ExcelMetadata".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        types: vec![TypeDef {
+            name: "ExcelMetadata".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "sheet_count".to_string(),
+                    ty: TypeRef::Primitive(crate::core::ir::PrimitiveType::U32),
+                    ..Default::default()
+                },
+                FieldDef {
+                    name: "sheet_names".to_string(),
+                    ty: TypeRef::Vec(Box::new(TypeRef::String)),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let dts = gen_dts(
+        &api,
+        "",
+        &Default::default(),
+        &[],
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        "",
+        None,
+    );
+
+    assert_eq!(
+        dts.lines()
+            .skip_while(|l| *l != "export type FormatMetadata =")
+            .take(2)
+            .collect::<Vec<_>>(),
+        vec![
+            "export type FormatMetadata =",
+            "  | { format_type: 'excel'; sheetCount: number; sheetNames: Array<string> }",
+        ],
+        "expected the wrapped struct's own fields flattened onto the tag object, got:\n{dts}"
+    );
+    assert!(
+        !dts.contains("excel: ExcelMetadata") && !dts.contains("excel?: ExcelMetadata"),
+        "must not declare the old nested `excel: ExcelMetadata` member once the type resolves:\n{dts}"
+    );
+}
+
+/// Negative control: adjacent tagging (`#[serde(tag, content)]`) nests a newtype variant's
+/// payload under the `content` key by design and is handled by a different `gen_dts` branch
+/// entirely -- it must never flatten, even when `ApiSurface::types` resolves the wrapped struct.
+#[test]
+fn adjacently_tagged_newtype_variant_keeps_nested_content_even_when_type_resolves() {
+    let api = ApiSurface {
+        enums: vec![EnumDef {
+            name: "FormatMetadata".to_string(),
+            serde_tag: Some("format_type".to_string()),
+            serde_content: Some("data".to_string()),
+            serde_rename_all: Some("snake_case".to_string()),
+            variants: vec![EnumVariant {
+                name: "Excel".to_string(),
+                fields: vec![FieldDef {
+                    name: "_0".to_string(),
+                    ty: TypeRef::Named("ExcelMetadata".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        types: vec![TypeDef {
+            name: "ExcelMetadata".to_string(),
+            fields: vec![FieldDef {
+                name: "sheet_count".to_string(),
+                ty: TypeRef::Primitive(crate::core::ir::PrimitiveType::U32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let dts = gen_dts(
+        &api,
+        "",
+        &Default::default(),
+        &[],
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        "",
+        None,
+    );
+
+    // Scoped to the `FormatMetadata` union member itself, not a global substring search:
+    // `ExcelMetadata`'s own standalone `.d.ts` interface legitimately declares `sheetCount`
+    // regardless of the flattening decision, so a bare `dts.contains("sheetCount")` would fire
+    // even when adjacent tagging correctly nests the payload. ~keep
+    assert_eq!(
+        dts.lines()
+            .skip_while(|l| *l != "export type FormatMetadata =")
+            .take(2)
+            .collect::<Vec<_>>(),
+        vec![
+            "export type FormatMetadata =",
+            "  | { format_type: 'excel'; data: ExcelMetadata }",
+        ],
+        "adjacent tagging must keep the payload nested under its content field, not flatten it \
+         onto the tag object:\n{dts}"
+    );
+}
+
 /// The reported regression: an internally-tagged enum whose variants are struct variants
 /// (e.g. `AuthConfig::Basic { username, password }`) must declare a real discriminated union
 /// — one member per variant, each variant's own fields required — not a single flattened
