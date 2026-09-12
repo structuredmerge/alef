@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-09-12
+
 ### Fixed
 
 - **An externally tagged newtype variant is no longer flattened.** `tagged_enum_flattened_newtype`
