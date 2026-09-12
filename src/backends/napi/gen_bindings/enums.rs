@@ -47,6 +47,32 @@ pub(crate) fn tagged_enum_flattened_newtype<'a>(
     Some((inner_name.as_str(), inner.fields.as_slice()))
 }
 
+/// The qualified path to a flattened newtype's payload struct.
+///
+/// [`tagged_enum_flattened_newtype`] yields the payload's short name, which is what the wire
+/// and the docs want. Generated Rust needs the *path*: the binding crate both constructs this
+/// struct (binding -> core) and destructures it (core -> binding), and only `core_import` is in
+/// scope there. A payload that is not re-exported at the core crate's root does not resolve as
+/// `core_import::Name` -- a payload declared in a submodule resolves only as
+/// `core_import::some::module::Name` -- so the
+/// recorded `rust_path` wins whenever it already carries one. Same rule as
+/// `conversions::helpers::paths::build_type_path_map`. ~keep
+pub(crate) fn tagged_enum_flattened_newtype_path(
+    enum_def: &EnumDef,
+    variant: &EnumVariant,
+    types: &[TypeDef],
+    core_import: &str,
+) -> Option<String> {
+    let (inner_name, _) = tagged_enum_flattened_newtype(enum_def, variant, types)?;
+    let inner = types.iter().find(|t| t.name == inner_name)?;
+    let path = inner.rust_path.replace('-', "_");
+    Some(if path.starts_with(core_import) {
+        path
+    } else {
+        format!("{core_import}::{inner_name}")
+    })
+}
+
 /// `variant`'s effective wire fields: the wrapped struct's own fields when
 /// [`tagged_enum_flattened_newtype`] resolves, otherwise the variant's own `FieldDef`s verbatim.
 /// Used everywhere a tagged-object emitter needs to reason about "the fields this variant puts

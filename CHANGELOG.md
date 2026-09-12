@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.86.1] - 2026-09-12
+
+### Fixed
+
+- **A flattened newtype payload is now named by its qualified path, in both directions.** 0.86.0
+  made the napi backend construct and destructure the payload struct directly -- before
+  flattening it nested the *binding* struct and never named the core type at all. Both emit sites
+  used the payload's short name, which only resolves for a type re-exported at the core crate's
+  root. Anything deeper (`xberg::pdf::metadata::PdfMetadata`) failed with `E0422: cannot find
+  struct, variant or union type`, once per variant per direction -- 42 errors for a 21-variant
+  enum, i.e. the generated binding did not compile at all. Both sites now resolve through the
+  payload's recorded `rust_path`, the same rule
+  `conversions::helpers::paths::build_type_path_map` already applies.
+
+  The three tests covering this asserted the *short* name, which is a substring of the qualified
+  form and so passed either way. They now require the qualified path, and were confirmed to fail
+  against the unfixed generator before being accepted.
+
 ## [0.86.0] - 2026-09-12
 
 ### Fixed

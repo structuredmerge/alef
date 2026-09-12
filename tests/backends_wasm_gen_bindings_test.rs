@@ -3525,14 +3525,20 @@ fn test_option_and_bare_tagged_data_enum_fields_use_js_value() {
         "Option<TaggedDataEnum> must NOT be Option<WasmResponseFormat>;\nactual:\n{content}"
     );
 
+    // The FIELD stays `Option<JsValue>` (asserted above) -- that is the bridging contract this
+    // test exists to protect. The ACCESSORS are narrower: since 0.86.0 an internally tagged enum
+    // whose every data variant flattens is a `is_fully_flattened_internal_enum`, and gets an
+    // opaque `Wasm{Enum}Value` handle carrying `typescript_type = "Wasm{Enum}"` so the `.d.ts`
+    // can express the discriminated union. That is a TypeScript-level narrowing only -- the
+    // value crossing the boundary is the same plain object `JsValue` always carried. ~keep
     assert!(
-        content.contains("pub fn response_format(&self) -> Option<JsValue>"),
-        "Option<TaggedDataEnum> getter must return Option<JsValue>;\nactual:\n{content}"
+        content.contains("pub fn response_format(&self) -> Option<WasmResponseFormatValue>"),
+        "flattened-internal enum getter must return the typed handle;\nactual:\n{content}"
     );
 
     assert!(
-        content.contains("fn set_response_format(&mut self, value: Option<JsValue>)"),
-        "Option<TaggedDataEnum> setter must accept Option<JsValue>;\nactual:\n{content}"
+        content.contains("fn set_response_format(&mut self, value: Option<WasmResponseFormatValue>)"),
+        "flattened-internal enum setter must accept the typed handle;\nactual:\n{content}"
     );
 
     assert!(
@@ -3558,14 +3564,16 @@ fn test_option_and_bare_tagged_data_enum_fields_use_js_value() {
         "bare TaggedDataEnum must NOT be WasmResponseFormat;\nactual:\n{content}"
     );
 
+    // Same TypeScript-level narrowing as the `Option` case above: the stored field is still
+    // `JsValue`, the accessors carry the typed handle. ~keep
     assert!(
-        content.contains("pub fn format(&self) -> JsValue"),
-        "bare TaggedDataEnum getter must return JsValue;\nactual:\n{content}"
+        content.contains("pub fn format(&self) -> WasmResponseFormatValue"),
+        "flattened-internal enum getter must return the typed handle;\nactual:\n{content}"
     );
 
     assert!(
-        content.contains("fn set_format(&mut self, value: JsValue)"),
-        "bare TaggedDataEnum setter must accept JsValue;\nactual:\n{content}"
+        content.contains("fn set_format(&mut self, value: WasmResponseFormatValue)"),
+        "flattened-internal enum setter must accept the typed handle;\nactual:\n{content}"
     );
 
     assert!(

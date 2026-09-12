@@ -193,7 +193,7 @@ pub(super) fn gen_tagged_enum_ruby_classes(enum_def: &crate::core::ir::EnumDef, 
             // under the CONTENT key, never under the synthesized positional name -- `_0` is an
             // alef-internal field name that appears on no wire. Reading `hash[:_0]` there yields
             // nil for every such variant, the same defect the flattened branch above fixes for
-            // internal tagging (xberg's `DiffLine`, `tag="kind", content="text"`). ~keep
+            // internal tagging (e.g. a diff-line enum with `tag="kind", content="text"`). ~keep
             let positional_wire_key = crate::codegen::serde_enum_repr::serde_enum_repr(enum_def)
                 .content()
                 .map(str::to_string);

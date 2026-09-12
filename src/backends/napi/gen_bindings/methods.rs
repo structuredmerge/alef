@@ -16,7 +16,8 @@ use crate::{
 
 use super::enums::{
     tagged_enum_binding_field_name, tagged_enum_binding_struct_fields, tagged_enum_field_is_tuple,
-    tagged_enum_flattened_newtype, tagged_enum_mixed_named_fields, variant_data_field_names,
+    tagged_enum_flattened_newtype, tagged_enum_flattened_newtype_path, tagged_enum_mixed_named_fields,
+    variant_data_field_names,
 };
 use super::functions::{core_prim_str, needs_napi_cast};
 
@@ -230,7 +231,9 @@ pub(super) fn gen_tagged_enum_binding_to_core(
                         format!("{}: {expr}", f.name)
                     })
                     .collect();
-                let field_exprs = vec![format!("{inner_name} {{ {} }}", inner_field_inits.join(", "))];
+                let inner_path = tagged_enum_flattened_newtype_path(enum_def, variant, types, core_import)
+                    .unwrap_or_else(|| inner_name.to_string());
+                let field_exprs = vec![format!("{inner_path} {{ {} }}", inner_field_inits.join(", "))];
 
                 minijinja::context! {
                     name => variant.name.clone(),
@@ -487,8 +490,10 @@ pub(super) fn gen_tagged_enum_core_to_binding(
                     let let_line = if bind_names.is_empty() {
                         None
                     } else {
+                        let inner_path = tagged_enum_flattened_newtype_path(enum_def, variant, types, core_import)
+                            .unwrap_or_else(|| inner_name.to_string());
                         Some(format!(
-                            "let {inner_name} {{ {}, .. }} = {outer_var};",
+                            "let {inner_path} {{ {}, .. }} = {outer_var};",
                             bind_names.join(", ")
                         ))
                     };
@@ -801,7 +806,7 @@ mod tests {
 
         let binding_to_core = gen_tagged_enum_binding_to_core(&en, "test_core", "Js", &struct_names, &types);
         assert!(
-            binding_to_core.contains("Self::Excel(ExcelMetadata { sheet_count:")
+            binding_to_core.contains("Self::Excel(test_core::ExcelMetadata { sheet_count:")
                 && binding_to_core.contains("sheet_names:"),
             "must construct the wrapped struct inline from flattened fields, got:\n{binding_to_core}"
         );
@@ -822,8 +827,8 @@ mod tests {
 
         let core_to_binding = gen_tagged_enum_core_to_binding(&en, "test_core", "Js", &struct_names, None, &types);
         assert!(
-            core_to_binding.contains("let ExcelMetadata { sheet_count, sheet_names, .. } = excel;"),
-            "must destructure the wrapped struct's own fields by name, got:\n{core_to_binding}"
+            core_to_binding.contains("let test_core::ExcelMetadata { sheet_count, sheet_names, .. } = excel;"),
+            "must destructure the wrapped struct's own fields by its QUALIFIED path, got:\n{core_to_binding}"
         );
         // Each flattened field's own name must appear a second time inside the constructed
         // `Self { ... }` literal (the field-init use), beyond its one appearance in the

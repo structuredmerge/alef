@@ -587,7 +587,7 @@ pub(in crate::backends::rustler::gen_bindings) fn gen_elixir_enum_module_with_kn
         // `elixir_field_name_with_type`'s doc): that heuristic strips the variant name as a
         // PREFIX of the type name (`Excel` + `ExcelMetadata` -> `metadata`), which is a real name
         // for a `NifTaggedEnum` struct-variant field but not the flat struct's actual key, so it
-        // previously documented `metadata: Xberg.ExcelMetadata.t()` for a payload only reachable
+        // previously documented a `metadata:` key for a payload only reachable
         // as `format.excel`. ~keep
         let is_flat = is_flat_data_enum(enum_def);
         for variant in &declared_variants {

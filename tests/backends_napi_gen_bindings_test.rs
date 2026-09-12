@@ -1660,10 +1660,19 @@ fn test_tagged_enum_different_named_types_per_variant_uses_into_not_serde_json()
         content.contains("pub content: Option<String>"),
         "flattened payload field must keep its concrete binding type\n--- GENERATED ---\n{content}"
     );
+    // Both directions must name the payload by its QUALIFIED path, not its short name. The
+    // binding crate has only `core_import` in scope, so a payload that is not re-exported at the
+    // core crate's root (`xberg::pdf::metadata::PdfMetadata`) fails to resolve as a bare name --
+    // E0422, 42 of them, the whole enum. Asserting the short name cannot catch that: it is a
+    // substring of the qualified form and passes either way. ~keep
     for payload in ["SystemMessage", "UserMessage"] {
         assert!(
-            content.contains(&format!("let {payload} {{ content, .. }} =")),
-            "core->binding conversion must destructure the concrete {payload}\n--- GENERATED ---\n{content}"
+            content.contains(&format!("let test_lib::{payload} {{ content, .. }} =")),
+            "core->binding destructure must use the qualified payload path\n--- GENERATED ---\n{content}"
+        );
+        assert!(
+            content.contains(&format!("test_lib::{payload} {{ content:")),
+            "binding->core struct literal must use the qualified payload path\n--- GENERATED ---\n{content}"
         );
     }
 }
