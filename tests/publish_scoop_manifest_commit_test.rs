@@ -104,6 +104,15 @@ impl BucketFixture {
     }
 }
 
+fn read_pushed_manifest(verify_dir: &Path) -> String {
+    let content = std::fs::read_to_string(verify_dir.join("bucket/alef.json")).expect("read pushed manifest");
+    // Read back through a fresh `git clone`, so on Windows git's default `core.autocrlf=true`
+    // rewrites the manifest's LF terminator to CRLF on checkout. The line ending is not what
+    // these tests assert -- they assert the manifest's *content* reached origin -- so compare
+    // on normalized terminators rather than pinning a platform's checkout convention. ~keep
+    content.replace("\r\n", "\n")
+}
+
 fn run_commit_script(bucket_dir: &Path, manifest_path: &str, version: &str) -> Output {
     shell_diagnostics::bash_command()
         .arg(script_path())
@@ -137,8 +146,7 @@ fn first_publish_of_untracked_manifest_is_committed() {
     // Verify against a fresh clone of origin, not the working checkout, so this proves the
     // commit was actually pushed, not just made locally.
     let verify_dir = fixture.reclone();
-    let content = std::fs::read_to_string(verify_dir.join("bucket/alef.json")).expect("read pushed manifest");
-    assert_eq!(content, "{\"version\":\"1.0.0\"}\n");
+    assert_eq!(read_pushed_manifest(&verify_dir), "{\"version\":\"1.0.0\"}\n");
 
     let log = run_git(&verify_dir, &["log", "--oneline", "-1"]);
     let log_message = String::from_utf8_lossy(&log.stdout);
@@ -196,8 +204,7 @@ fn real_version_bump_on_tracked_manifest_is_committed() {
     );
 
     let verify_dir = fixture.reclone();
-    let content = std::fs::read_to_string(verify_dir.join("bucket/alef.json")).expect("read pushed manifest");
-    assert_eq!(content, "{\"version\":\"1.0.1\"}\n");
+    assert_eq!(read_pushed_manifest(&verify_dir), "{\"version\":\"1.0.1\"}\n");
 }
 
 #[test]
@@ -223,4 +230,21 @@ fn old_working_tree_diff_form_misses_the_same_scenario() {
         "the old `git diff --quiet` form was expected to report no differences (exit 0) for an \
          untracked file -- if it did not, this control no longer reproduces the bug it exists to guard against"
     );
+}
+
+/// Pins [`read_pushed_manifest`]'s CRLF normalization, which exists solely for Windows CI: git's
+/// default `core.autocrlf=true` there rewrites the manifest's LF terminator to CRLF on checkout,
+/// so the two `assert_eq!` call sites above compared a `\r\n`-terminated read against an
+/// `\n`-terminated literal and failed on every Windows run. This asserts the mechanism directly
+/// rather than depending on the host's git config, so it proves the fix on any platform -- delete
+/// the `.replace` and this goes red on macOS and Linux too, not only where the bug reproduces.
+#[test]
+fn pushed_manifest_read_normalizes_windows_line_endings() {
+    let dir = std::env::temp_dir().join(format!("alef-scoop-crlf-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("bucket")).expect("create fixture bucket dir");
+    std::fs::write(dir.join("bucket/alef.json"), "{\"version\":\"1.0.0\"}\r\n").expect("write CRLF manifest");
+
+    assert_eq!(read_pushed_manifest(&dir), "{\"version\":\"1.0.0\"}\n");
+
+    std::fs::remove_dir_all(&dir).expect("clean up fixture dir");
 }
