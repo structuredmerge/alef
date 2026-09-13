@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.87.0] - 2026-09-13
 
+### Added
+
+- **(swift): a promoted payload-carrying enum now declares `toString()`, returning its serde wire
+  tag.** Only an all-unit enum is `RawRepresentable`, so before this a first-class enum with
+  associated values exposed neither `.rawValue` nor `.toString()` and there was no way to read
+  which variant a value held without a full `switch`. The returned value is the same tag the
+  pre-promotion opaque binding's `to_string()` returned, computed by the same function the enum's
+  own `Codable` conformance uses, so the two can never disagree.
+
 ### Changed
 
 - **BREAKING (napi): an internally tagged enum whose every data-carrying variant flattens now
@@ -25,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and wasm now agree on the wire, which they previously did not.
 
 ### Fixed
+
+- **(swift): e2e assertions against a first-class leaf no longer emit an uncompilable accessor.**
+  Three renderers -- the wildcard `contains` and `not_empty` traversals and the stringy-field text
+  aggregator -- assumed every leaf was an opaque swift-bridge method call and appended
+  `.toString()` unconditionally. A promoted type's fields are stored properties, so the emitted
+  `item.name().toString()` did not compile. All three now share one leaf-lowering helper with the
+  non-wildcard path, and a payload-carrying enum leaf renders a real assertion via the new
+  `toString()` rather than being skipped.
 
 - **BREAKING (wasm): the JSON surface for a fully-flattened internally tagged enum is camelCase,
   matching napi.** The two JavaScript bindings previously disagreed with each other on the same
