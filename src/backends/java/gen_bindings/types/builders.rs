@@ -190,14 +190,26 @@ pub(super) fn gen_builder_nested_class(
                         TypeRef::Named(name) => enum_defaults
                             .get(name.as_str())
                             .map(|variant_meta| {
-                                let variant_name = &variant_meta.variant_name;
                                 if sealed_interface_names.contains(name.as_str()) {
+                                    // Sealed-interface variants are record *class* names, not
+                                    // enum constants — Java idiom keeps these PascalCase, so
+                                    // this arm must not run them through the constant-casing
+                                    // authority below. ~keep
+                                    let variant_name = &variant_meta.variant_name;
                                     if variant_meta.is_zero_field {
                                         format!("new {name}.{variant_name}()")
                                     } else {
                                         "null".to_string()
                                     }
                                 } else {
+                                    // Plain `enum` constants: cased through the shared casing
+                                    // authority so this reference always agrees with the
+                                    // constant `enums::gen_enum_class` declares. ~keep
+                                    let variant_name = crate::codegen::naming::public_host_identifier(
+                                        crate::core::config::Language::Java,
+                                        crate::codegen::naming::PublicIdentifierKind::EnumVariant,
+                                        &variant_meta.variant_name,
+                                    );
                                     format!("{name}.{variant_name}")
                                 }
                             })

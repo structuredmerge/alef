@@ -5237,14 +5237,20 @@ fn generate_plain_enum_content(serde_rename_all: Option<&str>, serde_rename: Opt
 
 /// Regression for the fallback wire-name bug: with no `#[serde(rename_all)]`/`rename`, serde emits
 /// the variant name verbatim, not lowercased; an explicit `serde(rename)` must beat `rename_all`.
+///
+/// The Java constant identifier left of the parenthesis is SCREAMING_SNAKE (`LIST_ITEM`), Java's
+/// own convention; the wire literal inside it is serde's and is what this test is really about.
+/// Asserting the whole `CONSTANT("wire")` pair keeps the two visibly independent -- the casing of
+/// one must never be allowed to drag the other with it, which is exactly the confusion that let
+/// the generator emit a Rust-cased constant for as long as it did. ~keep
 #[test]
 fn plain_enum_json_name_matches_serde_wire_format() {
     let cases: &[(Option<&str>, Option<&str>, &str)] = &[
-        (None, None, "ListItem(\"ListItem\")"),
-        (Some("snake_case"), None, "ListItem(\"list_item\")"),
-        (Some("camelCase"), None, "ListItem(\"listItem\")"),
-        (Some("SCREAMING_SNAKE_CASE"), None, "ListItem(\"LIST_ITEM\")"),
-        (Some("snake_case"), Some("li"), "ListItem(\"li\")"),
+        (None, None, "LIST_ITEM(\"ListItem\")"),
+        (Some("snake_case"), None, "LIST_ITEM(\"list_item\")"),
+        (Some("camelCase"), None, "LIST_ITEM(\"listItem\")"),
+        (Some("SCREAMING_SNAKE_CASE"), None, "LIST_ITEM(\"LIST_ITEM\")"),
+        (Some("snake_case"), Some("li"), "LIST_ITEM(\"li\")"),
     ];
 
     for (rename_all, serde_rename, expected) in cases {

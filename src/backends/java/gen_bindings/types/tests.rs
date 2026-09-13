@@ -722,4 +722,121 @@ fn tagged_union_struct_variant_field_serde_rename_wins_over_rename_all_fields() 
     );
 }
 
+/// Simple Java `enum` constants (the `simple_enum_class.jinja` path, not a tagged/sealed
+/// union) must declare SCREAMING_SNAKE identifiers -- Java's own idiom for an enum constant --
+/// while the JSON wire value stays whatever serde actually serializes. Before this fix,
+/// `gen_enum_class` pushed `variant.name` verbatim, so a Rust `LinkStyle::Reference` declared
+/// as `Reference("Reference")` instead of `REFERENCE("Reference")`. ~keep
+#[test]
+fn simple_enum_constant_is_screaming_snake_case_while_wire_value_is_untouched() {
+    let enum_def = EnumDef {
+        name: "LinkStyle".to_string(),
+        rust_path: "sample_crate::LinkStyle".to_string(),
+        variants: vec![
+            EnumVariant {
+                name: "Inline".to_string(),
+                ..Default::default()
+            },
+            EnumVariant {
+                name: "Reference".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let out = gen_enum_class("io.xberg.literllm", &enum_def, "SampleCrawler", &[]);
+
+    assert!(
+        out.contains("INLINE(\"Inline\")"),
+        "the constant identifier must be SCREAMING_SNAKE while the wire literal stays the \
+         unmodified Rust variant name, got:\n{out}"
+    );
+    assert!(
+        out.contains("REFERENCE(\"Reference\")"),
+        "the constant identifier must be SCREAMING_SNAKE while the wire literal stays the \
+         unmodified Rust variant name, got:\n{out}"
+    );
+    assert!(
+        !out.contains("    Inline(") && !out.contains("    Reference("),
+        "the old PascalCase constant declarations must not survive, got:\n{out}"
+    );
+}
+
+/// Regression for the Go-backend defect this Java change deliberately avoided repeating: the
+/// declaration site (`gen_enum_class`) and every reference site (here, a `#[serde(default)]`
+/// enum field's builder-default value in `gen_builder_nested_class`) must agree on the same
+/// constant spelling, or the generated Java fails to compile. This does not merely check that
+/// both sides independently look SCREAMING_SNAKE -- it fails if either side drifts alone by
+/// asserting the declaration for `Reference` and the reference for `Reference` are character-for-
+/// character identical. ~keep
+#[test]
+fn simple_enum_declaration_and_default_value_reference_agree_on_the_constant_name() {
+    let enum_def = EnumDef {
+        name: "LinkStyle".to_string(),
+        rust_path: "sample_crate::LinkStyle".to_string(),
+        variants: vec![
+            EnumVariant {
+                name: "Inline".to_string(),
+                is_default: true,
+                ..Default::default()
+            },
+            EnumVariant {
+                name: "Reference".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let declaration = gen_enum_class("io.xberg.literllm", &enum_def, "SampleCrawler", &[]);
+
+    let mut typ = make_config_type_with_duration_default();
+    typ.fields[0].name = "style".to_string();
+    typ.fields[0].ty = TypeRef::Named("LinkStyle".to_string());
+    typ.fields[0].optional = false;
+    typ.fields[0].default = Some("/* serde(default) */".to_string());
+    typ.fields[0].typed_default = None;
+
+    let mut enum_defaults = ahash::AHashMap::default();
+    enum_defaults.insert(
+        "LinkStyle".to_string(),
+        crate::extract::default_value_for_enum::DefaultEnumVariant {
+            variant_name: "Inline".to_string(),
+            is_zero_field: true,
+        },
+    );
+
+    let reference = gen_record_type(
+        "io.xberg.literllm",
+        &typ,
+        &AHashSet::default(),
+        &AHashSet::default(),
+        "SNAKE_CASE",
+        &[],
+        "SampleCrawler",
+        JavaBuilderMode::Always,
+        &enum_defaults,
+        &AHashSet::default(),
+        &HashSet::default(),
+    );
+
+    assert!(
+        declaration.contains("INLINE(\"Inline\")"),
+        "declaration side must emit the SCREAMING_SNAKE constant, got:\n{declaration}"
+    );
+    assert!(
+        reference.contains("LinkStyle.INLINE"),
+        "reference side (the #[serde(default)] builder default) must spell the same constant \
+         the declaration side declares, got:\n{reference}"
+    );
+    // The two assertions above are pinned to the literal identity of the constant this pass
+    // computes on each side (`INLINE`) rather than to two independently-derived expectations,
+    // so a change that recases one side without the other fails here.
+    assert!(
+        !reference.contains("LinkStyle.Inline"),
+        "the old PascalCase reference must not survive alongside the SCREAMING_SNAKE \
+         declaration, got:\n{reference}"
+    );
+}
+
 mod default_restoration;

@@ -60,7 +60,11 @@ pub(crate) fn gen_enum_class(package: &str, enum_def: &EnumDef, main_class: &str
             .unwrap_or_else(|| java_apply_rename_all(&variant.name, enum_def.serde_rename_all.as_deref()));
         emit_javadoc(&mut variants_block, &variant.doc, "    ");
         variants_block.push_str("    ");
-        variants_block.push_str(&variant.name);
+        variants_block.push_str(&crate::codegen::naming::public_host_identifier(
+            crate::core::config::Language::Java,
+            crate::codegen::naming::PublicIdentifierKind::EnumVariant,
+            &variant.name,
+        ));
         variants_block.push_str("(\"");
         variants_block.push_str(&escape_java_string_literal(&json_name));
         variants_block.push_str("\")");
