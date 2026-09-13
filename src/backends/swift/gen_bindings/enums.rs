@@ -415,7 +415,58 @@ pub(super) fn emit_enum(
         emit_swift_text_accessor(en, out);
     }
 
+    emit_swift_wire_tag_accessor(en, out);
+
     emit_enum_into_rust_extension(&en.name, out);
+}
+
+/// Emit a `public func toString() -> String` extension on a payload-carrying (associated-value)
+/// Swift enum that returns the SAME serde wire tag the swift-bridge opaque mirror's own
+/// `to_string()` returns (`gen_rust_crate::enums`'s `rust_enum_to_string_impl.rs.jinja`:
+/// `Self::{variant} => "{serde_name}".to_string()`), dropping any payload exactly as that mirror
+/// method does.
+///
+/// Before this existed, a promoted payload-carrying enum declared NEITHER `.rawValue` (only the
+/// all-unit shape gets that, see `unit_enum_cases`) NOR `.toString()` -- e2e assertion generators
+/// that called `.toString()` on such a leaf (assuming the pre-promotion opaque shape) produced a
+/// hard Swift compile error. Rather than refuse those assertions (they have a real, reproducible
+/// answer -- the wire tag is data alef already computes), this gives the promoted type the same
+/// accessor name and the same value, so existing `.toString()` call sites keep compiling AND keep
+/// asserting the same thing they always did.
+///
+/// Reuses [`crate::codegen::naming::wire_variant_value`] -- the SAME function
+/// [`emit_serde_tagged_codable`]'s own encode/decode cases call for a variant's tag -- so this
+/// accessor and the enum's own Codable wire form can never disagree about what a variant's tag is.
+///
+/// Declared over ALL of `en.variants`, not `declared_variants`'s cfg-filtered subset: the case
+/// list just emitted above (`emit_variant_with_data`'s loop, also over `en.variants` unfiltered)
+/// is what this `switch` must stay exhaustive against, and filtering here independently would
+/// leave a real declared case with no matching arm -- `error: switch must be exhaustive`. ~keep
+pub(super) fn emit_swift_wire_tag_accessor(en: &EnumDef, out: &mut String) {
+    out.push_str("extension ");
+    out.push_str(&en.name);
+    out.push_str(" {\n");
+    out.push_str("    /// Returns the serde wire tag identifying this variant -- the same value\n");
+    out.push_str("    /// the pre-promotion opaque binding's `to_string()` returned -- dropping\n");
+    out.push_str("    /// any associated payload.\n");
+    out.push_str("    public func toString() -> String {\n");
+    out.push_str("        switch self {\n");
+    for variant in &en.variants {
+        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let wire = crate::codegen::naming::wire_variant_value(
+            &variant.name,
+            variant.serde_rename.as_deref(),
+            en.serde_rename_all.as_deref(),
+        );
+        out.push_str("        case .");
+        out.push_str(&case_name);
+        out.push_str(":\n            return \"");
+        out.push_str(&wire.replace('\\', "\\\\").replace('"', "\\\""));
+        out.push_str("\"\n");
+    }
+    out.push_str("        }\n");
+    out.push_str("    }\n");
+    out.push_str("}\n");
 }
 
 /// Emit a `func text() -> String` extension on an untagged-union Swift enum that
@@ -860,5 +911,81 @@ mod tagged_codable_tests {
         let out = render_tagged(&en);
         assert!(out.contains("case type = \"type\""), "{out}");
         assert!(out.contains("forKey: .type"), "{out}");
+    }
+}
+
+/// Pins `emit_swift_wire_tag_accessor`'s declared method name (`toString`) and per-variant switch
+/// body against the exact call-site text the Swift e2e generator is independently tested to emit
+/// for a payload-carrying (promoted) enum leaf --
+/// `e2e::codegen::swift::first_class_render_gate_tests::payload_carrying_enum_leaf_renders_a_real_assertion_not_a_skip`
+/// (and its sibling gate tests) assert the literal substring `"payload.toString()"` in RENDERED
+/// e2e output. Together these two independently-failing tests are what "fails if either moves
+/// alone" means in practice here: this test fails if the BINDING declaration stops being named
+/// `toString` (or stops matching the mirror's own wire-tag match), and the e2e gate tests fail if
+/// the CALL SITE stops emitting `.toString()` -- neither can drift without a red test, without
+/// requiring the two to share Rust code across the binding/e2e module boundary. ~keep
+#[cfg(test)]
+mod wire_tag_accessor_tests {
+    use super::*;
+    use crate::core::ir::FieldDef;
+    use std::collections::HashSet;
+
+    fn payload_enum() -> EnumDef {
+        EnumDef {
+            name: "FormatMetadata".to_string(),
+            has_serde: true,
+            serde_rename_all: Some("snake_case".to_string()),
+            variants: vec![
+                EnumVariant {
+                    name: "Pdf".to_string(),
+                    fields: vec![FieldDef {
+                        name: "_0".to_string(),
+                        ty: TypeRef::String,
+                        ..FieldDef::default()
+                    }],
+                    is_tuple: true,
+                    ..EnumVariant::default()
+                },
+                EnumVariant {
+                    name: "Excel".to_string(),
+                    fields: vec![FieldDef {
+                        name: "_0".to_string(),
+                        ty: TypeRef::String,
+                        ..FieldDef::default()
+                    }],
+                    is_tuple: true,
+                    ..EnumVariant::default()
+                },
+            ],
+            ..EnumDef::default()
+        }
+    }
+
+    #[test]
+    fn payload_carrying_enum_declares_a_to_string_wire_tag_accessor() {
+        let en = payload_enum();
+        let mapper = SwiftMapper;
+        let known: HashSet<String> = HashSet::new();
+        let cfg = EnumDeclarationCfg::new("sample", &[]);
+        let mut out = String::new();
+        emit_enum(&en, &mut out, &mapper, &known, &[], &cfg);
+        // The exact call-site text the e2e generator's `swift_scalar_leaf_string_expr` appends
+        // (`leaf_shape.rs`) is `.toString()` -- this method must exist under exactly that name.
+        assert!(
+            out.contains("public func toString() -> String {"),
+            "expected a `toString()` wire-tag accessor, got:\n{out}"
+        );
+        // Same per-variant wire value `wire_variant_value` computes for the swift-bridge mirror's
+        // OWN `to_string()` (`gen_rust_crate::enums`'s `rust_enum_to_string_variant.rs.jinja`) --
+        // dropping the payload, keyed by the case identifier, not the tag JSON shape.
+        assert!(out.contains("case .pdf:\n            return \"pdf\""), "got:\n{out}");
+        assert!(
+            out.contains("case .excel:\n            return \"excel\""),
+            "got:\n{out}"
+        );
+        // Declared over the SAME variant set the enum's own `case` list uses just above, so the
+        // switch stays exhaustive against the real declaration.
+        assert!(out.contains("case pdf(field0: String)"), "got:\n{out}");
+        assert!(out.contains("case excel(field0: String)"), "got:\n{out}");
     }
 }

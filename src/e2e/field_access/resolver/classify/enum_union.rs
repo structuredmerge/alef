@@ -14,7 +14,7 @@
 //! method below either walks `ir_enum` directly or calls another method in this same file that
 //! does. ~keep
 
-use super::super::super::ir_enum::{enum_type_at_path, is_enum_path};
+use super::super::super::ir_enum::{enum_type_at_path, enum_type_at_path_from, is_enum_path};
 use super::super::super::types::FieldResolver;
 use super::super::super::types::WasmEnumRepresentation;
 
@@ -192,6 +192,23 @@ impl FieldResolver {
     /// instead, and none of those accessors exist on it. ~keep
     pub fn ir_enum_is_data_carrying(&self, field: &str) -> Option<bool> {
         let name = self.ir_enum_type_name(field)?;
+        Some(self.ir_enum_map.data_carrying_enum_names.contains(&name))
+    }
+
+    /// The same question [`Self::ir_enum_is_data_carrying`] answers -- `Some(true)` for a
+    /// payload-carrying (no scalar wire accessor) enum, `Some(false)` for an all-unit
+    /// (`RawRepresentable`) one, `None` when `field_name` does not resolve to a concrete IR enum
+    /// at all -- but anchored at an explicit `owner_type` instead of walking down from the call's
+    /// declared root.
+    ///
+    /// The swift stringy-field text aggregator (`swift_stringy_aggregator_contains_assert`)
+    /// already holds a concrete element type (the `Vec<T>` field's `T`, resolved via
+    /// `swift_advance`) rather than a root-anchored fixture path, and `field_name` here is a
+    /// single field declared directly on it -- not a multi-segment path, so this calls
+    /// [`enum_type_at_path_from`] with `field_name` unchanged rather than first resolving it
+    /// through [`Self::resolve`] (which rewrites *fixture* paths, a different concern). ~keep
+    pub fn ir_enum_shape_on_type(&self, owner_type: &str, field_name: &str) -> Option<bool> {
+        let name = enum_type_at_path_from(&self.ir_enum_map, owner_type, field_name)?;
         Some(self.ir_enum_map.data_carrying_enum_names.contains(&name))
     }
 

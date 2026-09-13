@@ -47,6 +47,21 @@ public enum StreamEvent: Codable, Sendable, Hashable {
     case done(count: UInt32)
 }
 extension StreamEvent {
+    /// Returns the serde wire tag identifying this variant -- the same value
+    /// the pre-promotion opaque binding's `to_string()` returned -- dropping
+    /// any associated payload.
+    public func toString() -> String {
+        switch self {
+        case .data:
+            return "Data"
+        case .error:
+            return "Error"
+        case .done:
+            return "Done"
+        }
+    }
+}
+extension StreamEvent {
     func intoRust() throws -> RustBridge.StreamEvent {
         let data = try JSONEncoder().encode(self)
         let json = String(data: data, encoding: .utf8) ?? "null"

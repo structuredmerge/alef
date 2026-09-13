@@ -308,19 +308,32 @@ pub(super) fn swift_traversal_contains_assert(context: SwiftTraversalContains<'_
     // back to the IR-derived classification when the config is silent — see `render_assertion`'s
     // `field_is_enum` comment for the failure mode a config-only check produced. ~keep
     let elem_is_enum = context.field_resolver.is_enum(context.full_field);
+    // A payload-carrying enum has no `.rawValue` once promoted (only the all-unit shape gets
+    // one), but it DOES have `.toString()` -- `gen_bindings::enums::emit_swift_wire_tag_accessor`
+    // gives every promoted payload-carrying enum a `toString()` returning the same serde wire tag
+    // the pre-promotion opaque mirror's `to_string()` always returned. `unwrap_or(false)` is the
+    // safe default for a field the IR does not positively resolve to a concrete enum (config-only
+    // `fields_enum` classification): `elem_is_enum` is still true from the config, and the
+    // `.toString()` fallback below is correct either way. ~keep
+    let elem_is_data_carrying_enum = context
+        .field_resolver
+        .ir_enum_is_data_carrying(context.full_field)
+        .unwrap_or(false);
     let elem_is_optional = context.field_resolver.is_optional(resolved_elem_part)
         || context
             .field_resolver
             .is_optional(context.field_resolver.resolve(resolved_elem_part));
-    let elem_str = if elem_is_enum {
-        // Enum-typed fields are bridged as `String` (RustString in Swift).
-        // A single `.toString()` converts RustString → Swift String.
-        format!("{elem_accessor}.toString()")
-    } else if elem_is_optional {
-        format!("({elem_accessor}?.toString() ?? \"\")")
-    } else {
-        format!("{elem_accessor}.toString()")
-    };
+    // `swift_scalar_leaf_string_expr` picks `.toString()` (method-call/opaque leaf, or a
+    // first-class payload-carrying enum) vs `.rawValue` (a first-class all-unit enum) vs bare
+    // access (a first-class plain `String` leaf, which has neither) from the accessor
+    // expression's own shape — see that function's doc for why a single call answers correctly
+    // for every combination. ~keep
+    let elem_str = super::leaf_shape::swift_scalar_leaf_string_expr(
+        &elem_accessor,
+        elem_is_enum,
+        elem_is_data_carrying_enum,
+        elem_is_optional,
+    );
     let assert_fn = if context.negate {
         "XCTAssertFalse"
     } else {
@@ -423,9 +436,26 @@ pub(super) fn swift_stringy_aggregator_contains_assert(
         return None;
     }
     let array_accessor = field_resolver.accessor(field, "swift", result_var);
+    // ~keep `stringy_fields_by_type` classifies enum-typed fields as "stringy" assuming the
+    // OPAQUE (method-call) lowering, where every enum getter -- unit or payload-carrying -- is
+    // bridged to a `RustString` (`swift/values.rs`'s `classify_stringy` doc). Once `elem_type`
+    // is first-class (property-access), that assumption breaks: `item.field()` becomes bare
+    // `item.field`, and an enum leaf needs `.rawValue` (unit) or has NO scalar accessor at all
+    // (payload-carrying) -- see `stringy_field_text_line`.
+    let is_first_class = field_resolver.swift_is_first_class(Some(&elem_type));
     let mut texts_lines: Vec<String> = Vec::new();
     for sf in stringy {
-        texts_lines.push(stringy_field_text_line(sf));
+        if let Some(line) = stringy_field_text_line(field_resolver, &elem_type, is_first_class, sf) {
+            texts_lines.push(line);
+        }
+    }
+    // Every candidate line dropped (e.g. every stringy field turned out to be a first-class
+    // payload-carrying enum with no scalar accessor) leaves nothing to aggregate on. Refusing
+    // here lets the caller fall back to its other paths instead of emitting a closure whose body
+    // never appends anything — a `contains` that can never be true and a `not_contains` that can
+    // never be false, i.e. an assertion that reads as coverage but checks nothing. ~keep
+    if texts_lines.is_empty() {
+        return None;
     }
     let texts_block = texts_lines.join("\n");
     Some(format!(
@@ -435,27 +465,55 @@ pub(super) fn swift_stringy_aggregator_contains_assert(
 
 /// ~keep One `texts.append(...)` line for a single stringy field of a `contains`-aggregated
 /// element type, per its [`StringyFieldKind`] — the per-field body
-/// [`swift_stringy_aggregator_contains_assert`]'s loop used to inline directly.
-fn stringy_field_text_line(sf: &crate::e2e::field_access::StringyField) -> String {
+/// [`swift_stringy_aggregator_contains_assert`]'s loop used to inline directly. `None` only for a
+/// first-class payload-carrying enum field, which has no scalar accessor to append at all (see
+/// the caller's doc).
+fn stringy_field_text_line(
+    field_resolver: &FieldResolver,
+    elem_type: &str,
+    is_first_class: bool,
+    sf: &crate::e2e::field_access::StringyField,
+) -> Option<String> {
     use crate::e2e::field_access::StringyFieldKind;
     let call = swift_ident(&sf.name.to_lower_camel_case());
-    match sf.kind {
-        StringyFieldKind::Plain => {
-            format!("                texts.append(item.{call}().toString())")
-        }
-        StringyFieldKind::Optional => {
-            format!("                if let v = item.{call}() {{ texts.append(v.toString()) }}")
-        }
-        StringyFieldKind::Vec => {
-            // `item.field()` returns `RustVec<RustString>`. Mapping its
-            // elements yields `RustStringRef` — a swift-bridge wrapper
-            // around the borrowed RustString — which has `as_str()`
-            // (snake_case, defined in `SwiftBridgeCore.swift`), NOT
-            // `toString()` (only `RustString` has the latter via the
-            // extension that calls `self.as_str().toString()`).
-            format!("                texts.append(contentsOf: item.{call}().map {{ $0.as_str().toString() }})")
-        }
+    if !is_first_class {
+        // Opaque (method-call) element: `item.field()` returns `RustVec<RustString>` for the
+        // `Vec` kind. Mapping its elements yields `RustStringRef` — a swift-bridge wrapper around
+        // the borrowed RustString — which has `as_str()` (snake_case, defined in
+        // `SwiftBridgeCore.swift`), NOT `toString()` (only `RustString` has the latter via the
+        // extension that calls `self.as_str().toString()`).
+        return Some(match sf.kind {
+            StringyFieldKind::Plain => format!("                texts.append(item.{call}().toString())"),
+            StringyFieldKind::Optional => {
+                format!("                if let v = item.{call}() {{ texts.append(v.toString()) }}")
+            }
+            StringyFieldKind::Vec => {
+                format!("                texts.append(contentsOf: item.{call}().map {{ $0.as_str().toString() }})")
+            }
+        });
     }
+    // First-class (property-access) element. `enum_shape` is `None` for a non-enum (plain
+    // `String`) field, `Some(false)` for an all-unit enum (`.rawValue`), `Some(true)` for a
+    // payload-carrying one. A payload-carrying enum has no `.rawValue`, but DOES have
+    // `.toString()` — `gen_bindings::enums::emit_swift_wire_tag_accessor` gives every promoted
+    // payload-carrying enum one, returning the same serde wire tag the field's opaque getter used
+    // to return — so it contributes text too, just through a different accessor name. ~keep
+    let enum_shape = field_resolver.ir_enum_shape_on_type(elem_type, &sf.name);
+    let suffix = match enum_shape {
+        None => "",
+        Some(false) => ".rawValue",
+        Some(true) => ".toString()",
+    };
+    Some(match sf.kind {
+        StringyFieldKind::Plain => format!("                texts.append(item.{call}{suffix})"),
+        StringyFieldKind::Optional => {
+            format!("                if let v = item.{call} {{ texts.append(v{suffix}) }}")
+        }
+        StringyFieldKind::Vec if !suffix.is_empty() => {
+            format!("                texts.append(contentsOf: item.{call}.map {{ $0{suffix} }})")
+        }
+        StringyFieldKind::Vec => format!("                texts.append(contentsOf: item.{call})"),
+    })
 }
 
 /// Generate a `.count` expression for an array field that may be nested inside optional parents.

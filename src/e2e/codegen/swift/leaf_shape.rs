@@ -228,6 +228,69 @@ pub(super) fn non_countable_leaf_skip_line(field: Option<&str>) -> String {
     )
 }
 
+/// Whether a rendered Swift accessor expression denotes property access (a first-class Codable
+/// struct's stored `let`) rather than a swift-bridge method call.
+///
+/// ~keep First-class property access leaves no trailing `()` on the final segment -- e.g.
+/// `result.text` (Swift `String`) vs `result.text()` (`RustBridge.RustString`). Detecting it from
+/// the rendered expression's own shape, rather than threading a separate boolean through every
+/// caller, is what lets [`swift_scalar_leaf_string_expr`] answer correctly for BOTH accessor
+/// families from one call, and it mirrors the identical inline check `render_assertion`'s
+/// `leaf_is_property_access` already does for the non-wildcard leaf path. Subscripts are skipped
+/// past (`name?[0]` still sees `name` as the final segment) since a subscript never changes
+/// whether the segment before it was property or method access.
+pub(super) fn swift_accessor_is_property_access(expr: &str) -> bool {
+    let trimmed = expr.trim_end_matches('?');
+    let last_segment = trimmed.rsplit_once('.').map(|(_, s)| s).unwrap_or(trimmed);
+    let last_segment = last_segment.split('[').next().unwrap_or(last_segment);
+    !last_segment.ends_with(')') && !last_segment.is_empty()
+}
+
+/// The Swift expression that stringifies a scalar (non-collection) leaf, given whether the
+/// backing field is enum-typed and, if so, whether that enum carries data on any variant.
+///
+/// ~keep Handles every accessor/enum-shape combination from one call, so a caller building a
+/// closure element accessor (a wildcard `contains`/`not_empty` traversal, a stringy-field text
+/// aggregator) gets the same answer `render_assertion`'s own leaf lowering already gives the
+/// non-wildcard path:
+/// - A swift-bridge method-call (opaque) leaf (`accessor_expr` ends in `()`/`()?`) always yields
+///   a `RustString`-shaped value at the Swift surface -- `.toString()` converts it, regardless of
+///   `is_enum`/`is_data_carrying_enum` (a data-carrying enum's opaque getter is ALSO JSON-bridged
+///   to a `RustString`; see `swift/values.rs`'s `classify_stringy` doc).
+/// - A first-class Codable property-access leaf is ALREADY a native Swift value. A plain `String`
+///   needs no wrapping at all. An all-unit enum gets `.rawValue`, the ONLY shape
+///   `gen_bindings::enums::emit_enum`'s `swift_enum_raw_decl` branch declares one for. A
+///   payload-carrying (data-carrying) enum reached via property access has no `.rawValue`, but
+///   DOES have `.toString()` -- `gen_bindings::enums::emit_swift_wire_tag_accessor` gives every
+///   promoted payload-carrying enum a `toString()` returning the same serde wire tag the
+///   pre-promotion opaque mirror's `to_string()` always returned -- so it falls through to the
+///   same `.toString()` arm the opaque leaf uses.
+pub(super) fn swift_scalar_leaf_string_expr(
+    accessor_expr: &str,
+    is_enum: bool,
+    is_data_carrying_enum: bool,
+    is_optional: bool,
+) -> String {
+    let is_property_access = swift_accessor_is_property_access(accessor_expr);
+    if is_property_access && is_enum && !is_data_carrying_enum {
+        if is_optional {
+            format!("(({accessor_expr})?.rawValue ?? \"\")")
+        } else {
+            format!("{accessor_expr}.rawValue")
+        }
+    } else if is_property_access && !is_enum {
+        if is_optional {
+            format!("({accessor_expr} ?? \"\")")
+        } else {
+            accessor_expr.to_string()
+        }
+    } else if is_optional {
+        format!("({accessor_expr}?.toString() ?? \"\")")
+    } else {
+        format!("{accessor_expr}.toString()")
+    }
+}
+
 /// Whether the leaf's own getter returns `Option<..>`, so a caller chaining onto the rendered
 /// accessor must write `?.` rather than `.`.
 ///

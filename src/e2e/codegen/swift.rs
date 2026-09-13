@@ -287,6 +287,8 @@ mod enum_field_classification_tests;
 #[cfg(test)]
 mod first_class_classifier_parity_tests;
 #[cfg(test)]
+mod first_class_render_gate_tests;
+#[cfg(test)]
 mod is_empty_optional_array_tests;
 #[cfg(test)]
 mod is_true_tests;

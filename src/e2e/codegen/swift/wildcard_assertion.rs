@@ -107,15 +107,18 @@ pub(super) fn render_wildcard_assertion(
                 .unwrap_or(elem_part);
             let elem_accessor = field_resolver.element_accessor(resolved_elem_part, "swift", "$0");
             let elem_is_enum = field_resolver.is_enum(field);
+            // A first-class payload-carrying enum has `.toString()` (see
+            // `gen_bindings::enums::emit_swift_wire_tag_accessor`) but no `.rawValue` —
+            // `swift_scalar_leaf_string_expr` needs this to pick the right one. ~keep
+            let elem_is_data_carrying_enum = field_resolver.ir_enum_is_data_carrying(field).unwrap_or(false);
             let elem_is_optional = field_resolver.is_optional(resolved_elem_part)
                 || field_resolver.is_optional(field_resolver.resolve(resolved_elem_part));
-            let elem_str = if elem_is_enum {
-                format!("{elem_accessor}.to_string().toString()")
-            } else if elem_is_optional {
-                format!("({elem_accessor}?.toString() ?? \"\")")
-            } else {
-                format!("{elem_accessor}.toString()")
-            };
+            let elem_str = super::leaf_shape::swift_scalar_leaf_string_expr(
+                &elem_accessor,
+                elem_is_enum,
+                elem_is_data_carrying_enum,
+                elem_is_optional,
+            );
             let _ = writeln!(
                 out,
                 "        XCTAssertTrue({array_accessor}.contains(where: {{ !{elem_str}.isEmpty }}), \"expected non-empty value\")"
