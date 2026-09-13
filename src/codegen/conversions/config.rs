@@ -1,5 +1,38 @@
 use ahash::{AHashMap, AHashSet};
 
+/// Precomputed camelCase-recasing pieces for one WASM-bridged fully-flattened internally-tagged
+/// enum, keyed by enum name in [`ConversionConfig::wasm_camel_recased_enums`].
+///
+/// Populated from a `codegen::json_wire_types::JsonWireTypes` instance the wasm backend owns and
+/// has already called `register_enum` on for this enum -- so `out_wire_type`/`in_wire_type` name
+/// types that same instance's `declarations()` actually emits into the generated module, and
+/// `retag_fn_name` names the helper `JsonWireTypes::new` unconditionally declares into it.
+///
+/// Threaded down as plain string pieces rather than a `&JsonWireTypes`/`&EnumDef` because
+/// registration happens once per enum at the codegen top level (where `&ApiSurface` and a mutable
+/// wire-type builder naturally live), while the `core_to_binding`/`binding_to_core` field
+/// conversion functions run per STRUCT FIELD with only a `TypeRef` and field name in hand. The
+/// pieces are exactly what a field call site needs to rebuild the same retag+wire-type formula
+/// `json_wire_types::out_pipeline_expr`/`in_pipeline_expr` (and, in turn,
+/// `JsonWireTypes::core_to_js_value_expr`/`js_value_to_core_expr`, napi's identical mechanism)
+/// emit for napi's `serde_json::Value` boundary, with one extra `serde_wasm_bindgen` hop wrapped
+/// around it because wasm's own field-level boundary type is `JsValue`, not `serde_json::Value`.
+/// ~keep
+#[derive(Debug, Clone, Copy)]
+pub struct WasmCamelRecasedEnum<'a> {
+    /// The `__AlefWireOut...` mirror type name for this enum (core -> JS direction).
+    pub out_wire_type: &'a str,
+    /// The `__AlefWireIn...` mirror type name for this enum (JS -> core direction).
+    pub in_wire_type: &'a str,
+    /// The shared `__alef_wire_retag_...` helper function name this `JsonWireTypes` instance
+    /// declares (same instance that declared `out_wire_type`/`in_wire_type`).
+    pub retag_fn_name: &'a str,
+    /// The tag key as serde writes it on the CORE wire (`json_wire_types::core_tag_key`).
+    pub core_tag_key: &'a str,
+    /// The tag key as JavaScript sees it (`json_wire_types::js_tag_key`).
+    pub js_tag_key: &'a str,
+}
+
 /// Backend-specific configuration for From/field conversion generation.
 /// Enables shared code to handle all backend differences via parameters.
 #[derive(Default, Clone)]
@@ -138,6 +171,22 @@ pub struct ConversionConfig<'a> {
     ///   - core→binding: `serde_wasm_bindgen::to_value(&val.<name>).unwrap_or(JsValue::NULL)`
     ///   - binding→core: `serde_wasm_bindgen::from_value(val.<name>.clone()).unwrap_or_default()`
     pub tagged_data_enum_names: Option<&'a AHashSet<String>>,
+    /// A subset of `tagged_data_enum_names`: fully-flattened internally-tagged enum names (see
+    /// `wasm::gen_bindings::enums::is_fully_flattened_internal_enum`) whose `JsValue` field-level
+    /// boundary must be camelCase-recased through the paired [`WasmCamelRecasedEnum`] pieces,
+    /// rather than left on serde's own snake_case casing like the rest of
+    /// `tagged_data_enum_names`.
+    ///
+    /// `None`/absent for every backend but wasm. Deliberately a separate, narrower map instead of
+    /// extending `tagged_data_enum_names` itself: only the fully-flattened shape has a paired
+    /// `JsonWireTypes` registration to recase through today. A plain tagged-discriminator enum
+    /// (`is_tagged_data_enum`) or a genuinely untagged/variant-untagged one
+    /// (`is_untagged_data_enum`/`is_variant_untagged_string_enum`) is intentionally left on
+    /// serde's own casing here -- napi does not camelCase those either (its own `mod.rs` routes
+    /// them through a raw `serde_json::from_value`/`to_value` pair, no `JsonWireTypes`), so
+    /// recasing only the wasm side would newly *disagree* with napi instead of agreeing with it.
+    /// ~keep
+    pub wasm_camel_recased_enums: Option<&'a std::collections::HashMap<String, WasmCamelRecasedEnum<'a>>>,
     /// Names of cfg-gated fields that must NOT be skipped in conversions because the binding
     /// emits them (via `RustBindingConfig::never_skip_cfg_field_names`).
     /// Empty by default; backends populate from trait-bridge `bind_via = "options_field"` config.

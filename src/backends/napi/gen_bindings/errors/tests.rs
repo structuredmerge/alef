@@ -395,18 +395,160 @@ fn internally_tagged_newtype_variant_flattens_wrapped_struct_when_type_resolves(
             .collect::<Vec<_>>(),
         vec![
             "export type FormatMetadata =",
-            // Serde's OWN field names via the wire alias, not napi's camelCase. An enum whose
-            // every data variant flattens has no nominal `JsFormatMetadata` struct left to hang
-            // `js_name` renames on -- it is a `serde_json::Value` passthrough, so the declared
-            // type must describe serde's wire. This is the GH#1594 breaking change that makes
-            // Node and WASM finally agree. ~keep
-            "  | ({ format_type: \"excel\" } & __AlefWireExcelMetadata)",
+            // References the SAME idiomatic `ExcelMetadata` interface every other field in the
+            // file uses -- not a second, JSON-shaped `__AlefWireExcelMetadata` duplicate. A
+            // binding presents exactly one public shape per Rust type; `ExcelMetadata` already
+            // gets `export interface ExcelMetadata { readonly sheetCount?: number; ... }`
+            // declared below via the ordinary `Decl::Interface` path (`ExcelMetadata` is a plain,
+            // non-opaque, non-transparent type in `api.types`), so this reuses it instead of
+            // resynthesizing a snake_case sibling nobody but this passthrough path could see. ~keep
+            "  | ({ formatType: \"excel\" } & ExcelMetadata)",
         ],
         "expected the wrapped struct's own fields flattened onto the tag object, got:\n{dts}"
     );
     assert!(
         !dts.contains("excel: ExcelMetadata") && !dts.contains("excel?: ExcelMetadata"),
         "must not declare the old nested `excel: ExcelMetadata` member once the type resolves:\n{dts}"
+    );
+    assert!(
+        !dts.contains("__AlefWire"),
+        "must not synthesize a duplicate JSON-shaped wire type once the payload resolves to an \
+         idiomatic declared interface:\n{dts}"
+    );
+    assert!(
+        dts.contains("export interface ExcelMetadata {") && dts.contains("readonly sheetCount: number"),
+        "the idiomatic interface referenced by the union must actually be declared, in host \
+         camelCase, elsewhere in the file:\n{dts}"
+    );
+}
+
+/// The one struct shape that still needs a synthesized wire type: a
+/// `#[serde(transparent)]` single-field newtype. Its wire form is the BARE inner value with no
+/// wrapper object at all (`sheet_count` alone, not `{ inner: sheet_count }`), which the
+/// idiomatic napi interface -- a real one-field struct -- cannot express, so referencing it
+/// would describe the wrong shape.
+#[test]
+fn transparent_newtype_payload_still_collapses_to_its_inner_type() {
+    let api = ApiSurface {
+        enums: vec![EnumDef {
+            name: "FormatMetadata".to_string(),
+            serde_tag: Some("format_type".to_string()),
+            serde_rename_all: Some("snake_case".to_string()),
+            variants: vec![EnumVariant {
+                name: "Excel".to_string(),
+                is_tuple: true,
+                fields: vec![FieldDef {
+                    name: "_0".to_string(),
+                    ty: TypeRef::Named("SheetCount".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        types: vec![TypeDef {
+            name: "SheetCount".to_string(),
+            fields: vec![FieldDef {
+                name: "_0".to_string(),
+                ty: TypeRef::Primitive(crate::core::ir::PrimitiveType::U32),
+                ..Default::default()
+            }],
+            serde_container_conversion: crate::core::ir::SerdeContainerConversion {
+                transparent: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let dts = gen_dts(
+        &api,
+        "",
+        &Default::default(),
+        &[],
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        "",
+        None,
+    );
+
+    assert!(
+        dts.contains("({ formatType: \"excel\" } & __AlefWireSheetCount)"),
+        "a transparent newtype has no idiomatic interface to reference (its wire form is the \
+         bare inner value, not a wrapper object), so it must still synthesize its own alias:\n{dts}"
+    );
+    assert!(
+        dts.contains("export type __AlefWireSheetCount = number;"),
+        "the synthesized alias must collapse to the transparent field's inner type, not a \
+         one-field wrapper object:\n{dts}"
+    );
+}
+
+/// A struct with an explicit `#[serde(rename = "...")]` field must NOT reuse its idiomatic
+/// `Decl::Interface`: that interface's `js_name` comes from `to_node_name` on the bare Rust
+/// identifier alone (napi's ABI-level marshalling name), never from `serde_rename` -- but the
+/// JSON this passthrough path actually emits IS keyed by the serde rename. Referencing the
+/// interface here would advertise a property (`internalName`) the real JSON never carries,
+/// while silently omitting the one it does (`external_name`). This must keep synthesizing its
+/// own wire alias so the declared shape matches the actual JSON exactly.
+#[test]
+fn payload_field_with_explicit_serde_rename_declines_the_idiomatic_interface() {
+    let api = ApiSurface {
+        enums: vec![EnumDef {
+            name: "FormatMetadata".to_string(),
+            serde_tag: Some("format_type".to_string()),
+            serde_rename_all: Some("snake_case".to_string()),
+            variants: vec![EnumVariant {
+                name: "Excel".to_string(),
+                is_tuple: true,
+                fields: vec![FieldDef {
+                    name: "_0".to_string(),
+                    ty: TypeRef::Named("ExcelMetadata".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        types: vec![TypeDef {
+            name: "ExcelMetadata".to_string(),
+            fields: vec![FieldDef {
+                name: "internal_name".to_string(),
+                ty: TypeRef::String,
+                serde_rename: Some("external_name".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let dts = gen_dts(
+        &api,
+        "",
+        &Default::default(),
+        &[],
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        "",
+        None,
+    );
+
+    assert!(
+        dts.contains("({ formatType: \"excel\" } & __AlefWireExcelMetadata)"),
+        "must fall back to a synthesized wire alias once a field's serde rename could disagree \
+         with the idiomatic interface's `to_node_name`-derived key, got:\n{dts}"
+    );
+    assert!(
+        dts.contains("export type __AlefWireExcelMetadata = { external_name: string };"),
+        "the synthesized wire type must key the field by its explicit serde rename VERBATIM \
+         (`external_name` -- author intent, never recased), not the Rust identifier's camelCase \
+         (`internalName`):\n{dts}"
     );
 }
 
@@ -716,6 +858,64 @@ fn untagged_enum_declares_bare_union_of_variant_shapes() {
     assert!(
         !dts.contains("export declare enum Untagged"),
         "must not emit a plain string enum for an untagged data enum:\n{dts}"
+    );
+}
+
+/// The other shape with no idiomatic declaration to reference: an OPAQUE struct. It gets a
+/// `Decl::Class` (a handle wrapper with no plain-object shape), never a `Decl::Interface`, so a
+/// JSON-passthrough payload reaching one still needs its own synthesized structural type.
+#[test]
+fn untagged_enum_variant_wrapping_an_opaque_struct_still_synthesizes_a_wire_type() {
+    let api = ApiSurface {
+        enums: vec![EnumDef {
+            name: "Untagged".to_string(),
+            serde_untagged: true,
+            variants: vec![EnumVariant {
+                name: "Handle".to_string(),
+                is_tuple: true,
+                fields: vec![FieldDef {
+                    name: "_0".to_string(),
+                    ty: TypeRef::Named("OpaqueThing".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        types: vec![TypeDef {
+            name: "OpaqueThing".to_string(),
+            is_opaque: true,
+            fields: vec![FieldDef {
+                name: "label".to_string(),
+                ty: TypeRef::String,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let dts = gen_dts(
+        &api,
+        "",
+        &Default::default(),
+        &[],
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        "",
+        None,
+    );
+
+    assert!(
+        dts.contains("export type Untagged =\n  | __AlefWireOpaqueThing"),
+        "an opaque struct has no idiomatic non-class declaration to reference, so the union \
+         must still resolve through a synthesized wire type, got:\n{dts}"
+    );
+    assert!(
+        dts.contains("export type __AlefWireOpaqueThing = { label"),
+        "the synthesized wire type must describe the struct's own JSON shape, got:\n{dts}"
     );
 }
 

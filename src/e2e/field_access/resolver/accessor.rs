@@ -11,7 +11,7 @@ use super::super::python_renderer::{
 };
 use super::super::renderers::{render_accessor, render_swift_with_first_class_map};
 use super::super::types::{FieldResolver, PathSegment};
-use heck::ToUpperCamelCase;
+use heck::{ToLowerCamelCase, ToUpperCamelCase};
 use std::collections::HashMap;
 
 impl FieldResolver {
@@ -203,7 +203,6 @@ impl FieldResolver {
                 // this arm only runs for internally-tagged enums (see the doc comment above). ~keep
                 let wire = self.ir_enum_map.tagged_enum_wire.get(&union_type)?;
                 let wire_value = wire.variants.get(&variant)?;
-                let tag = &wire.tag;
                 // `napi_flattened_newtype_variants` mirrors `backends::napi::
                 // tagged_enum_flattened_newtype` exactly: when it resolves, the payload struct's
                 // own fields sit directly beside the tag on the wire and on the flattened
@@ -214,6 +213,23 @@ impl FieldResolver {
                     .napi_flattened_newtype_variants
                     .get(&union_type)
                     .is_some_and(|variants| variants.contains(&variant));
+                // The discriminant KEY is camelCased on the JSON-passthrough boundary (see
+                // `wire_types.rs`'s `variant` -- SerdeEnumRepr::Internal now camelCases it there
+                // too), same as any payload field: `format_type` -> `formatType`. The VALUE
+                // (`wire_value`, e.g. `"excel"`) is data, never an identifier, and stays
+                // untouched either way.
+                //
+                // The non-flattened (`gen_tagged_enum_as_object`) shape does NOT get this
+                // treatment: `tagged_enum_discriminant_js_name` still pins the compiled struct's
+                // discriminant to the raw tag verbatim via an explicit `#[napi(js_name = "...")]`
+                // (see `enums.rs`), and `internal_tagged_union_dts_lines` declares that same raw
+                // key in the `.d.ts` -- camelCasing it here without a matching change to BOTH
+                // would assert a property that does not exist on the real runtime struct. ~keep
+                let tag = if is_flattened {
+                    wire.tag.to_lower_camel_case()
+                } else {
+                    wire.tag.clone()
+                };
                 let narrowed = if is_flattened {
                     format!("({container}.{tag} === \"{wire_value}\" ? {container} : undefined)")
                 } else {
@@ -230,7 +246,16 @@ impl FieldResolver {
                 if suffix.is_empty() {
                     Some(container)
                 } else {
-                    Some(format!("{container}.{suffix}"))
+                    // The suffix reads straight off the flattened `serde_wasm_bindgen`-bridged
+                    // JSON object (see this method's doc comment), so it must match the wire
+                    // shape the napi/wasm JSON-passthrough boundary now declares: camelCase all
+                    // the way down. `union_variant_payload` (checked above via `?`) only
+                    // succeeds for the single-Named-type-payload shape, so every segment reached
+                    // here is a payload FIELD name, never a serde `#[serde(rename = "...")]`
+                    // this layer has no access to -- best-effort mechanical camelCase, matching
+                    // `wire_field_name_camel`'s behaviour for the common (unrenamed) case. ~keep
+                    let suffix_chain: Vec<String> = suffix.split('.').map(str::to_lower_camel_case).collect();
+                    Some(format!("{container}.{}", suffix_chain.join(".")))
                 }
             }
             _ => None,
@@ -270,7 +295,20 @@ impl FieldResolver {
         self.union_variant_payload(&union_type, &variant)?;
         let wire = self.ir_enum_map.tagged_enum_wire.get(&union_type)?;
         let wire_value = wire.variants.get(&variant)?;
-        let tag = &wire.tag;
+        // Same flattening test as `typescript_tagged_union_accessor`'s "node" arm -- see its
+        // comment. Once flattened, the payload's own fields sit directly on `binding`, so there
+        // is no synthesized `js_field` member between the narrowed binding and the suffix. ~keep
+        let is_flattened = self
+            .napi_flattened_newtype_variants
+            .get(&union_type)
+            .is_some_and(|variants| variants.contains(&variant));
+        // Same camelCase discriminant-key treatment as `typescript_tagged_union_accessor` --
+        // see its comment (only the flattened JSON-passthrough shape gets it). ~keep
+        let tag = if is_flattened {
+            wire.tag.to_lower_camel_case()
+        } else {
+            wire.tag.clone()
+        };
         let source = if prefix.is_empty() {
             result_var.to_string()
         } else {
@@ -287,13 +325,6 @@ impl FieldResolver {
             let last_segment = last_segment.split('[').next().unwrap_or(last_segment);
             crate::codegen::naming::to_node_name(last_segment)
         };
-        // Same flattening test as `typescript_tagged_union_accessor`'s "node" arm -- see its
-        // comment. Once flattened, the payload's own fields sit directly on `binding`, so there
-        // is no synthesized `js_field` member between the narrowed binding and the suffix. ~keep
-        let is_flattened = self
-            .napi_flattened_newtype_variants
-            .get(&union_type)
-            .is_some_and(|variants| variants.contains(&variant));
         let expression = if is_flattened {
             if suffix.is_empty() {
                 binding.clone()
@@ -784,6 +815,89 @@ mod typescript_tagged_union_accessor_tests {
         assert_eq!(
             resolver.typescript_tagged_union_accessor("format.basic.username", "wasm", "result"),
             None
+        );
+    }
+
+    /// The `FormatMetadata`/`ExcelMetadata` shape this whole camelCase decision is about: a
+    /// fully-flattened-internal-enum payload, reached through `with_napi_flattened_newtype_variants`
+    /// so `is_flattened` is actually `true` here (unlike `resolver_over_format_metadata` above,
+    /// whose empty `napi_flattened_newtype_variants` map exercises the OTHER, non-flattened
+    /// `gen_tagged_enum_as_object` shape instead). Both the discriminant KEY and a multi-word
+    /// payload field must camelCase, and node/wasm must agree on the payload field. ~keep
+    fn resolver_over_flattened_format_metadata() -> FieldResolver {
+        let types = vec![
+            TypeDef {
+                name: "Metadata".to_string(),
+                fields: vec![field(
+                    "format",
+                    TypeRef::Optional(Box::new(TypeRef::Named("FormatMetadata".to_string()))),
+                )],
+                ..TypeDef::default()
+            },
+            TypeDef {
+                name: "ExcelMetadata".to_string(),
+                fields: vec![field(
+                    "sheet_count",
+                    TypeRef::Primitive(crate::core::ir::PrimitiveType::U32),
+                )],
+                ..TypeDef::default()
+            },
+        ];
+        let enums = vec![EnumDef {
+            name: "FormatMetadata".to_string(),
+            serde_tag: Some("format_type".to_string()),
+            serde_rename_all: Some("snake_case".to_string()),
+            variants: vec![EnumVariant {
+                name: "Excel".to_string(),
+                is_tuple: true,
+                fields: vec![field("_0", TypeRef::Named("ExcelMetadata".to_string()))],
+                ..EnumVariant::default()
+            }],
+            ..EnumDef::default()
+        }];
+        FieldResolver::new(
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        )
+        .with_ir_enum_map(
+            FieldResolver::ir_enum_fields(&types, &enums),
+            Some("Metadata".to_string()),
+        )
+        .with_napi_flattened_newtype_variants(&enums, &types)
+    }
+
+    #[test]
+    fn node_camel_cases_the_discriminant_key_and_the_payload_field_when_flattened() {
+        let resolver = resolver_over_flattened_format_metadata();
+        assert_eq!(
+            resolver.typescript_tagged_union_accessor("format.excel.sheet_count", "node", "result"),
+            Some("(result.format.formatType === \"excel\" ? result.format : undefined)?.sheetCount".to_string())
+        );
+    }
+
+    #[test]
+    fn wasm_camel_cases_the_payload_field_when_flattened() {
+        let resolver = resolver_over_flattened_format_metadata();
+        assert_eq!(
+            resolver.typescript_tagged_union_accessor("format.excel.sheet_count", "wasm", "result"),
+            Some("result.format.sheetCount".to_string())
+        );
+    }
+
+    #[test]
+    fn node_snippet_guard_camel_cases_the_discriminant_key_when_flattened() {
+        let resolver = resolver_over_flattened_format_metadata();
+        assert_eq!(
+            resolver.typescript_snippet_variant_guard("format.excel.sheet_count", "node", "result"),
+            Some((
+                "format".to_string(),
+                "result.format".to_string(),
+                "format?.formatType === \"excel\"".to_string(),
+                "format?.sheetCount".to_string(),
+            ))
         );
     }
 }

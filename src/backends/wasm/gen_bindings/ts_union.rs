@@ -18,7 +18,7 @@
 use ahash::{AHashMap, AHashSet};
 
 use crate::codegen::naming::ts_property_key::ts_property_key;
-use crate::codegen::naming::{wire_field_name, wire_variant_value};
+use crate::codegen::naming::{wire_field_name, wire_field_name_camel, wire_variant_value};
 use crate::core::ir::{ApiSurface, EnumDef, EnumVariant, FieldDef, TypeDef, TypeRef};
 
 use super::enums::{is_fully_flattened_internal_enum, is_untagged_data_enum, is_variant_untagged_string_enum};
@@ -34,6 +34,22 @@ enum TsAuxDecl {
 struct TsField {
     name: String,
     ts_type: String,
+}
+
+/// Which spelling a [`TsMapContext`] declares field/tag names under. Mirrors
+/// `backends::napi::gen_bindings::wire_types::WireCasing` exactly, for the exact same reason:
+/// `Serde` is the honest default for a boundary whose runtime is serde's own
+/// `serde_wasm_bindgen::to_value`/`from_value` output (untagged and variant-untagged data enums —
+/// see `TsMapContext::map_fields`'s doc comment). `Camel` is used ONLY for
+/// [`build_flattened_internal_enum_ts_plans`], whose runtime this backend now re-cases on the way
+/// through (`codegen::json_wire_types` + `ConversionConfig::wasm_camel_recased_enums`). The two
+/// must never be mixed up on the SAME boundary — that is exactly the mismatch
+/// `untagged_enum_wire_cross_backend_tests` (declaration) and the wasm camelCase-recase unit
+/// tests (runtime) exist to catch, together. ~keep
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WireCasing {
+    Serde,
+    Camel,
 }
 
 /// The per-enum half of an untagged data enum's TS plan: the Rust-only extern wrapper type a
@@ -168,6 +184,7 @@ fn build_variant_untagged_string_enum_ts_plans(
         in_progress: AHashMap::default(),
         resolved_names: AHashMap::default(),
         decls: Vec::new(),
+        casing: WireCasing::Serde,
     };
     let mut plans = AHashMap::default();
 
@@ -303,13 +320,21 @@ fn build_flattened_internal_enum_ts_plans(
         in_progress: AHashMap::default(),
         resolved_names: AHashMap::default(),
         decls: Vec::new(),
+        casing: WireCasing::Camel,
     };
     let mut plans = AHashMap::default();
 
     for &enum_def in enum_defs {
         let ts_type_name = format!("{prefix}{}", enum_def.name);
         let tag_field = crate::codegen::serde_enum_repr::tagged_object_tag_key(enum_def);
-        let tag_key = ts_property_key(tag_field);
+        // The discriminant KEY is a field name on this boundary's JSON just like any payload
+        // field, so it gets the same camelCase treatment (`format_type` -> `formatType`) as
+        // `backends::napi::gen_bindings::wire_types::WireTypes::tag_wire_name` already applies for
+        // napi's identical shape -- leaving it snake_case while every payload field around it is
+        // camelCase would produce the exact mixed-casing object the "one surface" decision exists
+        // to prevent. The discriminant VALUE (the match arm below's `tag_value`/`tag_literal`,
+        // e.g. `"excel"`) is data, never an identifier, and stays untouched. ~keep
+        let tag_key = ts_property_key(&wire_field_name_camel(tag_field, None));
         let members: Vec<String> = enum_def
             .variants
             .iter()
@@ -401,6 +426,7 @@ pub(super) fn build_untagged_enum_ts_plans(
         in_progress: AHashMap::default(),
         resolved_names: AHashMap::default(),
         decls: Vec::new(),
+        casing: WireCasing::Serde,
     };
     let mut plans = AHashMap::default();
 
@@ -540,6 +566,9 @@ struct TsMapContext<'a> {
     /// (unsuffixed, colliding) name. ~keep
     resolved_names: AHashMap<String, String>,
     decls: Vec<TsAuxDecl>,
+    /// See [`WireCasing`]. Defaults are set per builder function, not here — every construction
+    /// site names it explicitly so a new call site cannot silently inherit the wrong one.
+    casing: WireCasing,
 }
 
 impl TsMapContext<'_> {
@@ -573,7 +602,22 @@ impl TsMapContext<'_> {
     /// through to `unwrap_or_default()`. `backends::napi::gen_bindings::errors`'s
     /// `untagged_variant_dts_type` is the same declaration for the same runtime mechanism and
     /// resolves the key the same way; `backends::go`'s `go_data_enum_variant_field` is the
-    /// sibling that has always kept the host name and the wire key apart. ~keep
+    /// sibling that has always kept the host name and the wire key apart.
+    ///
+    /// This uses `wire_field_name_camel` (the "JS-facing JSON is camelCase all the way down"
+    /// product decision -- see `codegen::naming::wire_field_name_camel`'s doc) ONLY when
+    /// `self.casing == WireCasing::Camel`, i.e. only for
+    /// [`build_flattened_internal_enum_ts_plans`]. Everywhere else (untagged and
+    /// variant-untagged data enums) the actual runtime conversion is still
+    /// `serde_wasm_bindgen::to_value`/`from_value` straight against the CORE type with no
+    /// recasing (`codegen::conversions::{core_to_binding,binding_to_core}::fields`, driven by
+    /// `ConversionConfig::tagged_data_enum_names` with no matching
+    /// `wasm_camel_recased_enums` entry), so `WireCasing::Serde` stays the honest declaration
+    /// there. Declaring `Camel` on a boundary whose runtime is still `Serde` (or vice versa)
+    /// reintroduces the exact defect this split exists to prevent -- see [`WireCasing`]'s doc
+    /// comment. `codegen::json_wire_types` (+ `ConversionConfig::wasm_camel_recased_enums`) is
+    /// what makes the `Camel` case here TRUE at runtime, for exactly the same fully-flattened
+    /// subset [`build_flattened_internal_enum_ts_plans`] declares. ~keep
     ///
     /// A wire name, unlike a host identifier, is not guaranteed to be spellable bare —
     /// `#[serde(rename = "content-type")]` emitted raw is a `.d.ts` syntax error that takes the
@@ -582,9 +626,15 @@ impl TsMapContext<'_> {
     fn map_fields(&mut self, fields: &[FieldDef], rename_all: Option<&str>) -> Vec<TsField> {
         fields
             .iter()
-            .map(|f| TsField {
-                name: ts_property_key(&wire_field_name(&f.name, f.serde_rename.as_deref(), rename_all)),
-                ts_type: self.map_field_type(f),
+            .map(|f| {
+                let wire = match self.casing {
+                    WireCasing::Serde => wire_field_name(&f.name, f.serde_rename.as_deref(), rename_all),
+                    WireCasing::Camel => wire_field_name_camel(&f.name, f.serde_rename.as_deref()),
+                };
+                TsField {
+                    name: ts_property_key(&wire),
+                    ts_type: self.map_field_type(f),
+                }
             })
             .collect()
     }
@@ -674,7 +724,20 @@ impl TsMapContext<'_> {
         if type_def.is_opaque {
             return "any".to_string();
         }
-        let wire_name = format!("{ts_name}Wire");
+        // `CamelWire`, not `Wire`, under `WireCasing::Camel`: the SAME Rust struct can be a
+        // payload of both an untagged enum (declared `Serde`, in its own separate
+        // `TsMapContext`/custom section) and a fully-flattened one (declared `Camel`) in the
+        // same crate. TypeScript `interface` declarations of the SAME name merge fields
+        // additively across separate declarations (see `AllUntaggedEnumsTsPlan::custom_section`'s
+        // doc comment) -- reusing `Wire` here would merge this struct's camelCase members into
+        // the OTHER plan's snake_case interface of the identical name, advertising keys that do
+        // not exist on either boundary's actual runtime value. A distinct suffix per casing keeps
+        // the two declarations (and their custom sections) from ever colliding. ~keep
+        let suffix = match self.casing {
+            WireCasing::Serde => "Wire",
+            WireCasing::Camel => "CamelWire",
+        };
+        let wire_name = format!("{ts_name}{suffix}");
         self.in_progress.insert(type_def.name.clone(), wire_name.clone());
         let fields = self.map_fields(&type_def.fields, type_def.serde_rename_all.as_deref());
         self.in_progress.remove(&type_def.name);

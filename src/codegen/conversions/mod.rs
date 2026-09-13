@@ -10,7 +10,7 @@ pub use binding_to_core::{
     apply_core_wrapper_to_core, field_conversion_to_core, field_conversion_to_core_cfg, gen_from_binding_to_core,
     gen_from_binding_to_core_cfg, gen_from_lifetime_type_constructor,
 };
-pub use config::ConversionConfig;
+pub use config::{ConversionConfig, WasmCamelRecasedEnum};
 pub use core_to_binding::{
     field_conversion_from_core, field_conversion_from_core_cfg, gen_from_core_to_binding, gen_from_core_to_binding_cfg,
 };

@@ -562,6 +562,11 @@ impl Backend for NapiBackend {
             }
         }
         let mut emitted_enum_binding_to_core: AHashSet<String> = AHashSet::new();
+        // ~keep A fully flattened internally tagged enum crosses the boundary as raw serde JSON,
+        // which would hand JavaScript snake_case field names -- the one shape in this binding with
+        // no napi struct left to carry `js_name` renames. These wire types re-case it (and only
+        // it) on the way through, so the passthrough still presents the host idiom.
+        let mut wire_types = crate::codegen::json_wire_types::JsonWireTypes::new(api, &prefix);
         for e in &api.enums {
             // Asks `enums::is_tagged_data_enum`/`is_untagged_data_enum`/
             // `is_variant_untagged_string_enum` -- the same authority `enums::gen_enum` routes
@@ -595,20 +600,43 @@ impl Backend for NapiBackend {
                     &core_import,
                     napi_conv_config.source_crate_remaps,
                 );
-                builder.add_item(&format!(
-                    "impl From<{binding_name}> for {core_path} {{\n    \
-                         fn from(val: {binding_name}) -> Self {{\n        \
-                             serde_json::from_value(val.0).unwrap_or_default()\n    \
-                         }}\n\
-                     }}\n"
-                ));
-                builder.add_item(&format!(
-                    "impl From<{core_path}> for {binding_name} {{\n    \
-                         fn from(val: {core_path}) -> Self {{\n        \
-                             Self(serde_json::to_value(val).unwrap_or_default())\n    \
-                         }}\n\
-                     }}\n"
-                ));
+                // ~keep Only the fully-flattened internally tagged shape is re-cased. An
+                // untagged passthrough enum has no discriminant to rename and its payload is a
+                // bare value rather than a named field set, so it keeps serde's own output.
+                if enums::is_fully_flattened_internal_enum(e, &api.types) {
+                    wire_types.register_enum(e);
+                    let to_core = wire_types.js_value_to_core_expr(e, "val.0", &core_path);
+                    let to_js = wire_types.core_to_js_value_expr(e, "val");
+                    builder.add_item(&format!(
+                        "impl From<{binding_name}> for {core_path} {{\n    \
+                             fn from(val: {binding_name}) -> Self {{\n        \
+                                 {to_core}\n    \
+                             }}\n\
+                         }}\n"
+                    ));
+                    builder.add_item(&format!(
+                        "impl From<{core_path}> for {binding_name} {{\n    \
+                             fn from(val: {core_path}) -> Self {{\n        \
+                                 Self({to_js})\n    \
+                             }}\n\
+                         }}\n"
+                    ));
+                } else {
+                    builder.add_item(&format!(
+                        "impl From<{binding_name}> for {core_path} {{\n    \
+                             fn from(val: {binding_name}) -> Self {{\n        \
+                                 serde_json::from_value(val.0).unwrap_or_default()\n    \
+                             }}\n\
+                         }}\n"
+                    ));
+                    builder.add_item(&format!(
+                        "impl From<{core_path}> for {binding_name} {{\n    \
+                             fn from(val: {core_path}) -> Self {{\n        \
+                                 Self(serde_json::to_value(val).unwrap_or_default())\n    \
+                             }}\n\
+                         }}\n"
+                    ));
+                }
             } else {
                 if input_types.contains(&e.name) && crate::codegen::conversions::can_generate_enum_conversion(e) {
                     builder.add_item(&crate::codegen::conversions::gen_enum_from_binding_to_core_cfg(
@@ -626,6 +654,11 @@ impl Backend for NapiBackend {
                     ));
                 }
             }
+        }
+        // ~keep Emitted after the loop so every registered enum's reachable types are present,
+        // and in the emitter's own deterministic (sorted) order rather than enum-iteration order.
+        for declaration in wire_types.declarations() {
+            builder.add_item(&format!("{declaration}\n"));
         }
 
         let mut emitted_binding_to_core: AHashSet<String> = api

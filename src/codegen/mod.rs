@@ -20,6 +20,7 @@ pub mod foreign_cfg_variants;
 pub mod generators;
 pub mod identifier_grammar;
 pub mod java_literal;
+pub mod json_wire_types;
 pub mod keywords;
 pub mod mut_writeback;
 pub mod naming;
@@ -36,3 +37,5 @@ mod duration_wire_cross_backend_tests;
 mod serde_enum_wire_cross_backend_tests;
 #[cfg(test)]
 mod untagged_enum_wire_cross_backend_tests;
+#[cfg(test)]
+mod wasm_flattened_enum_camel_recase_lockstep_tests;

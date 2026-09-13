@@ -235,13 +235,17 @@ fn runtime_is_json_passthrough_for_fully_flattened_enum() {
     assert!(!runtime.contains("#[napi(object"), "got:\n{runtime}");
 }
 
-/// `.d.ts` half: the declared union must use serde's OWN field names (never napi's camelCase
-/// `js_name` renaming, since there is no nominal napi struct to rename fields on), and no
-/// `export declare enum` fallback. `WireTypes` derives this shape generically for
-/// `SerdeEnumRepr::Internal`, the same helper the container-level-untagged branch already reuses,
-/// so this pins that reuse rather than a hand-written second copy.
+/// `.d.ts` half: the declared union's keys -- the discriminant included -- are camelCased, and
+/// there is no `export declare enum` fallback. The key names here are derived from the enum's own
+/// serde metadata and then recased for the JavaScript surface; they are NOT napi `js_name`
+/// renames, since no nominal napi struct exists on this JSON-passthrough path to hang a rename
+/// on. What the declaration says must stay in lock step with what the conversion emits at
+/// runtime (`codegen::json_wire_types`) -- declaring a shape the runtime does not produce is the
+/// defect this whole path exists to avoid. `WireTypes` derives the shape generically for
+/// `SerdeEnumRepr::Internal`, the same helper the container-level-untagged branch reuses, so this
+/// pins that reuse rather than a hand-written second copy.
 #[test]
-fn dts_declaration_uses_serde_field_names_for_fully_flattened_enum() {
+fn dts_declaration_camel_cases_wire_keys_for_fully_flattened_enum() {
     let enum_def = fully_flattened_format_metadata_enum();
     let api = ApiSurface {
         enums: vec![enum_def],
@@ -266,14 +270,26 @@ fn dts_declaration_uses_serde_field_names_for_fully_flattened_enum() {
         .expect("gen_dts must declare FormatMetadata as a union type, not a plain enum");
     let declaration_block = &dts[start..];
 
+    // The tag key is derived from the enum's own `serde_tag`, then camelCased like any other
+    // key on this boundary -- `format_type` -> `formatType`. The two failure modes this pins
+    // apart look alike in a diff but are not: recasing a real tag is intended, whereas falling
+    // back to napi's synthesized `kind` means the serde_tag was never consulted at all. The
+    // negative assertion below is the half that survives a future recasing policy change. ~keep
     assert!(
-        declaration_block.contains("format_type: \"excel\""),
-        "the tag key must be the enum's own serde_tag, not napi's synthesized 'kind'; got:\n{dts}"
+        declaration_block.contains("formatType: \"excel\""),
+        "the tag key must be the enum's own serde_tag, camelCased; got:\n{dts}"
     );
-    assert!(declaration_block.contains("format_type: \"csv\""), "got:\n{dts}");
-    // Serde's own (snake_case) field names, never a camelCase `js_name` rename -- there is no
-    // nominal napi struct here to rename fields on. ~keep
-    assert!(dts.contains("sheet_count: number"), "got:\n{dts}");
+    assert!(declaration_block.contains("formatType: \"csv\""), "got:\n{dts}");
+    assert!(
+        !declaration_block.contains("kind:"),
+        "must never fall back to napi's synthesized 'kind' discriminant; got:\n{dts}"
+    );
+    // The discriminant VALUES are data, not identifiers, and are never recased. ~keep
+    assert!(
+        declaration_block.contains("\"excel\"") && !declaration_block.contains("\"Excel\""),
+        "variant values must stay verbatim serde values; got:\n{dts}"
+    );
+    assert!(dts.contains("sheetCount: number"), "got:\n{dts}");
     assert!(dts.contains("delimiter: string"), "got:\n{dts}");
     assert!(
         !dts.contains("export declare enum FormatMetadata"),

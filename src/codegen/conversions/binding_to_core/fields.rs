@@ -1,8 +1,75 @@
 use crate::codegen::conversions::ConversionConfig;
+use crate::codegen::conversions::config::WasmCamelRecasedEnum;
 use crate::codegen::conversions::helpers::{
     core_prim_str, is_tuple_type_name, needs_f64_cast, needs_i32_cast, needs_i64_cast,
 };
+use crate::codegen::json_wire_types::in_pipeline_expr;
 use crate::core::ir::{PrimitiveType, TypeRef};
+use ahash::AHashSet;
+
+/// `raw_js_expr` must evaluate to a `JsValue` (owned, per `serde_wasm_bindgen::from_value`'s
+/// signature -- callers pass `val.{name}.clone()` or `v.clone()`). Produces a bare core-value
+/// Rust expression, falling back to `Default::default()` at every stage exactly like the raw
+/// (non-recased) `tagged_data_enum_names` path's own `.unwrap_or_default()`. The outer
+/// `serde_json::from_value(...)` has no explicit turbofish: the target type is inferred from the
+/// surrounding struct-literal field position, the same convention this file's
+/// `untagged_data_enum_names` branch below already relies on. ~keep
+fn camel_core_value(raw_js_expr: &str, rec: &WasmCamelRecasedEnum) -> String {
+    let decoded = format!("serde_wasm_bindgen::from_value::<serde_json::Value>({raw_js_expr}).unwrap_or_default()");
+    let inner = in_pipeline_expr(
+        &decoded,
+        rec.retag_fn_name,
+        rec.in_wire_type,
+        rec.core_tag_key,
+        rec.js_tag_key,
+    );
+    format!("serde_json::from_value({inner}).unwrap_or_default()")
+}
+
+/// Same as `camel_core_value` but for a `Vec<CoreEnum>` stored as a single `JsValue` (a JS
+/// array): decodes the whole array as `Vec<serde_json::Value>` once, then retags and decodes each
+/// element through the same per-element pipeline. A parse failure on one element falls back to
+/// that element's `Default`, matching every other Vec-of-fallible-decode conversion in this file
+/// (see the `untagged_data_enum_names` `vec_named` branch below) rather than shrinking the Vec.
+fn camel_core_value_vec(raw_js_expr: &str, rec: &WasmCamelRecasedEnum) -> String {
+    let decoded_vec =
+        format!("serde_wasm_bindgen::from_value::<Vec<serde_json::Value>>({raw_js_expr}).unwrap_or_default()");
+    let per_item = in_pipeline_expr(
+        "item",
+        rec.retag_fn_name,
+        rec.in_wire_type,
+        rec.core_tag_key,
+        rec.js_tag_key,
+    );
+    format!("{decoded_vec}.into_iter().map(|item| serde_json::from_value({per_item}).unwrap_or_default()).collect()")
+}
+
+/// See the identical-purpose helper of the same name in `core_to_binding::fields`.
+enum TaggedShape<'t> {
+    Bare(&'t str),
+    Optional(&'t str),
+    Vec(&'t str),
+    OptionalVec(&'t str),
+}
+
+fn tagged_shape<'t>(ty: &'t TypeRef, tagged_names: &AHashSet<String>) -> Option<TaggedShape<'t>> {
+    match ty {
+        TypeRef::Named(n) if tagged_names.contains(n) => Some(TaggedShape::Bare(n)),
+        TypeRef::Optional(inner) => match inner.as_ref() {
+            TypeRef::Named(n) if tagged_names.contains(n) => Some(TaggedShape::Optional(n)),
+            TypeRef::Vec(vi) => match vi.as_ref() {
+                TypeRef::Named(n) if tagged_names.contains(n) => Some(TaggedShape::OptionalVec(n)),
+                _ => None,
+            },
+            _ => None,
+        },
+        TypeRef::Vec(inner) => match inner.as_ref() {
+            TypeRef::Named(n) if tagged_names.contains(n) => Some(TaggedShape::Vec(n)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 /// Determine the field conversion expression for binding -> core.
 pub fn field_conversion_to_core(name: &str, ty: &TypeRef, optional: bool) -> String {
@@ -255,30 +322,55 @@ pub fn field_conversion_to_core_cfg(name: &str, ty: &TypeRef, optional: bool, co
     if config.map_uses_jsvalue
         && let Some(tagged_names) = config.tagged_data_enum_names
     {
-        let bare_named = matches!(ty, TypeRef::Named(n) if tagged_names.contains(n));
-        let optional_named = matches!(ty, TypeRef::Optional(inner)
-                if matches!(inner.as_ref(), TypeRef::Named(n) if tagged_names.contains(n)));
-        let vec_named = matches!(ty, TypeRef::Vec(inner)
-                if matches!(inner.as_ref(), TypeRef::Named(n) if tagged_names.contains(n)));
-        let optional_vec_named = matches!(ty, TypeRef::Optional(outer)
-                if matches!(outer.as_ref(), TypeRef::Vec(inner)
-                    if matches!(inner.as_ref(), TypeRef::Named(n) if tagged_names.contains(n))));
-        if bare_named {
-            if optional {
+        let recased = |n: &str| config.wasm_camel_recased_enums.and_then(|m| m.get(n));
+        match tagged_shape(ty, tagged_names) {
+            Some(TaggedShape::Bare(n)) => {
+                if let Some(rec) = recased(n) {
+                    return if optional {
+                        format!(
+                            "{name}: val.{name}.as_ref().map(|v| {})",
+                            camel_core_value("v.clone()", rec)
+                        )
+                    } else {
+                        format!("{name}: {}", camel_core_value(&format!("val.{name}.clone()"), rec))
+                    };
+                }
+                if optional {
+                    return format!(
+                        "{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::from_value(v.clone()).ok())"
+                    );
+                }
+                return format!("{name}: serde_wasm_bindgen::from_value(val.{name}.clone()).unwrap_or_default()");
+            }
+            Some(TaggedShape::Optional(n)) => {
+                if let Some(rec) = recased(n) {
+                    return format!(
+                        "{name}: val.{name}.as_ref().map(|v| {})",
+                        camel_core_value("v.clone()", rec)
+                    );
+                }
                 return format!(
                     "{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::from_value(v.clone()).ok())"
                 );
             }
-            return format!("{name}: serde_wasm_bindgen::from_value(val.{name}.clone()).unwrap_or_default()");
-        }
-        if optional_named {
-            return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::from_value(v.clone()).ok())");
-        }
-        if vec_named {
-            return format!("{name}: serde_wasm_bindgen::from_value(val.{name}.clone()).unwrap_or_default()");
-        }
-        if optional_vec_named {
-            return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::from_value(v.clone()).ok())");
+            Some(TaggedShape::Vec(n)) => {
+                if let Some(rec) = recased(n) {
+                    return format!("{name}: {}", camel_core_value_vec(&format!("val.{name}.clone()"), rec));
+                }
+                return format!("{name}: serde_wasm_bindgen::from_value(val.{name}.clone()).unwrap_or_default()");
+            }
+            Some(TaggedShape::OptionalVec(n)) => {
+                if let Some(rec) = recased(n) {
+                    return format!(
+                        "{name}: val.{name}.as_ref().map(|v| {})",
+                        camel_core_value_vec("v.clone()", rec)
+                    );
+                }
+                return format!(
+                    "{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::from_value(v.clone()).ok())"
+                );
+            }
+            None => {}
         }
     }
 
@@ -552,5 +644,113 @@ pub fn field_conversion_to_core_cfg(name: &str, ty: &TypeRef, optional: bool, co
             _ => field_conversion_to_core(name, ty, optional),
         },
         _ => field_conversion_to_core(name, ty, optional),
+    }
+}
+
+#[cfg(test)]
+mod wasm_camel_recase_tests {
+    //! Mirrors `core_to_binding::fields::wasm_camel_recase_tests` for the JS -> core direction.
+    //! See that module's doc comment for why these are pure string-building unit tests, not an
+    //! end-to-end wasm backend run.
+
+    use super::field_conversion_to_core_cfg;
+    use crate::codegen::conversions::ConversionConfig;
+    use crate::codegen::conversions::config::WasmCamelRecasedEnum;
+    use crate::core::ir::TypeRef;
+    use std::collections::HashMap;
+
+    fn format_metadata_rec() -> WasmCamelRecasedEnum<'static> {
+        WasmCamelRecasedEnum {
+            out_wire_type: "__AlefWireOutWasmFormatMetadata",
+            in_wire_type: "__AlefWireInWasmFormatMetadata",
+            retag_fn_name: "__alef_wire_retag_Wasm",
+            core_tag_key: "format_type",
+            js_tag_key: "formatType",
+        }
+    }
+
+    fn config<'a>(
+        tagged_names: &'a ahash::AHashSet<String>,
+        recased: Option<&'a HashMap<String, WasmCamelRecasedEnum<'a>>>,
+    ) -> ConversionConfig<'a> {
+        ConversionConfig {
+            map_uses_jsvalue: true,
+            tagged_data_enum_names: Some(tagged_names),
+            wasm_camel_recased_enums: recased,
+            ..ConversionConfig::default()
+        }
+    }
+
+    /// CONTROL: no `wasm_camel_recased_enums` entry -> the exact pre-existing raw expression,
+    /// byte for byte.
+    #[test]
+    fn bare_field_with_no_recased_map_keeps_the_raw_passthrough() {
+        let tagged: ahash::AHashSet<String> = ["FormatMetadata".to_string()].into_iter().collect();
+        let cfg = config(&tagged, None);
+        let out = field_conversion_to_core_cfg("format", &TypeRef::Named("FormatMetadata".to_string()), false, &cfg);
+        assert_eq!(
+            out, "format: serde_wasm_bindgen::from_value(val.format.clone()).unwrap_or_default()",
+            "unexpected output: {out}"
+        );
+    }
+
+    #[test]
+    fn bare_recased_field_decodes_through_the_wire_type_pipeline() {
+        let tagged: ahash::AHashSet<String> = ["FormatMetadata".to_string()].into_iter().collect();
+        let mut recased = HashMap::new();
+        recased.insert("FormatMetadata".to_string(), format_metadata_rec());
+        let cfg = config(&tagged, Some(&recased));
+        let out = field_conversion_to_core_cfg("format", &TypeRef::Named("FormatMetadata".to_string()), false, &cfg);
+        assert_eq!(
+            out,
+            "format: serde_json::from_value(__alef_wire_retag_Wasm(serde_json::from_value::<__AlefWireInWasmFormatMetadata>(\
+             serde_wasm_bindgen::from_value::<serde_json::Value>(val.format.clone()).unwrap_or_default()).ok()\
+             .and_then(|wire| serde_json::to_value(wire).ok())\
+             .unwrap_or_default(), \"formatType\", \"format_type\")).unwrap_or_default()",
+            "unexpected output: {out}"
+        );
+    }
+
+    #[test]
+    fn optional_recased_field_maps_over_the_option() {
+        let tagged: ahash::AHashSet<String> = ["FormatMetadata".to_string()].into_iter().collect();
+        let mut recased = HashMap::new();
+        recased.insert("FormatMetadata".to_string(), format_metadata_rec());
+        let cfg = config(&tagged, Some(&recased));
+        let out = field_conversion_to_core_cfg("format", &TypeRef::Named("FormatMetadata".to_string()), true, &cfg);
+        assert_eq!(
+            out,
+            "format: val.format.as_ref().map(|v| serde_json::from_value(__alef_wire_retag_Wasm(serde_json::from_value::<__AlefWireInWasmFormatMetadata>(\
+             serde_wasm_bindgen::from_value::<serde_json::Value>(v.clone()).unwrap_or_default()).ok()\
+             .and_then(|wire| serde_json::to_value(wire).ok())\
+             .unwrap_or_default(), \"formatType\", \"format_type\")).unwrap_or_default())",
+            "unexpected output: {out}"
+        );
+    }
+
+    #[test]
+    fn vec_recased_field_decodes_each_element_through_the_pipeline() {
+        let tagged: ahash::AHashSet<String> = ["FormatMetadata".to_string()].into_iter().collect();
+        let mut recased = HashMap::new();
+        recased.insert("FormatMetadata".to_string(), format_metadata_rec());
+        let cfg = config(&tagged, Some(&recased));
+        let out = field_conversion_to_core_cfg(
+            "formats",
+            &TypeRef::Vec(Box::new(TypeRef::Named("FormatMetadata".to_string()))),
+            false,
+            &cfg,
+        );
+        assert!(
+            out.starts_with(
+                "formats: serde_wasm_bindgen::from_value::<Vec<serde_json::Value>>(val.formats.clone()).unwrap_or_default()\
+                 .into_iter().map(|item| serde_json::from_value("
+            ),
+            "unexpected output: {out}"
+        );
+        assert!(
+            out.contains("serde_json::from_value::<__AlefWireInWasmFormatMetadata>(item)"),
+            "must decode each element through the wire type, got: {out}"
+        );
+        assert!(out.ends_with(").collect()"), "unexpected output: {out}");
     }
 }

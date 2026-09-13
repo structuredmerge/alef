@@ -367,6 +367,78 @@ impl Backend for WasmBackend {
             .map(|e| e.name.clone())
             .collect();
 
+        // ~keep A fully-flattened internally-tagged enum's `JsValue` field boundary is bridged
+        // through raw `serde_wasm_bindgen` on the CORE type (see `jsvalue_bridged_enum_names`
+        // above and `wasm_conv_config.tagged_data_enum_names` below), which is snake_case because
+        // that is what the core's own serde derive produces -- the exact same shape napi recases
+        // through `codegen::json_wire_types::JsonWireTypes`. This registers the SAME wire-type
+        // mirrors for the SAME subset (only enums satisfying `is_fully_flattened_internal_enum`,
+        // not every `jsvalue_bridged_enum_names` member -- see
+        // `ConversionConfig::wasm_camel_recased_enums`'s doc comment for why the wider set is left
+        // alone), so `wasm_conv_config.wasm_camel_recased_enums` can route exactly this subset's
+        // field conversions through them too. Guarded on non-empty so a consumer crate with no
+        // such enum never gets the two always-present `JsonWireTypes` helper functions emitted
+        // with no caller -- `dead_code` under `-D warnings`. ~keep
+        let camel_recased_enum_defs: Vec<&crate::core::ir::EnumDef> = api
+            .enums
+            .iter()
+            .filter(|e| {
+                jsvalue_bridged_enum_names.contains(&e.name) && enums::is_fully_flattened_internal_enum(e, &api.types)
+            })
+            .collect();
+        // `(enum_name, out_wire_type, in_wire_type, retag_fn_name, core_tag_key, js_tag_key)` --
+        // `retag_fn_name` is repeated per row (one shared `JsonWireTypes` instance, so it is the
+        // same string every time) rather than threaded separately, so every piece a
+        // `WasmCamelRecasedEnum` needs lives in one owned, stable-address collection.
+        let camel_recased_pieces: Vec<(String, String, String, String, String, String)> =
+            if camel_recased_enum_defs.is_empty() {
+                Vec::new()
+            } else {
+                let mut wasm_wire_types = crate::codegen::json_wire_types::JsonWireTypes::new(api, &prefix);
+                let registered: Vec<(String, String, String, String, String)> = camel_recased_enum_defs
+                    .iter()
+                    .copied()
+                    .map(|e| {
+                        let (out_name, in_name) = wasm_wire_types.register_enum(e);
+                        (
+                            e.name.clone(),
+                            out_name,
+                            in_name,
+                            crate::codegen::json_wire_types::core_tag_key(e).to_string(),
+                            crate::codegen::json_wire_types::js_tag_key(e),
+                        )
+                    })
+                    .collect();
+                for declaration in wasm_wire_types.declarations() {
+                    builder.add_item(&format!("{declaration}\n"));
+                }
+                let retag_fn_name = wasm_wire_types.retag_fn_name().to_string();
+                registered
+                    .into_iter()
+                    .map(|(name, out_name, in_name, core_tag, js_tag)| {
+                        (name, out_name, in_name, retag_fn_name.clone(), core_tag, js_tag)
+                    })
+                    .collect()
+            };
+        let wasm_camel_recased_enums: std::collections::HashMap<
+            String,
+            crate::codegen::conversions::WasmCamelRecasedEnum,
+        > = camel_recased_pieces
+            .iter()
+            .map(|(name, out_name, in_name, retag_fn_name, core_tag, js_tag)| {
+                (
+                    name.clone(),
+                    crate::codegen::conversions::WasmCamelRecasedEnum {
+                        out_wire_type: out_name.as_str(),
+                        in_wire_type: in_name.as_str(),
+                        retag_fn_name: retag_fn_name.as_str(),
+                        core_tag_key: core_tag.as_str(),
+                        js_tag_key: js_tag.as_str(),
+                    },
+                )
+            })
+            .collect();
+
         let methods_enums: Vec<_> = api
             .enums
             .iter()
@@ -687,6 +759,11 @@ impl Backend for WasmBackend {
                 None
             } else {
                 Some(&text_field_enum_names)
+            },
+            wasm_camel_recased_enums: if wasm_camel_recased_enums.is_empty() {
+                None
+            } else {
+                Some(&wasm_camel_recased_enums)
             },
             // See `enums::gen_enum`'s doc comment and `configured_features_set` above: this is
             // the same set already threaded into the enum declaration path, now also reaching the

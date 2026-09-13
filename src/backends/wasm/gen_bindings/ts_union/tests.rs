@@ -326,6 +326,7 @@ fn primitive_types_map_to_expected_ts() {
             in_progress: AHashMap::default(),
             resolved_names: ahash::AHashMap::default(),
             decls: Vec::new(),
+            casing: super::WireCasing::Serde,
         };
         assert_eq!(ctx.map_type(ty), *expected, "mapping {ty:?}");
     }
@@ -342,6 +343,7 @@ fn vec_maps_to_element_array() {
         in_progress: AHashMap::default(),
         resolved_names: ahash::AHashMap::default(),
         decls: Vec::new(),
+        casing: super::WireCasing::Serde,
     };
     let ty = TypeRef::Vec(Box::new(TypeRef::String));
     assert_eq!(ctx.map_type(&ty), "string[]");
@@ -368,6 +370,7 @@ fn vec_of_optional_wraps_union_before_appending_array_suffix() {
         in_progress: AHashMap::default(),
         resolved_names: ahash::AHashMap::default(),
         decls: Vec::new(),
+        casing: super::WireCasing::Serde,
     };
     let ty = TypeRef::Vec(Box::new(TypeRef::Optional(Box::new(TypeRef::String))));
     assert_eq!(ctx.map_type(&ty), "(string | undefined)[]");
@@ -390,6 +393,7 @@ fn nested_vec_of_optional_parenthesizes_at_the_right_level() {
         in_progress: AHashMap::default(),
         resolved_names: ahash::AHashMap::default(),
         decls: Vec::new(),
+        casing: super::WireCasing::Serde,
     };
     let ty = TypeRef::Vec(Box::new(TypeRef::Vec(Box::new(TypeRef::Optional(Box::new(
         TypeRef::String,
@@ -408,6 +412,7 @@ fn optional_appends_undefined() {
         in_progress: AHashMap::default(),
         resolved_names: ahash::AHashMap::default(),
         decls: Vec::new(),
+        casing: super::WireCasing::Serde,
     };
     let ty = TypeRef::Optional(Box::new(TypeRef::String));
     assert_eq!(ctx.map_type(&ty), "string | undefined");
@@ -424,6 +429,7 @@ fn string_keyed_map_becomes_record() {
         in_progress: AHashMap::default(),
         resolved_names: ahash::AHashMap::default(),
         decls: Vec::new(),
+        casing: super::WireCasing::Serde,
     };
     let ty = TypeRef::Map(
         Box::new(TypeRef::String),
@@ -443,6 +449,7 @@ fn non_string_keyed_map_falls_back_to_any() {
         in_progress: AHashMap::default(),
         resolved_names: ahash::AHashMap::default(),
         decls: Vec::new(),
+        casing: super::WireCasing::Serde,
     };
     let ty = TypeRef::Map(
         Box::new(TypeRef::Primitive(PrimitiveType::U32)),
@@ -1058,16 +1065,24 @@ fn flattened_internal_enum_intersects_tag_literal_with_payload_shape() {
 
     let all_plans =
         build_flattened_internal_enum_ts_plan_for_api(&api, &[], &AHashSet::default(), &AHashSet::default(), "Alef");
+    // The tag key is camelCased (`formatType`, not `format_type`) and the payload interface gets
+    // the `CamelWire` suffix, not the plain `Wire` suffix a `Serde`-cased plan would use -- both
+    // match the runtime `serde_wasm_bindgen` recasing `ConversionConfig::wasm_camel_recased_enums`
+    // now applies for exactly this shape. See `flattened_internal_enum_tag_key_uses_the_camel_case_wire_name`
+    // and `flattened_internal_enum_payload_fields_use_camel_case_wire_names_including_nested_structs`
+    // below for the dedicated regression coverage of each half.
     assert!(
         all_plans.custom_section.contains(concat!(
             "export type AlefFormatMetadata = ",
-            "({ format_type: \"Excel\" } & AlefExcelMetadataWire) | { format_type: \"Pdf\" };"
+            "({ formatType: \"Excel\" } & AlefExcelMetadataCamelWire) | { formatType: \"Pdf\" };"
         )),
         "actual:\n{}",
         all_plans.custom_section
     );
     assert!(
-        all_plans.custom_section.contains("interface AlefExcelMetadataWire"),
+        all_plans
+            .custom_section
+            .contains("interface AlefExcelMetadataCamelWire"),
         "actual:\n{}",
         all_plans.custom_section
     );
@@ -1136,4 +1151,184 @@ fn adjacent_tagging_is_not_a_flattened_internal_enum() {
         ..Default::default()
     };
     assert!(!super::super::enums::is_fully_flattened_internal_enum(&enum_def, &[]));
+}
+
+/// The runtime conversion for a flattened-internal-tagged enum field now re-cases through
+/// `codegen::json_wire_types` + `ConversionConfig::wasm_camel_recased_enums`
+/// (`codegen::conversions::{core_to_binding,binding_to_core}::fields`'s `camel_jsvalue`/
+/// `camel_core_value` helpers) instead of bridging `serde_wasm_bindgen` straight against the CORE
+/// type, so the declaration must be camelCase too -- including NESTED payloads:
+/// `ExcelMetadata.sheet_count` must declare as `sheetCount`, and a struct it embeds
+/// (`SheetInfo.row_count`) must ALSO be camelCased, two levels deep -- proving the declaration
+/// matches the runtime shape at every depth, not only at the top level.
+#[test]
+fn flattened_internal_enum_payload_fields_use_camel_case_wire_names_including_nested_structs() {
+    let enum_def = EnumDef {
+        name: "FormatMetadata".to_string(),
+        rust_path: "test_lib::FormatMetadata".to_string(),
+        serde_tag: Some("format_type".to_string()),
+        variants: vec![tuple_variant("Excel", TypeRef::Named("ExcelMetadata".to_string()))],
+        ..Default::default()
+    };
+    let mut api = empty_api();
+    api.types = vec![
+        TypeDef {
+            name: "ExcelMetadata".to_string(),
+            rust_path: "test_lib::ExcelMetadata".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "sheet_count".to_string(),
+                    ty: TypeRef::Primitive(PrimitiveType::U32),
+                    ..Default::default()
+                },
+                FieldDef {
+                    name: "primary_sheet".to_string(),
+                    ty: TypeRef::Named("SheetInfo".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+        TypeDef {
+            name: "SheetInfo".to_string(),
+            rust_path: "test_lib::SheetInfo".to_string(),
+            fields: vec![FieldDef {
+                name: "row_count".to_string(),
+                ty: TypeRef::Primitive(PrimitiveType::U32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    ];
+    api.enums = vec![enum_def.clone()];
+
+    let all_plans =
+        build_flattened_internal_enum_ts_plan_for_api(&api, &[], &AHashSet::default(), &AHashSet::default(), "Alef");
+
+    assert!(
+        all_plans.custom_section.contains("sheetCount: number;"),
+        "top-level payload field must declare the camelCase wire name, actual:\n{}",
+        all_plans.custom_section
+    );
+    assert!(
+        !all_plans.custom_section.contains("sheet_count:"),
+        "must not declare the snake_case name the runtime no longer produces, actual:\n{}",
+        all_plans.custom_section
+    );
+    assert!(
+        all_plans
+            .custom_section
+            .contains("primarySheet: AlefSheetInfoCamelWire"),
+        "the field naming the nested struct must itself use the camelCase wire name and reference \
+         the CamelWire-suffixed interface, actual:\n{}",
+        all_plans.custom_section
+    );
+    assert!(
+        all_plans.custom_section.contains("rowCount: number;"),
+        "a field NESTED inside the referenced struct must also be camelCased, actual:\n{}",
+        all_plans.custom_section
+    );
+}
+
+/// An explicit `#[serde(rename = "...")]` is author intent and must be emitted VERBATIM, never
+/// recased.
+#[test]
+fn flattened_internal_enum_payload_field_with_explicit_rename_is_kept_verbatim() {
+    let enum_def = EnumDef {
+        name: "FormatMetadata".to_string(),
+        rust_path: "test_lib::FormatMetadata".to_string(),
+        serde_tag: Some("format_type".to_string()),
+        variants: vec![tuple_variant("Excel", TypeRef::Named("ExcelMetadata".to_string()))],
+        ..Default::default()
+    };
+    let mut api = empty_api();
+    api.types = vec![TypeDef {
+        name: "ExcelMetadata".to_string(),
+        rust_path: "test_lib::ExcelMetadata".to_string(),
+        fields: vec![FieldDef {
+            name: "internal_name".to_string(),
+            ty: TypeRef::String,
+            serde_rename: Some("external_name".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    api.enums = vec![enum_def.clone()];
+
+    let all_plans =
+        build_flattened_internal_enum_ts_plan_for_api(&api, &[], &AHashSet::default(), &AHashSet::default(), "Alef");
+
+    assert!(
+        all_plans.custom_section.contains("external_name: string;"),
+        "an explicit serde rename must be emitted verbatim, actual:\n{}",
+        all_plans.custom_section
+    );
+    assert!(
+        !all_plans.custom_section.contains("internalName") && !all_plans.custom_section.contains("externalName"),
+        "must not recase an explicit rename in either direction, actual:\n{}",
+        all_plans.custom_section
+    );
+}
+
+/// The discriminant KEY is a field name on this boundary same as any payload field, so it now
+/// gets the same camelCase treatment (`formatType`, not `format_type`) as every payload field
+/// around it -- a camelCase payload with a snake_case discriminant would be exactly the kind of
+/// inconsistency this declaration exists to avoid, per `build_flattened_internal_enum_ts_plans`'s
+/// own `~keep` note. The discriminant VALUE (`"Pdf"`) is data, not an identifier, and stays
+/// untouched either way.
+///
+/// The fixture needs a genuine data-carrying variant (`Excel`) alongside the unit variant: with
+/// only unit variants, `is_fully_flattened_internal_enum` has no data variant to check and
+/// answers `false`, so `gets_a_flattened_internal_enum_ts_union` drops the enum before it ever
+/// reaches this builder and `custom_section` comes back empty -- silently vacuous, not a real
+/// assertion of the tag key's casing.
+#[test]
+fn flattened_internal_enum_tag_key_uses_the_camel_case_wire_name() {
+    let enum_def = EnumDef {
+        name: "FormatMetadata".to_string(),
+        rust_path: "test_lib::FormatMetadata".to_string(),
+        serde_tag: Some("format_type".to_string()),
+        variants: vec![
+            tuple_variant("Excel", TypeRef::Named("ExcelMetadata".to_string())),
+            EnumVariant {
+                name: "Pdf".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let mut api = empty_api();
+    api.types = vec![TypeDef {
+        name: "ExcelMetadata".to_string(),
+        rust_path: "test_lib::ExcelMetadata".to_string(),
+        fields: vec![FieldDef {
+            name: "sheet_count".to_string(),
+            ty: TypeRef::Primitive(PrimitiveType::U32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    api.enums = vec![enum_def.clone()];
+    assert!(
+        super::super::enums::is_fully_flattened_internal_enum(&enum_def, &api.types),
+        "fixture must actually be a flattened internal enum, or this test checks nothing"
+    );
+
+    let all_plans =
+        build_flattened_internal_enum_ts_plan_for_api(&api, &[], &AHashSet::default(), &AHashSet::default(), "Alef");
+    assert!(
+        !all_plans.custom_section.is_empty(),
+        "the fixture must produce a union declaration"
+    );
+
+    assert!(
+        all_plans.custom_section.contains("{ formatType: \"Pdf\" }"),
+        "the discriminant key must declare the camelCase wire name `formatType`, actual:\n{}",
+        all_plans.custom_section
+    );
+    assert!(
+        !all_plans.custom_section.contains("format_type:"),
+        "must not declare the snake_case discriminant key the runtime no longer produces, actual:\n{}",
+        all_plans.custom_section
+    );
 }

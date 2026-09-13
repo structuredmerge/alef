@@ -35,6 +35,11 @@ pub(super) fn gen_dts(
     configured_features: Option<&std::collections::HashSet<&str>>,
 ) -> String {
     let mut wire_types = super::wire_types::WireTypes::new(api);
+    // ~keep A second instance, camel-cased, for the ONE shape whose runtime this backend re-cases
+    // (`is_fully_flattened_internal_enum`). Untagged passthrough enums keep serde's own spelling
+    // through the default instance -- their runtime is unchanged, so camelCasing their declared
+    // members would describe a wire that does not exist.
+    let mut wire_types_camel = super::wire_types::WireTypes::with_casing(api, super::wire_types::WireCasing::Camel);
     let header = hash::header(CommentStyle::DoubleSlash);
     let mut lines: Vec<String> = header.lines().map(|l| l.to_string()).collect();
     lines.push("/* eslint-disable */".to_string());
@@ -399,7 +404,7 @@ pub(super) fn gen_dts(
                     // second copy that could drift. (~keep)
                     lines.push(format!("export type {ts_name} ="));
                     lines.extend(
-                        wire_types
+                        wire_types_camel
                             .enum_members(e)
                             .into_iter()
                             .map(|member| format!("  | {member}")),
@@ -504,6 +509,7 @@ pub(super) fn gen_dts(
     }
 
     lines.extend(wire_types.declarations());
+    lines.extend(wire_types_camel.declarations());
 
     // automatically added by #[napi(async_iterator)] at build time.
     let mut sorted_streaming: Vec<(&String, &String)> = streaming_item_types.iter().collect();

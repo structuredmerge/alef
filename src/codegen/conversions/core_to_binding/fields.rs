@@ -1,8 +1,72 @@
 use crate::codegen::conversions::ConversionConfig;
+use crate::codegen::conversions::config::WasmCamelRecasedEnum;
 use crate::codegen::conversions::field_conversion_to_core;
 use crate::codegen::conversions::helpers::{binding_prim_str, needs_f64_cast, needs_i32_cast, needs_i64_cast};
+use crate::codegen::json_wire_types::out_pipeline_expr;
 use crate::core::ir::{PrimitiveType, TypeRef};
 use ahash::AHashSet;
+
+/// `core_expr` must evaluate to something borrowable as the core enum (see
+/// `json_wire_types::out_pipeline_expr`). Produces a Rust expression of type `serde_json::Value`.
+fn camel_json_value(core_expr: &str, rec: &WasmCamelRecasedEnum) -> String {
+    out_pipeline_expr(
+        core_expr,
+        rec.retag_fn_name,
+        rec.out_wire_type,
+        rec.core_tag_key,
+        rec.js_tag_key,
+    )
+}
+
+/// Same as `camel_json_value` but wraps the result for wasm's `JsValue` field boundary, falling
+/// back to `JsValue::NULL` exactly like the raw (non-recased) `tagged_data_enum_names` path's own
+/// `.unwrap_or(JsValue::NULL)`.
+fn camel_jsvalue(core_expr: &str, rec: &WasmCamelRecasedEnum) -> String {
+    format!(
+        "serde_wasm_bindgen::to_value(&{}).unwrap_or(JsValue::NULL)",
+        camel_json_value(core_expr, rec)
+    )
+}
+
+/// Same as `camel_jsvalue` but for a `Vec<CoreEnum>`: `items_expr` must evaluate to something
+/// whose `.iter()` yields items borrowable as the core enum (e.g. `&Vec<CoreEnum>` or
+/// `Vec<CoreEnum>`).
+fn camel_jsvalue_vec(items_expr: &str, rec: &WasmCamelRecasedEnum) -> String {
+    format!(
+        "serde_wasm_bindgen::to_value(&{items_expr}.iter().map(|item| {}).collect::<Vec<serde_json::Value>>()).unwrap_or(JsValue::NULL)",
+        camel_json_value("item", rec)
+    )
+}
+
+/// Looks up `name` in `tagged_names` under each of the four shapes the raw `tagged_data_enum_names`
+/// path already special-cases (bare, `Option<Named>`, `Vec<Named>`, `Option<Vec<Named>>`), also
+/// returning the matched enum NAME (not just a bool) so the caller can look it up in
+/// `ConversionConfig::wasm_camel_recased_enums`.
+enum TaggedShape<'t> {
+    Bare(&'t str),
+    Optional(&'t str),
+    Vec(&'t str),
+    OptionalVec(&'t str),
+}
+
+fn tagged_shape<'t>(ty: &'t TypeRef, tagged_names: &AHashSet<String>) -> Option<TaggedShape<'t>> {
+    match ty {
+        TypeRef::Named(n) if tagged_names.contains(n) => Some(TaggedShape::Bare(n)),
+        TypeRef::Optional(inner) => match inner.as_ref() {
+            TypeRef::Named(n) if tagged_names.contains(n) => Some(TaggedShape::Optional(n)),
+            TypeRef::Vec(vi) => match vi.as_ref() {
+                TypeRef::Named(n) if tagged_names.contains(n) => Some(TaggedShape::OptionalVec(n)),
+                _ => None,
+            },
+            _ => None,
+        },
+        TypeRef::Vec(inner) => match inner.as_ref() {
+            TypeRef::Named(n) if tagged_names.contains(n) => Some(TaggedShape::Vec(n)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 /// Same but for core -> binding direction.
 /// Some types are asymmetric (PathBuf→String, sanitized fields need .to_string()).
@@ -289,31 +353,47 @@ pub fn field_conversion_from_core_cfg(
     if config.map_uses_jsvalue
         && let Some(tagged_names) = config.tagged_data_enum_names
     {
-        let bare_named = matches!(ty, TypeRef::Named(n) if tagged_names.contains(n));
-        let optional_named = matches!(ty, TypeRef::Optional(inner)
-                if matches!(inner.as_ref(), TypeRef::Named(n) if tagged_names.contains(n)));
-        let vec_named = matches!(ty, TypeRef::Vec(inner)
-                if matches!(inner.as_ref(), TypeRef::Named(n) if tagged_names.contains(n)));
-        let optional_vec_named = matches!(ty, TypeRef::Optional(outer)
-                if matches!(outer.as_ref(), TypeRef::Vec(inner)
-                    if matches!(inner.as_ref(), TypeRef::Named(n) if tagged_names.contains(n))));
-        if bare_named {
-            if optional {
+        let recased = |n: &str| config.wasm_camel_recased_enums.and_then(|m| m.get(n));
+        match tagged_shape(ty, tagged_names) {
+            Some(TaggedShape::Bare(n)) => {
+                if let Some(rec) = recased(n) {
+                    return if optional {
+                        format!("{name}: val.{name}.as_ref().map(|v| {})", camel_jsvalue("v", rec))
+                    } else {
+                        format!("{name}: {}", camel_jsvalue(&format!("val.{name}"), rec))
+                    };
+                }
+                if optional {
+                    return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
+                }
+                return format!("{name}: serde_wasm_bindgen::to_value(&val.{name}).unwrap_or(JsValue::NULL)");
+            }
+            Some(TaggedShape::Optional(n)) => {
+                if let Some(rec) = recased(n) {
+                    return format!("{name}: val.{name}.as_ref().map(|v| {})", camel_jsvalue("v", rec));
+                }
                 return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
             }
-            return format!("{name}: serde_wasm_bindgen::to_value(&val.{name}).unwrap_or(JsValue::NULL)");
-        }
-        if optional_named {
-            return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
-        }
-        if vec_named {
-            if optional {
+            Some(TaggedShape::Vec(n)) => {
+                if let Some(rec) = recased(n) {
+                    return if optional {
+                        format!("{name}: val.{name}.as_ref().map(|v| {})", camel_jsvalue_vec("v", rec))
+                    } else {
+                        format!("{name}: {}", camel_jsvalue_vec(&format!("val.{name}"), rec))
+                    };
+                }
+                if optional {
+                    return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
+                }
+                return format!("{name}: serde_wasm_bindgen::to_value(&val.{name}).unwrap_or(JsValue::NULL)");
+            }
+            Some(TaggedShape::OptionalVec(n)) => {
+                if let Some(rec) = recased(n) {
+                    return format!("{name}: val.{name}.as_ref().map(|v| {})", camel_jsvalue_vec("v", rec));
+                }
                 return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
             }
-            return format!("{name}: serde_wasm_bindgen::to_value(&val.{name}).unwrap_or(JsValue::NULL)");
-        }
-        if optional_vec_named {
-            return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
+            None => {}
         }
     }
 
@@ -771,5 +851,169 @@ pub fn field_conversion_from_core_cfg(
             format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())")
         }
         _ => field_conversion_from_core(name, ty, optional, sanitized, opaque_types),
+    }
+}
+
+#[cfg(test)]
+mod wasm_camel_recase_tests {
+    //! Regression coverage for the wasm-only camelCase recasing branch in
+    //! `field_conversion_from_core_cfg`. Every test builds a `ConversionConfig` by hand (no wasm
+    //! backend, no `ApiSurface`) so these are true unit tests of the string-building logic, not an
+    //! end-to-end codegen run -- the wasm backend wiring that populates
+    //! `wasm_camel_recased_enums` from a real `JsonWireTypes` instance is a separate, not-yet-made
+    //! change (see the task assessment).
+
+    use super::field_conversion_from_core_cfg;
+    use crate::codegen::conversions::ConversionConfig;
+    use crate::codegen::conversions::config::WasmCamelRecasedEnum;
+    use crate::core::ir::TypeRef;
+    use ahash::AHashSet;
+    use std::collections::HashMap;
+
+    fn format_metadata_rec() -> WasmCamelRecasedEnum<'static> {
+        WasmCamelRecasedEnum {
+            out_wire_type: "__AlefWireOutWasmFormatMetadata",
+            in_wire_type: "__AlefWireInWasmFormatMetadata",
+            retag_fn_name: "__alef_wire_retag_Wasm",
+            core_tag_key: "format_type",
+            js_tag_key: "formatType",
+        }
+    }
+
+    fn config<'a>(
+        tagged_names: &'a AHashSet<String>,
+        recased: Option<&'a HashMap<String, WasmCamelRecasedEnum<'a>>>,
+    ) -> ConversionConfig<'a> {
+        ConversionConfig {
+            map_uses_jsvalue: true,
+            tagged_data_enum_names: Some(tagged_names),
+            wasm_camel_recased_enums: recased,
+            ..ConversionConfig::default()
+        }
+    }
+
+    /// CONTROL: with no `wasm_camel_recased_enums` entry at all, a bare tagged-enum field must
+    /// keep emitting the exact raw expression the pre-existing `tagged_data_enum_names` path
+    /// always has -- proving the new branch is a strict opt-in with zero effect until a backend
+    /// actually populates the map.
+    #[test]
+    fn bare_field_with_no_recased_map_keeps_the_raw_snake_case_passthrough() {
+        let tagged: AHashSet<String> = ["FormatMetadata".to_string()].into_iter().collect();
+        let cfg = config(&tagged, None);
+        let out = field_conversion_from_core_cfg(
+            "format",
+            &TypeRef::Named("FormatMetadata".to_string()),
+            false,
+            false,
+            &AHashSet::new(),
+            &cfg,
+        );
+        assert_eq!(
+            out, "format: serde_wasm_bindgen::to_value(&val.format).unwrap_or(JsValue::NULL)",
+            "unexpected output: {out}"
+        );
+    }
+
+    /// A name present in `tagged_data_enum_names` but ABSENT from `wasm_camel_recased_enums`
+    /// (e.g. a plain tagged-discriminator enum, or a genuinely untagged one) must also keep the
+    /// raw passthrough -- this is the safety property behind shape 2 of the assessment: only
+    /// enums explicitly registered as fully-flattened get recased.
+    #[test]
+    fn name_absent_from_recased_map_keeps_the_raw_passthrough_even_with_map_present() {
+        let tagged: AHashSet<String> = ["FormatMetadata".to_string(), "ChatRole".to_string()]
+            .into_iter()
+            .collect();
+        let mut recased = HashMap::new();
+        recased.insert("FormatMetadata".to_string(), format_metadata_rec());
+        let cfg = config(&tagged, Some(&recased));
+        let out = field_conversion_from_core_cfg(
+            "role",
+            &TypeRef::Named("ChatRole".to_string()),
+            false,
+            false,
+            &AHashSet::new(),
+            &cfg,
+        );
+        assert_eq!(
+            out, "role: serde_wasm_bindgen::to_value(&val.role).unwrap_or(JsValue::NULL)",
+            "unexpected output: {out}"
+        );
+    }
+
+    /// The reported defect's actual shape: a bare `FormatMetadata` field, recased.
+    #[test]
+    fn bare_recased_field_routes_through_the_wire_type_pipeline() {
+        let tagged: AHashSet<String> = ["FormatMetadata".to_string()].into_iter().collect();
+        let mut recased = HashMap::new();
+        recased.insert("FormatMetadata".to_string(), format_metadata_rec());
+        let cfg = config(&tagged, Some(&recased));
+        let out = field_conversion_from_core_cfg(
+            "format",
+            &TypeRef::Named("FormatMetadata".to_string()),
+            false,
+            false,
+            &AHashSet::new(),
+            &cfg,
+        );
+        assert_eq!(
+            out,
+            "format: serde_wasm_bindgen::to_value(&__alef_wire_retag_Wasm(serde_json::to_value(&val.format).ok()\
+             .and_then(|raw| serde_json::from_value::<__AlefWireOutWasmFormatMetadata>(raw).ok())\
+             .and_then(|wire| serde_json::to_value(wire).ok())\
+             .unwrap_or_default(), \"format_type\", \"formatType\")).unwrap_or(JsValue::NULL)",
+            "unexpected output: {out}"
+        );
+    }
+
+    #[test]
+    fn optional_recased_field_maps_over_the_option() {
+        let tagged: AHashSet<String> = ["FormatMetadata".to_string()].into_iter().collect();
+        let mut recased = HashMap::new();
+        recased.insert("FormatMetadata".to_string(), format_metadata_rec());
+        let cfg = config(&tagged, Some(&recased));
+        let out = field_conversion_from_core_cfg(
+            "format",
+            &TypeRef::Named("FormatMetadata".to_string()),
+            true,
+            false,
+            &AHashSet::new(),
+            &cfg,
+        );
+        assert_eq!(
+            out,
+            "format: val.format.as_ref().map(|v| serde_wasm_bindgen::to_value(&__alef_wire_retag_Wasm(serde_json::to_value(&v).ok()\
+             .and_then(|raw| serde_json::from_value::<__AlefWireOutWasmFormatMetadata>(raw).ok())\
+             .and_then(|wire| serde_json::to_value(wire).ok())\
+             .unwrap_or_default(), \"format_type\", \"formatType\")).unwrap_or(JsValue::NULL))",
+            "unexpected output: {out}"
+        );
+    }
+
+    #[test]
+    fn vec_recased_field_maps_each_element_through_the_pipeline() {
+        let tagged: AHashSet<String> = ["FormatMetadata".to_string()].into_iter().collect();
+        let mut recased = HashMap::new();
+        recased.insert("FormatMetadata".to_string(), format_metadata_rec());
+        let cfg = config(&tagged, Some(&recased));
+        let out = field_conversion_from_core_cfg(
+            "formats",
+            &TypeRef::Vec(Box::new(TypeRef::Named("FormatMetadata".to_string()))),
+            false,
+            false,
+            &AHashSet::new(),
+            &cfg,
+        );
+        assert!(
+            out.starts_with("formats: serde_wasm_bindgen::to_value(&val.formats.iter().map(|item| "),
+            "unexpected output: {out}"
+        );
+        assert!(
+            out.contains("serde_json::from_value::<__AlefWireOutWasmFormatMetadata>(raw)"),
+            "must decode each element through the wire type, got: {out}"
+        );
+        assert!(
+            out.ends_with(").collect::<Vec<serde_json::Value>>()).unwrap_or(JsValue::NULL)"),
+            "unexpected output: {out}"
+        );
     }
 }
