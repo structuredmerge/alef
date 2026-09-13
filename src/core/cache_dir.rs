@@ -20,10 +20,25 @@
 use std::io;
 use std::path::Path;
 
-/// The exact CACHEDIR.TAG signature, byte-for-byte per the spec. A conforming reader requires
-/// this to be the tag file's first line and nothing else on that line -- not a prefix, not a
-/// substring elsewhere in the file. ~keep
-const SIGNATURE_LINE: &str = "Signature: 8985a1d0364e3d1e-cache-directory-tag";
+/// The exact CACHEDIR.TAG signature, byte-for-byte per the spec at <https://bford.info/cachedir/>.
+/// A conforming reader requires this to be the tag file's first line and nothing else on that line
+/// -- not a prefix, not a substring elsewhere in the file.
+///
+/// This is a single fixed string shared by every tool and every directory in the world; it encodes
+/// nothing about alef and must never be customised. Deriving a per-tool variant of it -- which this
+/// constant previously did -- produces a file that every real consumer (`tar --exclude-caching`,
+/// `rsync --exclude-tag`, Borg, restic) silently ignores, so the directory is never skipped and the
+/// whole point of writing the tag is lost with no error anywhere. ~keep
+const SIGNATURE_LINE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
+
+/// The malformed signature alef itself wrote before the spec value above was corrected.
+///
+/// This exists solely so [`ensure_tag`] can recognise its OWN past output and repair it in place.
+/// It is deliberately not accepted by [`has_valid_signature`]: a file carrying it is invalid, and
+/// treating it as valid would re-entrench the bug. The distinction that makes rewriting safe here
+/// is authorship, not validity -- `ensure_tag` refuses to overwrite a tag file it cannot prove it
+/// wrote, and this string is proof it did. ~keep
+const LEGACY_ALEF_SIGNATURE_LINE: &str = "Signature: 8985a1d0364e3d1e-cache-directory-tag";
 
 const TAG_FILE_NAME: &str = "CACHEDIR.TAG";
 
@@ -67,6 +82,54 @@ pub fn ensure_cache_dir_under(root: &Path, descendant: &Path) -> io::Result<()> 
     ensure_cache_dir(descendant)
 }
 
+/// The one directory name alef claims inside a consumer's tree. Everything alef caches in-tree
+/// lives under it, `**/.alef/` is ignored wherever alef generates, and it is therefore the
+/// directory an external catalogue actually meets and probes.
+pub(crate) const PROJECT_CACHE_DIR_NAME: &str = ".alef";
+
+/// Create and tag `dir`, and tag the enclosing [`PROJECT_CACHE_DIR_NAME`] root as well when `dir`
+/// sits inside one.
+///
+/// This is [`ensure_cache_dir_under`] for the per-project sites, which know their leaf but not the
+/// `.alef/` root it descends from: the snippet verdict cache's directory is
+/// `docs.snippets.cache_dir` straight from a consumer's config, and the session workspace,
+/// toolchain cache, and scratch roots are each nested two to four levels below `.alef/` behind a
+/// path constant of their own. Every one of them used to tag only its leaf, which leaves `.alef/`
+/// itself unproven -- see [`ensure_cache_dir_under`] for why a tag deeper in the tree does not
+/// answer for it.
+///
+/// The root is found by name rather than by climbing a fixed number of parents, and a `dir` with
+/// no `.alef/` above it is tagged alone exactly as before. That is the safe reading of a
+/// *configured* cache directory: `cache_dir = "build/snippet-cache"` must never get `build/`
+/// tagged on the strength of being somebody's parent, because a tag there tells every backup tool
+/// on the machine to skip a directory alef does not own. Only a component alef named is ever
+/// tagged. The outermost match wins, so the tag lands on the directory an external reader meets
+/// first and stops recursing at. ~keep
+pub(crate) fn ensure_project_cache_dir(dir: &Path) -> io::Result<()> {
+    match project_cache_root(dir) {
+        Some(root) => ensure_cache_dir_under(root, dir),
+        None => ensure_cache_dir(dir),
+    }
+}
+
+/// The outermost ancestor of `dir` -- `dir` itself included -- named [`PROJECT_CACHE_DIR_NAME`].
+fn project_cache_root(dir: &Path) -> Option<&Path> {
+    dir.ancestors()
+        .filter(|ancestor| ancestor.file_name() == Some(std::ffi::OsStr::new(PROJECT_CACHE_DIR_NAME)))
+        .last()
+}
+
+/// Whether `dir` carries a tag a conforming reader would accept right now.
+///
+/// Test-only, and crate-visible rather than module-private so a test anywhere in the crate can
+/// assert "this directory is recognisable as a cache" without restating [`SIGNATURE_LINE`] --
+/// restating it is exactly the duplication this module's doc forbids, and a copy that drifts
+/// would assert the tag is present while every real reader disagrees. ~keep
+#[cfg(test)]
+pub(crate) fn is_tagged(dir: &Path) -> bool {
+    std::fs::read(dir.join(TAG_FILE_NAME)).is_ok_and(|content| has_valid_signature(&content))
+}
+
 /// Idempotently ensure `dir` -- which must already exist -- carries a valid `CACHEDIR.TAG`,
 /// without creating `dir` itself. Split out purely so [`ensure_cache_dir`]'s own doc can stay
 /// focused on the create-then-tag contract every caller actually depends on.
@@ -77,6 +140,24 @@ fn ensure_tag(dir: &Path) {
             // Idempotence: a valid tag is never rewritten, so an operator's edited comment body
             // and the file's mtime both survive every subsequent run.
             if has_valid_signature(&existing) {
+                return;
+            }
+            // Repair alef's own past output. A file whose first line is the malformed signature
+            // alef used to write is, by that signature, a file alef wrote -- so rewriting it does
+            // not violate the "never clobber content we did not write" rule below; authorship is
+            // exactly what that rule protects, and this proves it. Without this branch every
+            // already-tagged cache on disk would stay unrecognised by backup tools forever, since
+            // the corrected signature makes all of them fail `has_valid_signature` and fall
+            // through to the warn-and-leave path. ~keep
+            if first_line(&existing) == LEGACY_ALEF_SIGNATURE_LINE.as_bytes() {
+                if let Err(write_error) = std::fs::write(&tag_path, tag_body()) {
+                    tracing::warn!(
+                        path = %tag_path.display(),
+                        error = %write_error,
+                        "could not rewrite a {TAG_FILE_NAME} carrying alef's superseded signature; \
+                         backup tools that honour the tag will keep descending into this cache"
+                    );
+                }
                 return;
             }
             // Invalid tag: something occupies this reserved name whose first line is not the
@@ -117,8 +198,17 @@ fn ensure_tag(dir: &Path) {
 /// is not a valid tag per spec, and a reader that accepted it would tag directories a real
 /// CACHEDIR.TAG-aware tool does not.
 fn has_valid_signature(content: &[u8]) -> bool {
-    let first_line = content.split(|&byte| byte == b'\n').next().unwrap_or(content);
-    first_line == SIGNATURE_LINE.as_bytes()
+    first_line(content) == SIGNATURE_LINE.as_bytes()
+}
+
+/// `content` up to but not including the first `\n`, or all of it when there is no newline.
+///
+/// Extracted so the validity check and [`ensure_tag`]'s legacy-signature repair read the first
+/// line the same way. They ask different questions of it -- "is this the spec signature" versus
+/// "is this alef's own superseded signature" -- and two hand-inlined splits that drifted apart
+/// would make a file simultaneously invalid and unrepairable. ~keep
+fn first_line(content: &[u8]) -> &[u8] {
+    content.split(|&byte| byte == b'\n').next().unwrap_or(content)
 }
 
 #[cfg(test)]
@@ -152,6 +242,43 @@ mod tests {
                 dir.display()
             );
         }
+    }
+
+    /// The per-project sites reach their `.alef/` root through the name, not through a fixed
+    /// number of parents: the leaf sits two levels below it for the snippet verdict cache and four
+    /// for a session workspace, and no caller passes the root in. ~keep
+    #[test]
+    fn ensure_project_cache_dir_tags_the_enclosing_alef_root_however_deep_the_leaf_is() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let root = base.path().join(".alef");
+        let leaf = root.join("snippets").join("sessions").join("fingerprint");
+
+        ensure_project_cache_dir(&leaf).expect("root and leaf are created");
+
+        for dir in [&root, &leaf] {
+            assert!(is_tagged(dir), "{} must carry a valid tag", dir.display());
+        }
+    }
+
+    /// The safety half of finding the root by name. `docs.snippets.cache_dir` is a consumer's own
+    /// configuration and need not live under `.alef/` at all, so a helper that tagged whatever
+    /// happened to be the parent would write "skip this, it is regenerable" into a directory alef
+    /// does not own -- and every backup tool on the machine would believe it. ~keep
+    #[test]
+    fn ensure_project_cache_dir_never_tags_a_parent_outside_an_alef_root() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let configured = base.path().join("build").join("snippet-cache");
+
+        ensure_project_cache_dir(&configured).expect("configured cache directory is created");
+
+        assert!(
+            is_tagged(&configured),
+            "the configured cache directory itself must be tagged"
+        );
+        assert!(
+            !is_tagged(&base.path().join("build")),
+            "a parent alef did not name must never be tagged"
+        );
     }
 
     /// Control: tagging only a leaf must leave its root untagged, which is the state the helper
@@ -269,6 +396,64 @@ mod tests {
         // in the bytes, but not as the first line, so it must be rejected.
         let content = format!("not the first line\n{SIGNATURE_LINE}\n");
         assert!(!has_valid_signature(content.as_bytes()));
+    }
+
+    /// The one test in this module that can detect a WRONG `SIGNATURE_LINE`.
+    ///
+    /// Every other test here compares against `SIGNATURE_LINE`, so they all pass for any value of
+    /// it -- a self-referential constant test cannot detect a wrong constant, and for a long time
+    /// this module's full suite passed while alef wrote a signature no CACHEDIR.TAG consumer
+    /// recognised. The spec bytes are therefore duplicated literally here, NOT referenced from the
+    /// constant: that duplication is the entire point, and anyone "tidying" it by substituting
+    /// `SIGNATURE_LINE` would silently delete the only real check. The value is fixed forever by
+    /// <https://bford.info/cachedir/> and is identical for every tool, so it cannot legitimately
+    /// drift. ~keep
+    #[test]
+    fn signature_line_is_the_literal_bytes_the_cachedir_spec_mandates() {
+        let spec_bytes: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
+        assert_eq!(
+            SIGNATURE_LINE.as_bytes(),
+            spec_bytes,
+            "SIGNATURE_LINE must be the spec's single fixed signature; a per-tool variant is \
+             ignored by every consumer that honours the tag"
+        );
+        assert_eq!(spec_bytes.len(), 43, "the spec signature is exactly 43 bytes");
+    }
+
+    /// A tag file carrying alef's own superseded signature is rewritten in place, so caches
+    /// already on disk become recognisable instead of staying invalid forever behind the
+    /// warn-and-leave path.
+    #[test]
+    fn a_tag_carrying_alefs_superseded_signature_is_repaired_in_place() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tag_path = dir.path().join(TAG_FILE_NAME);
+        std::fs::write(&tag_path, format!("{LEGACY_ALEF_SIGNATURE_LINE}\n# stale body\n")).expect("seed");
+
+        ensure_tag(dir.path());
+
+        let repaired = std::fs::read(&tag_path).expect("read back");
+        assert!(
+            has_valid_signature(&repaired),
+            "the superseded signature must be rewritten to the spec one, got: {}",
+            String::from_utf8_lossy(&repaired)
+        );
+    }
+
+    /// The repair above must not become a licence to overwrite anything invalid: a tag path
+    /// holding content alef did not write is still left alone.
+    #[test]
+    fn the_legacy_repair_does_not_clobber_foreign_content_at_the_tag_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tag_path = dir.path().join(TAG_FILE_NAME);
+        std::fs::write(&tag_path, b"something else entirely\n").expect("seed");
+
+        ensure_tag(dir.path());
+
+        assert_eq!(
+            std::fs::read(&tag_path).expect("read back"),
+            b"something else entirely\n",
+            "foreign content at the tag path must survive untouched"
+        );
     }
 
     #[test]

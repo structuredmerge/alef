@@ -146,9 +146,11 @@ impl ScratchDir {
         // `CACHEDIR.TAG` written here is exactly such an entry -- it would be written, aged out, swept, and
         // rewritten on every run. The parent is an ordinary cache directory the sweep never enumerates, and
         // a tag there already excludes everything below it, because a conforming reader stops recursing at
-        // the first tag it meets.
+        // the first tag it meets. `ensure_project_cache_dir` additionally tags the `.alef/` root above the
+        // parent, which is the directory such a reader actually meets first and probes -- it does not accept
+        // a tag found further down, so the parent's tag does not answer for it.
         match root.parent() {
-            Some(parent) => crate::core::cache_dir::ensure_cache_dir(parent)
+            Some(parent) => crate::core::cache_dir::ensure_project_cache_dir(parent)
                 .and_then(|()| std::fs::create_dir_all(root))
                 .map_err(|error| Error::Other(format!("creating snippet scratch root {}: {error}", root.display())))?,
             None => std::fs::create_dir_all(root)
@@ -374,6 +376,32 @@ mod tests {
             scratch.path().parent(),
             Some(root.path().join(SNIPPET_SCRATCH_ROOT).as_path()),
             "rooted scratch must nest under the cache root, not sit directly in `root`"
+        );
+    }
+
+    /// Allocating scratch is the first thing that creates `.alef/` in most consumer trees, so it
+    /// is also where `.alef/` has to become provable. A conforming reader probes for a
+    /// `CACHEDIR.TAG` *directly inside* the directory it is looking at and does not accept one
+    /// found higher up, so tagging only `in_root`'s chosen parent left the `.alef/` a backup or
+    /// pruning tool actually meets carrying nothing. The scratch root itself must stay untagged
+    /// for the reason `in_root` documents -- a tag written there is an entry the sweep ages out
+    /// and deletes -- so that half is asserted here too. ~keep
+    #[test]
+    fn rooted_scratch_tags_the_alef_root_as_well_as_the_scratch_root_parent() {
+        let root = tempfile::tempdir().expect("project root");
+
+        let _scratch = ScratchDir::rooted(root.path(), 5).expect("rooted scratch directory");
+
+        for directory in [root.path().join(".alef"), root.path().join(".alef/snippets")] {
+            assert!(
+                crate::core::cache_dir::is_tagged(&directory),
+                "{} must carry a valid CACHEDIR.TAG",
+                directory.display()
+            );
+        }
+        assert!(
+            !crate::core::cache_dir::is_tagged(&root.path().join(SNIPPET_SCRATCH_ROOT)),
+            "the scratch root must stay untagged: its own sweep would age the tag out and delete it"
         );
     }
 

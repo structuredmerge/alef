@@ -190,7 +190,7 @@ impl ValidationCache {
         allowed_side_effects: &[SideEffectClass],
         result: &ValidationResult,
     ) -> Result<()> {
-        crate::core::cache_dir::ensure_cache_dir(&self.directory)?;
+        crate::core::cache_dir::ensure_project_cache_dir(&self.directory)?;
         let entry = CacheEntry {
             schema_version: CACHE_SCHEMA_VERSION,
             result: result.clone(),
@@ -332,6 +332,33 @@ mod tests {
             unresolved_dependency: false,
             timed_out: false,
             preflight_skipped: false,
+        }
+    }
+
+    /// External catalogues (voom, `tar --exclude-caching`, `rsync --exclude-tag`, Borg, restic)
+    /// probe for a `CACHEDIR.TAG` *directly inside* the directory they are looking at, and the
+    /// directory a consumer's tree actually shows them is `.alef/` -- not the `.alef/snippets/`
+    /// leaf this cache writes into. Tagging only the leaf therefore left every per-project
+    /// `.alef/` unproven and invisible: measured across one machine, 82 of 83 of them carried no
+    /// tag at their own root, holding 18.86 GB of regenerable cache no such tool would reclaim.
+    /// ~keep
+    #[test]
+    fn storing_a_verdict_tags_the_alef_root_as_well_as_the_snippet_cache_directory() {
+        let project = tempfile::tempdir().expect("project directory");
+        let cache = ValidationCache::new(default_cache_dir(project.path()));
+        let stored = snippet("fn main() {}");
+        let result = passing_result(&stored, ValidationLevel::Compile);
+
+        cache
+            .store(&stored, ValidationLevel::Compile, None, false, &[], &result)
+            .expect("store cache entry");
+
+        for directory in [project.path().join(".alef"), default_cache_dir(project.path())] {
+            assert!(
+                crate::core::cache_dir::is_tagged(&directory),
+                "{} must carry a valid CACHEDIR.TAG",
+                directory.display()
+            );
         }
     }
 

@@ -15,7 +15,7 @@ pub use ownership::is_scaffold_owned_path;
 pub(crate) mod generation_record;
 pub use generation_record::{record_inputs_hash, recorded_inputs_hash, stale_crate_names};
 
-pub(super) const CACHE_DIR: &str = ".alef";
+pub(super) const CACHE_DIR: &str = crate::core::cache_dir::PROJECT_CACHE_DIR_NAME;
 const PER_FILE_CACHE_NAME: &str = "sources_hash.cache";
 
 /// Read the raw bytes of the alef config file for use in [`crate::core::hash::compute_inputs_hash`].

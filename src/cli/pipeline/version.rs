@@ -1227,7 +1227,7 @@ fn rebuild_ffi_if_needed(config: &ResolvedCrateConfig, version: &str, updated: &
     if updated.is_empty() && std::fs::read_to_string(&marker).is_ok_and(|previous| previous == state) {
         return Ok(());
     }
-    crate::core::cache_dir::ensure_cache_dir(std::path::Path::new(".alef/ffi-builds"))
+    crate::core::cache_dir::ensure_project_cache_dir(std::path::Path::new(".alef/ffi-builds"))
         .context("Failed to create FFI build state directory")?;
     // Invalidate prior success before starting, so failed same-version rebuilds remain pending. ~keep
     std::fs::write(&marker, "").context("Failed to invalidate previous FFI build state")?;
