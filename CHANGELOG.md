@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-09-13
+
+### Changed
+
+- **BREAKING (napi): an internally tagged enum whose every data-carrying variant flattens now
+  generates a `serde_json::Value` passthrough wrapper instead of one `#[napi(object)]` struct.**
+  napi emits a single struct per type, so every variant's fields collapsed into one field set --
+  which only works while no two variants want the same field name at a different Rust type. On a
+  real 21-variant enum they do: `width`/`height` (`u32` vs `Option<i64>`), `format` (`String` vs
+  `Cow<'static, str>`), and fatally `headers` (`Option<Vec<String>>` vs `Vec<HeaderMetadata>`) and
+  `links`, which have no common type at all. No flat struct exists to generate, so no per-field
+  patch could fix it. Such enums now route to the same wrapper the wasm backend already uses, and
+  the `.d.ts` declares a union of `({ tag } & Payload)` built from each payload struct's own wire
+  names.
+
+  Consequence for consumers: these enums cross the Node boundary with **serde's own field names**,
+  not napi's camelCase, because there is no nominal struct left to hang `js_name` renames on. Node
+  and wasm now agree on the wire, which they previously did not.
+
+### Fixed
+
+- **`serde_flattens_newtype_payload` is now resolution-aware.** It claimed any single-tuple variant
+  of an internally tagged enum, including one whose payload is a primitive or absent from the
+  binding surface. Backends that emit runtime conversion code against the payload's real Rust type
+  need the payload to resolve; `types` is now threaded to the predicate across the napi, wasm and
+  magnus paths and the e2e generator.
+- **`tagged_enum_flattened_newtype` shares that predicate instead of re-deriving it.** It tested
+  the field's NAME (`_0`) where the shared predicate tests `variant.is_tuple`. The extractor sets
+  both together for a `Fields::Unnamed` variant, so they agree on everything it produces -- but a
+  variant carrying only one made the whole-enum predicate claim an enum the wire-type emitter then
+  refused to flatten, emitting a `_0` key on the `.d.ts`: the exact defect the flattening exists to
+  remove.
+- **An optional field's deref no longer keys off the wrong fact.** The optional arm of
+  `core_to_binding_field_init` chose between `(*v).into()` and `v.into()` by whether the field's
+  type has a generated binding struct, rather than by `field.is_boxed` -- which the required-field
+  arm two lines above already used correctly. A plain `Option<T>` whose type had a binding struct
+  emitted `(*v).into()` and failed with `E0614`, five times in one generated crate.
+- **pyo3 no longer advertises the synthetic `_0` key when a payload does not resolve.** serde
+  flattens on the payload's own `Serialize` impl, so an internally tagged newtype variant is
+  flattened whether or not the binding surface can describe it. The stub now degrades to the tag
+  alone. External and untagged representations still declare the positional field, which is
+  correct for them.
+
 ## [0.86.1] - 2026-09-12
 
 ### Fixed
