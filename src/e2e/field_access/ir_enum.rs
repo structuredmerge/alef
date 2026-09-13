@@ -68,7 +68,7 @@ pub(super) fn build_ir_enum_map(type_defs: &[TypeDef], enums: &[EnumDef]) -> IrE
     }
 
     let (variant_payload_types, variant_payload_is_collection, variant_payload_tuple) =
-        build_variant_payload_types(enums);
+        build_variant_payload_types(enums, type_defs);
 
     IrEnumMap {
         field_types,
@@ -187,6 +187,7 @@ type VariantPayloadCollectionMap = HashMap<String, HashSet<String>>;
 
 fn build_variant_payload_types(
     enums: &[EnumDef],
+    type_defs: &[TypeDef],
 ) -> (
     VariantPayloadTypeMap,
     VariantPayloadCollectionMap,
@@ -220,7 +221,7 @@ fn build_variant_payload_types(
             // flattens on an internally tagged enum", so this must ask the predicate that
             // actually answers that, not `is_tuple` alone -- see `types.rs`'s `variant_payload_tuple`
             // doc for the `KeyError` drift this exact gap caused once already. ~keep
-            if crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant) {
+            if crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant, type_defs) {
                 variant_payload_tuple
                     .entry(enum_def.name.clone())
                     .or_default()

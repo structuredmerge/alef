@@ -441,6 +441,7 @@ impl Backend for MagnusBackend {
                     enum_def,
                     &core_import,
                     Some(enabled_features.as_slice()),
+                    &api.types,
                 ));
                 if enum_def.serde_tag.is_none() {
                     let constructors = classes::gen_data_enum_variant_constructors(
@@ -866,7 +867,7 @@ impl Backend for MagnusBackend {
         for enum_def in &api.enums {
             if enum_def.serde_tag.is_some() && enum_def.variants.iter().any(|v| !v.fields.is_empty()) {
                 native_content.push('\n');
-                native_content.push_str(&gen_tagged_enum_ruby_classes(enum_def, &module_name));
+                native_content.push_str(&gen_tagged_enum_ruby_classes(enum_def, &module_name, &api.types));
             }
         }
 

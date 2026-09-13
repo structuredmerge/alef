@@ -342,6 +342,11 @@ fn internally_tagged_newtype_variant_flattens_wrapped_struct_when_type_resolves(
             serde_rename_all: Some("snake_case".to_string()),
             variants: vec![EnumVariant {
                 name: "Excel".to_string(),
+                // `is_tuple` mirrors what the extractor emits for `Excel(ExcelMetadata)`: a
+                // `Fields::Unnamed` variant sets the flag AND names the field `_0`. Setting only
+                // the name models a NAMED-fields variant whose field is literally called `_0`,
+                // which serde does not flatten. ~keep
+                is_tuple: true,
                 fields: vec![FieldDef {
                     name: "_0".to_string(),
                     ty: TypeRef::Named("ExcelMetadata".to_string()),
@@ -390,7 +395,12 @@ fn internally_tagged_newtype_variant_flattens_wrapped_struct_when_type_resolves(
             .collect::<Vec<_>>(),
         vec![
             "export type FormatMetadata =",
-            "  | { format_type: 'excel'; sheetCount: number; sheetNames: Array<string> }",
+            // Serde's OWN field names via the wire alias, not napi's camelCase. An enum whose
+            // every data variant flattens has no nominal `JsFormatMetadata` struct left to hang
+            // `js_name` renames on -- it is a `serde_json::Value` passthrough, so the declared
+            // type must describe serde's wire. This is the GH#1594 breaking change that makes
+            // Node and WASM finally agree. ~keep
+            "  | ({ format_type: \"excel\" } & __AlefWireExcelMetadata)",
         ],
         "expected the wrapped struct's own fields flattened onto the tag object, got:\n{dts}"
     );
@@ -413,6 +423,11 @@ fn adjacently_tagged_newtype_variant_keeps_nested_content_even_when_type_resolve
             serde_rename_all: Some("snake_case".to_string()),
             variants: vec![EnumVariant {
                 name: "Excel".to_string(),
+                // `is_tuple` mirrors what the extractor emits for `Excel(ExcelMetadata)`: a
+                // `Fields::Unnamed` variant sets the flag AND names the field `_0`. Setting only
+                // the name models a NAMED-fields variant whose field is literally called `_0`,
+                // which serde does not flatten. ~keep
+                is_tuple: true,
                 fields: vec![FieldDef {
                     name: "_0".to_string(),
                     ty: TypeRef::Named("ExcelMetadata".to_string()),

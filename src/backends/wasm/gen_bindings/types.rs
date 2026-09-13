@@ -470,6 +470,7 @@ pub(super) fn gen_struct_methods(
     streaming_item_types: &ahash::AHashMap<String, String>,
     untagged_ts_value_types: &AHashMap<String, String>,
     source_crate_remaps: &[(&str, &str)],
+    api_types: &[TypeDef],
 ) -> String {
     use super::field_references_excluded_type;
 
@@ -480,7 +481,7 @@ pub(super) fn gen_struct_methods(
     let enum_names: AHashSet<String> = api_enums.iter().map(|e| e.name.clone()).collect();
     let tagged_data_enum_names: AHashSet<String> = api_enums
         .iter()
-        .filter(|e| super::enums::is_tagged_data_enum(e))
+        .filter(|e| super::enums::is_tagged_data_enum(e, api_types))
         .map(|e| e.name.clone())
         .collect();
 

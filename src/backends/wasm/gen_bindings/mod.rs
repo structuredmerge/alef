@@ -361,7 +361,8 @@ impl Backend for WasmBackend {
             .filter(|e| {
                 !exclude_types.contains(&e.name)
                     && !text_field_enum_names.contains(&e.name)
-                    && (enums::is_tagged_data_enum(e) || enums::is_json_passthrough_data_enum(e))
+                    && (enums::is_tagged_data_enum(e, &api.types)
+                        || enums::is_json_passthrough_data_enum(e, &api.types))
             })
             .map(|e| e.name.clone())
             .collect();
@@ -487,6 +488,7 @@ impl Backend for WasmBackend {
                     &streaming_item_types,
                     &untagged_ts_value_types,
                     &source_remaps_borrowed,
+                    &api.types,
                 ));
             }
         }
@@ -503,8 +505,14 @@ impl Backend for WasmBackend {
             // outside the tagged-object path either way. ~keep
             if let Some(plan) = untagged_ts_plan.plans.remove(&enum_def.name) {
                 builder.add_item(&plan.extern_type_declaration);
-            } else if !enums::is_json_passthrough_data_enum(enum_def) {
-                builder.add_item(&gen_enum(enum_def, &prefix, &core_import, &configured_features_set));
+            } else if !enums::is_json_passthrough_data_enum(enum_def, &api.types) {
+                builder.add_item(&gen_enum(
+                    enum_def,
+                    &prefix,
+                    &core_import,
+                    &configured_features_set,
+                    &api.types,
+                ));
             }
         }
 
@@ -724,9 +732,9 @@ impl Backend for WasmBackend {
         }
         for e in &api.enums {
             if !exclude_types.contains(&e.name) {
-                if enums::is_json_passthrough_data_enum(e) {
+                if enums::is_json_passthrough_data_enum(e, &api.types) {
                     // No `Wasm{Enum}` type to write a `From` impl against; see the `gen_enum` skip above. ~keep
-                } else if enums::is_tagged_data_enum(e) {
+                } else if enums::is_tagged_data_enum(e, &api.types) {
                     if input_types.contains(&e.name) {
                         builder.add_item(&enums::gen_tagged_enum_binding_to_core(e, &core_import, &prefix));
                     }

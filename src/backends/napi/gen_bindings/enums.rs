@@ -28,18 +28,20 @@ pub(crate) fn tagged_enum_flattened_newtype<'a>(
     variant: &'a EnumVariant,
     types: &'a [TypeDef],
 ) -> Option<(&'a str, &'a [FieldDef])> {
-    if !matches!(
-        crate::codegen::serde_enum_repr::serde_enum_repr(enum_def),
-        crate::codegen::serde_enum_repr::SerdeEnumRepr::Internal { .. }
-    ) {
+    // ~keep Gate on the SHARED predicate, not a local re-derivation. This used to test
+    // `tagged_enum_field_is_tuple` (a field-NAME proxy, `_0`) while
+    // `serde_flattens_newtype_payload` tests `variant.is_tuple`. They agree on every variant the
+    // extractor produces -- `Fields::Unnamed` sets both -- but a variant carrying only one of the
+    // two made `is_fully_flattened_internal_enum` claim an enum the wire-type emitter then
+    // refused to flatten, routing it to the JSON passthrough and emitting a `_0` key on the
+    // `.d.ts` (GH#1594's exact defect). Sharing the predicate makes that disagreement
+    // unrepresentable.
+    if !crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant, types) {
         return None;
     }
     let [field] = variant.fields.as_slice() else {
         return None;
     };
-    if !tagged_enum_field_is_tuple(field) {
-        return None;
-    }
     let TypeRef::Named(inner_name) = &field.ty else {
         return None;
     };
@@ -154,8 +156,12 @@ pub(crate) fn tagged_enum_discriminant_js_name(enum_def: &EnumDef) -> &str {
     crate::codegen::serde_enum_repr::tagged_object_tag_key(enum_def)
 }
 
-pub(crate) fn string_enum_variant_js_value(enum_def: &EnumDef, variant_name: &str) -> Option<String> {
-    declared_string_enum_variants(enum_def, false, None)?
+pub(crate) fn string_enum_variant_js_value(
+    enum_def: &EnumDef,
+    variant_name: &str,
+    types: &[TypeDef],
+) -> Option<String> {
+    declared_string_enum_variants(enum_def, false, None, types)?
         .into_iter()
         .find(|(variant, _)| variant.name == variant_name)
         .map(|(_, value)| value)
@@ -222,13 +228,13 @@ pub(super) fn declared_string_enum_variants<'a>(
     enum_def: &'a EnumDef,
     is_host_enum: bool,
     configured_features: Option<&std::collections::HashSet<&str>>,
+    types: &[TypeDef],
 ) -> Option<Vec<(&'a EnumVariant, String)>> {
-    // Asks the same `is_tagged_data_enum`/`is_untagged_data_enum`/`is_variant_untagged_string_enum`
-    // authority `gen_enum` routes through, so a string enum is only claimed here when `gen_enum`
-    // actually emits one. (~keep)
-    if is_tagged_data_enum(enum_def)
-        || is_untagged_data_enum(enum_def)
-        || is_variant_untagged_string_enum(enum_def)
+    // Asks the same `is_tagged_data_enum`/`is_json_passthrough_data_enum` authority `gen_enum`
+    // routes through, so a string enum is only claimed here when `gen_enum` actually emits one.
+    // (~keep)
+    if is_tagged_data_enum(enum_def, types)
+        || is_json_passthrough_data_enum(enum_def, types)
         || enum_def.variants.is_empty()
     {
         return None;
@@ -270,8 +276,9 @@ pub(super) fn string_enum_js_values(
     enum_def: &EnumDef,
     is_host_enum: bool,
     configured_features: Option<&std::collections::HashSet<&str>>,
+    types: &[TypeDef],
 ) -> Option<Vec<String>> {
-    declared_string_enum_variants(enum_def, is_host_enum, configured_features)
+    declared_string_enum_variants(enum_def, is_host_enum, configured_features, types)
         .map(|declared| declared.into_iter().map(|(_, value)| value).collect())
 }
 
@@ -335,11 +342,53 @@ fn napi_convert_case(case: &str) -> Option<convert_case::Case<'static>> {
 /// that actually executes at runtime), the binding<->core conversion emitters in `mod.rs`, and
 /// `errors::gen_dts` (the declared `.d.ts` shape) all call this instead of re-deriving the
 /// condition, so the runtime struct and the TypeScript declaration for the same enum can never
-/// disagree about which shape it takes. ~keep
-pub(crate) fn is_tagged_data_enum(enum_def: &EnumDef) -> bool {
+/// disagree about which shape it takes.
+///
+/// Excludes [`is_fully_flattened_internal_enum`]: when EVERY data-carrying variant's payload
+/// flattens onto the tag object, different variants can want the SAME field name at DIFFERENT
+/// Rust types (measured on a real 21-variant enum: `width` as `u32` in one variant and `i64` in
+/// another, `headers` as `Vec<String>` in one and `Vec<HeaderMetadata>` in another -- types with
+/// no common napi representation at all), so there is no flat `#[napi(object)]` struct this
+/// backend can generate for it. `types` is threaded through for that reason alone -- see that
+/// function's doc comment for why an empty or wrong `types` list is not a safe substitute. ~keep
+pub(crate) fn is_tagged_data_enum(enum_def: &EnumDef, types: &[TypeDef]) -> bool {
     let has_data_variants = enum_def.variants.iter().any(|v| !v.fields.is_empty());
-    enum_def.serde_tag.is_some()
-        || (has_data_variants && !enum_def.serde_untagged && !is_variant_untagged_string_enum(enum_def))
+    (enum_def.serde_tag.is_some()
+        || (has_data_variants && !enum_def.serde_untagged && !is_variant_untagged_string_enum(enum_def)))
+        && !is_fully_flattened_internal_enum(enum_def, types)
+}
+
+/// True when EVERY data-carrying variant of this internally-tagged enum has its single
+/// positional payload flattened into the tag object by serde
+/// ([`tagged_enum_flattened_newtype`]), e.g. `#[serde(tag = "format_type")] enum FormatMetadata {
+/// Excel(ExcelMetadata), Csv(CsvMetadata) }` serializing as
+/// `{"format_type":"excel","sheet_count":2}` with no key anywhere for the payload itself.
+///
+/// [`gen_tagged_enum_as_object`]'s flat-struct shape unions every variant's fields by name onto
+/// one `#[napi(object)]` struct. That is impossible in general for a fully flattened enum:
+/// different variants can want the same field name at different Rust types, and napi has no way
+/// to express a field whose type depends on which variant is present. The fix mirrors the wasm
+/// backend's `is_fully_flattened_internal_enum` -- no nominal `Js{Enum}` type at all, bridge every
+/// field/param/return of this type through `serde_json::Value`
+/// ([`gen_untagged_data_enum_as_value_wrapper`]), generic over whatever the real core type's own
+/// internally-tagged serde impl produces on the wire.
+///
+/// A MIXED enum (some flattened newtype variants, some struct-field variants with their own real
+/// field names) does NOT qualify here -- only the struct-field variants would need real
+/// accessors, and `gen_tagged_enum_as_object` already unions those in correctly alongside the
+/// flattened variants' fields, so a mixed enum keeps its nominal type.
+///
+/// `types` is required because [`tagged_enum_flattened_newtype`] is resolution-aware: a newtype
+/// payload only flattens when it is a `Named` type this binding's own `types` list resolves to a
+/// struct/map. Passing the wrong (or an empty) `types` list makes every payload look
+/// unresolvable, which answers `false` here even for an enum that genuinely flattens on the wire
+/// -- callers must thread the real API surface's type list, not fabricate one. ~keep
+pub(crate) fn is_fully_flattened_internal_enum(enum_def: &EnumDef, types: &[TypeDef]) -> bool {
+    let data_variants: Vec<&EnumVariant> = enum_def.variants.iter().filter(|v| !v.fields.is_empty()).collect();
+    !data_variants.is_empty()
+        && data_variants
+            .iter()
+            .all(|v| tagged_enum_flattened_newtype(enum_def, v, types).is_some())
 }
 
 /// Whether this enum's wire shape is `#[serde(untagged)]` with at least one data-carrying
@@ -379,15 +428,18 @@ pub(crate) fn is_variant_untagged_string_enum(enum_def: &EnumDef) -> bool {
 }
 
 /// Either flavor of "no nominal `Js{Enum}` type; route through a `serde_json::Value` wrapper" data
-/// enum -- [`is_untagged_data_enum`] (container-level) or [`is_variant_untagged_string_enum`]
-/// (variant-level). `gen_enum` sends both to the same
+/// enum -- [`is_untagged_data_enum`] (container-level), [`is_variant_untagged_string_enum`]
+/// (variant-level), or [`is_fully_flattened_internal_enum`] (internally tagged, every payload
+/// flattened). `gen_enum` sends all three to the same
 /// [`gen_untagged_data_enum_as_value_wrapper`], and the conversion arms are generic over whatever
-/// payload shape either one produces, so every call site that exists to answer "does this enum
+/// payload shape any of them produces, so every call site that exists to answer "does this enum
 /// need value passthrough rather than a real `#[napi]` type" asks this instead of re-deriving the
 /// disjunction. Mirrors the wasm backend's predicate of the same name. Only the `.d.ts`
-/// declaration differs between the two, which is why they stay separate predicates. ~keep
-pub(crate) fn is_json_passthrough_data_enum(enum_def: &EnumDef) -> bool {
-    is_untagged_data_enum(enum_def) || is_variant_untagged_string_enum(enum_def)
+/// declaration differs between the three, which is why they stay separate predicates. ~keep
+pub(crate) fn is_json_passthrough_data_enum(enum_def: &EnumDef, types: &[TypeDef]) -> bool {
+    is_untagged_data_enum(enum_def)
+        || is_variant_untagged_string_enum(enum_def)
+        || is_fully_flattened_internal_enum(enum_def, types)
 }
 
 /// The literal `.d.ts` union members (already quoted, e.g. `"plain"`) for the unit variants of an
@@ -424,11 +476,11 @@ pub(super) fn gen_enum(
     configured_features: Option<&std::collections::HashSet<&str>>,
     types: &[TypeDef],
 ) -> String {
-    if is_tagged_data_enum(enum_def) {
+    if is_tagged_data_enum(enum_def, types) {
         return gen_tagged_enum_as_object(enum_def, prefix, has_serde, types);
     }
 
-    if is_json_passthrough_data_enum(enum_def) {
+    if is_json_passthrough_data_enum(enum_def, types) {
         return gen_untagged_data_enum_as_value_wrapper(enum_def, prefix);
     }
 

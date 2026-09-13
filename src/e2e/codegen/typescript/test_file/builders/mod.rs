@@ -229,7 +229,7 @@ fn node_tagged_struct_variant_literal(
     enums: &[EnumDef],
     referenced_enums: &mut std::collections::BTreeSet<String>,
 ) -> Option<String> {
-    if !crate::backends::napi::is_tagged_data_enum(enum_def) {
+    if !crate::backends::napi::is_tagged_data_enum(enum_def, type_defs) {
         return None;
     }
     let tag_field = crate::backends::napi::tagged_enum_discriminant_js_name(enum_def);
@@ -523,7 +523,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn wasm_scalar_value_expressi
 
     if let Some(crate::core::ir::TypeRef::Named(enum_type)) = field_type
         && enums.iter().any(|definition| definition.name == *enum_type)
-        && !wasm_enum_bridged_as_raw_value(enum_type, enums, wasm_type_prefix)
+        && !wasm_enum_bridged_as_raw_value(enum_type, enums, wasm_type_prefix, type_defs)
         && let serde_json::Value::String(variant) = val
     {
         let member = declared_enum_member_for_prefixed(enum_type, enums, wasm_type_prefix, variant);
@@ -532,7 +532,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn wasm_scalar_value_expressi
     }
 
     if let Some(enum_type) = resolve_enum_type(enum_fields, owner_type, key, camel_key)
-        && !wasm_enum_bridged_as_raw_value(enum_type, enums, wasm_type_prefix)
+        && !wasm_enum_bridged_as_raw_value(enum_type, enums, wasm_type_prefix, type_defs)
         && let serde_json::Value::String(s) = val
     {
         let enum_type = wasm_prefixed_wrapped_type(lang, enum_type, type_defs, enums, wasm_type_prefix);
@@ -660,7 +660,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn ts_builder_expression_inne
 ) -> String {
     if lang == "node"
         && (enums.iter().any(|definition| {
-            definition.name == type_name && crate::backends::napi::is_json_passthrough_data_enum(definition)
+            definition.name == type_name && crate::backends::napi::is_json_passthrough_data_enum(definition, type_defs)
         }) || flattened_map::collect(obj, type_defs.iter().find(|definition| definition.name == type_name))
             .is_some())
     {
@@ -687,7 +687,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn ts_builder_expression_inne
     if lang == "node"
         && let Some(enum_def) = enums
             .iter()
-            .find(|e| e.name == type_name && crate::backends::napi::is_tagged_data_enum(e))
+            .find(|e| e.name == type_name && crate::backends::napi::is_tagged_data_enum(e, type_defs))
         && let Some(nested_literal) = build_node_tagged_enum_variant_literal(
             obj,
             type_name,
@@ -705,7 +705,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn ts_builder_expression_inne
     {
         return nested_literal;
     }
-    if lang == "node" || (lang == "wasm" && is_tagged_data_enum(type_name, enums, wasm_type_prefix)) {
+    if lang == "node" || (lang == "wasm" && is_tagged_data_enum(type_name, enums, wasm_type_prefix, type_defs)) {
         // For node: if this type itself is a tagged-data enum, rename its serde_tag
         // key to "kind". The napi-rs backend hardcodes `#[napi(js_name = "kind")]`
         // for every tagged-data enum discriminant, regardless of the original
@@ -716,7 +716,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn ts_builder_expression_inne
             let ir_name = type_name.strip_prefix(wasm_type_prefix).unwrap_or(type_name);
             enums
                 .iter()
-                .find(|e| e.name == ir_name && crate::backends::napi::is_tagged_data_enum(e))
+                .find(|e| e.name == ir_name && crate::backends::napi::is_tagged_data_enum(e, type_defs))
                 .map(|e| {
                     let js_name = crate::backends::napi::tagged_enum_discriminant_js_name(e);
                     (e.serde_tag.as_deref().unwrap_or(js_name), js_name)
@@ -770,7 +770,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn ts_builder_expression_inne
                         // all, so referencing `OutputFormat.Markdown` here is a type-used-as-value
                         // error. Calling `declared_enum_member_for_prefixed` directly, as this
                         // branch previously did, skipped that check. ~keep
-                        node_enum_string_literal(enum_type, enums, s, referenced_enums)
+                        node_enum_string_literal(enum_type, enums, s, referenced_enums, type_defs)
                     } else {
                         json_to_js(&preprocessed)
                     }
@@ -799,7 +799,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn ts_builder_expression_inne
         }
         let obj_literal = format!("{{ {} }}", fields.join(", "));
         if enums.iter().any(|definition| {
-            definition.name == type_name && crate::backends::napi::is_json_passthrough_data_enum(definition)
+            definition.name == type_name && crate::backends::napi::is_json_passthrough_data_enum(definition, type_defs)
         }) {
             referenced_enums.insert(format!("type {type_name}"));
         }
@@ -941,7 +941,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn ts_builder_expression_inne
             }
         } else if let Some(crate::core::ir::TypeRef::Named(enum_type)) = field_type
             && enums.iter().any(|definition| definition.name == *enum_type)
-            && !wasm_enum_bridged_as_raw_value(enum_type, enums, wasm_type_prefix)
+            && !wasm_enum_bridged_as_raw_value(enum_type, enums, wasm_type_prefix, type_defs)
             && let serde_json::Value::String(variant) = val
         {
             let member = declared_enum_member_for_prefixed(enum_type, enums, wasm_type_prefix, variant);
@@ -949,7 +949,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn ts_builder_expression_inne
             let reference = enum_member_reference(&enum_type, member.as_deref(), referenced_enums);
             stmts.push(format!("{var}.{camel_key} = {reference};"));
         } else if let Some(enum_type) = resolve_enum_type(enum_fields, Some(ir_owner_name), key, &camel_key)
-            && !wasm_enum_bridged_as_raw_value(enum_type, enums, wasm_type_prefix)
+            && !wasm_enum_bridged_as_raw_value(enum_type, enums, wasm_type_prefix, type_defs)
         {
             // This is an enum field — generate EnumType.EnumValue.
             // Look up by both snake_case (fixture key) and camelCase (alef.toml override key
@@ -1019,7 +1019,7 @@ fn node_value_expression(
     });
     if let Some(TypeRef::Named(name)) = field_type
         && enums.iter().any(|definition| {
-            definition.name == *name && crate::backends::napi::is_json_passthrough_data_enum(definition)
+            definition.name == *name && crate::backends::napi::is_json_passthrough_data_enum(definition, type_defs)
         })
     {
         return json_to_js(value);
@@ -1046,13 +1046,13 @@ fn node_value_expression(
         // predicate-checked `node_enum_string_literal` rather than falling straight to
         // `declared_enum_member_for_prefixed`, which does not know a variant-level untagged
         // enum declares no `.d.ts` value binding to reference. ~keep
-        return node_enum_string_literal(type_name, enums, variant, referenced_enums);
+        return node_enum_string_literal(type_name, enums, variant, referenced_enums, type_defs);
     }
     let camel_field = underscore_camel_case(field);
     if let Some(enum_type) = resolve_enum_type(enum_fields, owner_type, field, &camel_field)
         && let Some(variant) = value.as_str()
     {
-        return node_enum_string_literal(enum_type, enums, variant, referenced_enums);
+        return node_enum_string_literal(enum_type, enums, variant, referenced_enums, type_defs);
     }
     if let Some(crate::core::ir::TypeRef::Named(type_name)) = field_type
         && let serde_json::Value::Object(object) = value

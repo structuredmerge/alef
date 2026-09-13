@@ -260,7 +260,7 @@ pub(super) fn build_flattened_internal_enum_ts_plan_for_api(
     let enum_defs: Vec<&EnumDef> = api
         .enums
         .iter()
-        .filter(|e| gets_a_flattened_internal_enum_ts_union(e, &exclude_types_set, text_field_enum_names))
+        .filter(|e| gets_a_flattened_internal_enum_ts_union(e, &exclude_types_set, text_field_enum_names, &api.types))
         .collect();
     build_flattened_internal_enum_ts_plans(&enum_defs, api, &exclude_types_set, opaque_type_names, prefix)
 }
@@ -273,10 +273,11 @@ fn gets_a_flattened_internal_enum_ts_union(
     enum_def: &EnumDef,
     exclude_types: &AHashSet<String>,
     text_field_enum_names: &AHashSet<String>,
+    types: &[TypeDef],
 ) -> bool {
     !exclude_types.contains(&enum_def.name)
         && !text_field_enum_names.contains(&enum_def.name)
-        && is_fully_flattened_internal_enum(enum_def)
+        && is_fully_flattened_internal_enum(enum_def, types)
 }
 
 /// Build the full TS plan for every [`is_fully_flattened_internal_enum`] enum: one union member

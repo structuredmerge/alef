@@ -1,4 +1,7 @@
-use super::{apply_napi_case, gen_enum, is_tagged_data_enum, is_variant_untagged_string_enum, string_enum_js_values};
+use super::{
+    apply_napi_case, gen_enum, is_fully_flattened_internal_enum, is_json_passthrough_data_enum, is_tagged_data_enum,
+    is_variant_untagged_string_enum, string_enum_js_values,
+};
 use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeRef};
 
 fn make_simple_enum(name: &str, variants: &[&str]) -> EnumDef {
@@ -725,7 +728,7 @@ fn variant_level_untagged_data_variant_is_not_tagged_object() {
     };
 
     assert!(
-        !is_tagged_data_enum(&e),
+        !is_tagged_data_enum(&e, &[]),
         "a data variant that opts out via its own #[serde(untagged)] must not force the tagged-object shape"
     );
     assert!(
@@ -756,7 +759,7 @@ fn variant_level_untagged_data_variant_is_not_tagged_object() {
 fn unit_only_enum_is_not_variant_untagged_string_enum() {
     let e = make_simple_enum("Status", &["Active", "Inactive"]);
     assert!(!is_variant_untagged_string_enum(&e));
-    assert!(!is_tagged_data_enum(&e));
+    assert!(!is_tagged_data_enum(&e, &[]));
 
     let output = gen_enum(&e, "Js", false, "", None, &[]);
     assert!(output.contains("#[napi(string_enum"));
@@ -827,7 +830,7 @@ fn string_enum_js_values_matches_napi_runtime_wire_value_for_digit_boundary_vari
         ..Default::default()
     };
 
-    let values = string_enum_js_values(&enum_def, true, None).expect("plain string enum must yield wire values");
+    let values = string_enum_js_values(&enum_def, true, None, &[]).expect("plain string enum must yield wire values");
 
     assert_eq!(
         values,
@@ -1054,7 +1057,22 @@ fn excel_metadata_type_def() -> crate::core::ir::TypeDef {
 /// serde wire instead of a nominal per-variant union.
 #[test]
 fn gen_tagged_enum_flattens_single_tuple_named_variant_when_type_resolves() {
-    let enum_def = format_metadata_like_enum();
+    // A MIXED enum on purpose: `Excel` flattens, the struct variant `Text` cannot, so
+    // `is_fully_flattened_internal_enum` is false and the enum keeps the nominal
+    // `#[napi(object)]` struct. That is the only routing under which per-variant flattening is
+    // still observable -- an enum whose every data variant flattens now goes to the JSON
+    // passthrough wrapper instead, so building this fixture from the single-variant enum would
+    // silently stop testing the flattening it exists to pin. ~keep
+    let mut enum_def = format_metadata_like_enum();
+    enum_def.variants.push(EnumVariant {
+        name: "Text".to_string(),
+        fields: vec![FieldDef {
+            name: "line_count".to_string(),
+            ty: TypeRef::Primitive(crate::core::ir::PrimitiveType::U32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
     let types = [excel_metadata_type_def()];
 
     let output = gen_enum(&enum_def, "Js", true, "test_core", None, &types);
@@ -1106,5 +1124,128 @@ fn gen_tagged_enum_adjacent_tagging_keeps_nested_shape_even_when_type_resolves()
     assert!(
         !output.contains("pub sheet_count: Option<u32>,"),
         "adjacent tagging must never flatten a newtype variant's payload, got:\n{output}"
+    );
+}
+
+/// A `CsvMetadata` payload sharing a field NAME with `ExcelMetadata` at a DIFFERENT Rust type --
+/// the exact shape measured against a real 21-variant enum that produced 40 rustc errors: a
+/// single flat `#[napi(object)]` struct cannot union `width: Option<u32>` (Excel) with
+/// `width: Option<i64>` (Csv) under one field. This is the fixture
+/// `is_fully_flattened_internal_enum` exists to route away from `gen_tagged_enum_as_object`.
+fn csv_metadata_type_def() -> crate::core::ir::TypeDef {
+    crate::core::ir::TypeDef {
+        name: "CsvMetadata".to_string(),
+        rust_path: "test::CsvMetadata".to_string(),
+        fields: vec![FieldDef {
+            name: "width".to_string(),
+            ty: TypeRef::Primitive(crate::core::ir::PrimitiveType::I64),
+            optional: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+fn excel_metadata_type_def_with_conflicting_width() -> crate::core::ir::TypeDef {
+    let mut typ = excel_metadata_type_def();
+    typ.fields.push(FieldDef {
+        name: "width".to_string(),
+        ty: TypeRef::Primitive(crate::core::ir::PrimitiveType::U32),
+        optional: true,
+        ..Default::default()
+    });
+    typ
+}
+
+/// A two-variant internally-tagged enum where EVERY data-carrying variant's payload flattens
+/// (both resolve as `Named` structs). `is_fully_flattened_internal_enum` must claim it regardless
+/// of the field-type conflict between the two payloads -- the predicate only asks whether serde
+/// flattens each variant, not whether the result happens to be representable as one struct.
+fn two_variant_fully_flattened_enum() -> EnumDef {
+    let mut enum_def = format_metadata_like_enum();
+    enum_def.variants.push(EnumVariant {
+        name: "Csv".to_string(),
+        is_tuple: true,
+        fields: vec![FieldDef {
+            name: "_0".to_string(),
+            ty: TypeRef::Named("CsvMetadata".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    enum_def
+}
+
+#[test]
+fn is_fully_flattened_internal_enum_is_true_only_when_every_data_variant_resolves_and_flattens() {
+    let enum_def = two_variant_fully_flattened_enum();
+    let both_resolve = [
+        excel_metadata_type_def_with_conflicting_width(),
+        csv_metadata_type_def(),
+    ];
+    assert!(
+        is_fully_flattened_internal_enum(&enum_def, &both_resolve),
+        "every data-carrying variant resolves and flattens, so the whole enum must qualify"
+    );
+
+    // Negative control: Csv unresolved -- not EVERY variant flattens, so the enum must not
+    // qualify (the single-variant `format_metadata_like_enum` case stays representable as a flat
+    // struct via the existing per-variant flattening in `gen_tagged_enum_as_object`). ~keep
+    let only_excel_resolves = [excel_metadata_type_def_with_conflicting_width()];
+    assert!(
+        !is_fully_flattened_internal_enum(&enum_def, &only_excel_resolves),
+        "Csv's payload does not resolve, so the enum as a whole must not be fully flattened"
+    );
+
+    // Negative control: no `types` at all resolves nothing. ~keep
+    assert!(!is_fully_flattened_internal_enum(&enum_def, &[]));
+}
+
+/// `is_tagged_data_enum` must exclude a fully flattened enum (routing it to JSON passthrough
+/// instead), even though it is internally tagged and would otherwise qualify via
+/// `serde_tag.is_some()`.
+#[test]
+fn is_tagged_data_enum_excludes_the_fully_flattened_case() {
+    let enum_def = two_variant_fully_flattened_enum();
+    let types = [
+        excel_metadata_type_def_with_conflicting_width(),
+        csv_metadata_type_def(),
+    ];
+
+    assert!(
+        !is_tagged_data_enum(&enum_def, &types),
+        "a fully flattened internally-tagged enum must not route through the flat-struct emitter"
+    );
+    assert!(
+        is_json_passthrough_data_enum(&enum_def, &types),
+        "it must instead route through JSON passthrough"
+    );
+
+    // When unresolved, the enum falls back to the pre-existing per-variant nested/flattened
+    // struct shape and stays a tagged data enum. ~keep
+    assert!(is_tagged_data_enum(&enum_def, &[]));
+    assert!(!is_json_passthrough_data_enum(&enum_def, &[]));
+}
+
+/// `gen_enum` must compile a fully flattened enum as the `serde_json::Value` passthrough wrapper
+/// (`gen_untagged_data_enum_as_value_wrapper`'s output), not a `#[napi(object)]` struct with
+/// conflicting field types.
+#[test]
+fn gen_enum_routes_fully_flattened_enum_through_json_passthrough() {
+    let enum_def = two_variant_fully_flattened_enum();
+    let types = [
+        excel_metadata_type_def_with_conflicting_width(),
+        csv_metadata_type_def(),
+    ];
+
+    let output = gen_enum(&enum_def, "Js", true, "test_core", None, &types);
+
+    assert!(
+        output.contains("pub struct JsFormatMetadata(pub serde_json::Value)"),
+        "must route through the JSON passthrough wrapper, not a flat #[napi(object)] struct; got:\n{output}"
+    );
+    assert!(
+        !output.contains("#[napi(object"),
+        "must not be emitted as a #[napi(object)] struct; got:\n{output}"
     );
 }

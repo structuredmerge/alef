@@ -300,7 +300,7 @@ pub(super) fn gen_dts(
                 // enum Foo { ... }` while the compiled struct behind it was `{ type, ...fields }`
                 // -- a `.d.ts` and a runtime shape for the same type that disagreed. Asking the
                 // shared predicate instead of re-deriving it is what keeps them in lockstep. ~keep
-                let is_data_enum = enums::is_tagged_data_enum(e);
+                let is_data_enum = enums::is_tagged_data_enum(e, &api.types);
                 // Same host/foreign verdict `enums::gen_enum` reaches for the emitted Rust enum,
                 // from the same authority, so the overlay and the wrapper agree on which crate
                 // owns a cfg-gated variant's feature. ~keep
@@ -389,6 +389,21 @@ pub(super) fn gen_dts(
                             .into_iter()
                             .map(|member| format!("  | {member}")),
                     );
+                } else if enums::is_fully_flattened_internal_enum(e, &api.types) {
+                    // Routed through JSON passthrough (`gen_untagged_data_enum_as_value_wrapper`):
+                    // every data-carrying variant's payload flattens onto the tag object, so there
+                    // is no nominal napi struct and no camelCase `js_name` renaming -- the wire
+                    // member names are serde's own. `WireTypes` already derives the exact
+                    // `{ tag: '...' } & Payload` shape for `SerdeEnumRepr::Internal`, the same
+                    // shape serde itself produces, so this reuses it rather than re-deriving a
+                    // second copy that could drift. (~keep)
+                    lines.push(format!("export type {ts_name} ="));
+                    lines.extend(
+                        wire_types
+                            .enum_members(e)
+                            .into_iter()
+                            .map(|member| format!("  | {member}")),
+                    );
                 } else if enums::is_variant_untagged_string_enum(e) {
                     // Every data-carrying variant is individually `#[serde(untagged)]` while the
                     // container keeps default external tagging: unit variants still serialize as
@@ -437,7 +452,8 @@ pub(super) fn gen_dts(
                     // construct at runtime. Fall back to the serde name over every variant only
                     // for enum shapes it declines to classify as a string enum, preserving prior
                     // behavior for those. (~keep)
-                    let declared = enums::declared_string_enum_variants(e, is_host_enum, configured_features);
+                    let declared =
+                        enums::declared_string_enum_variants(e, is_host_enum, configured_features, &api.types);
                     let members: Vec<(&EnumVariant, String)> = declared.unwrap_or_else(|| {
                         e.variants
                             .iter()

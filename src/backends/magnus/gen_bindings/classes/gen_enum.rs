@@ -42,7 +42,12 @@ fn declared_enum_variants<'a>(
 /// the `cfg` a `Keep` carries: like Rustler, a kept variant is always declared unconditionally
 /// with no per-variant `#[cfg(...)]` on the declaration -- `enum_variant_declaration` never
 /// resolves a host-owned gate to `Drop`, so a host-owned variant is always kept regardless. ~keep
-pub fn gen_enum(enum_def: &EnumDef, core_import: &str, configured_features: Option<&[String]>) -> String {
+pub fn gen_enum(
+    enum_def: &EnumDef,
+    core_import: &str,
+    configured_features: Option<&[String]>,
+    types: &[crate::core::ir::TypeDef],
+) -> String {
     let is_host_enum = is_host_owned_rust_path(core_import, &enum_def.rust_path);
     let configured_features_set: Option<HashSet<&str>> =
         configured_features.map(|features| features.iter().map(String::as_str).collect());
@@ -85,7 +90,8 @@ pub fn gen_enum(enum_def: &EnumDef, core_import: &str, configured_features: Opti
     let variants: Vec<minijinja::Value> = declared_variants
         .iter()
         .map(|variant| {
-            let flatten_newtype = crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant);
+            let flatten_newtype =
+                crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant, types);
             let fields: Vec<minijinja::Value> = variant
                 .fields
                 .iter()

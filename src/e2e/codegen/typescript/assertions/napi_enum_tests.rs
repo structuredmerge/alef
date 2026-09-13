@@ -86,7 +86,7 @@ fn resolver() -> FieldResolver {
         FieldResolver::ir_enum_fields(&defs, &enum_defs),
         Some("Item".to_string()),
     )
-    .with_napi_tagged_object_enums(&enum_defs)
+    .with_napi_tagged_object_enums(&enum_defs, &defs)
 }
 
 fn enum_field_config() -> HashMap<String, String> {
@@ -189,7 +189,7 @@ fn should_read_the_discriminant_for_a_wildcard_enum_element() {
         FieldResolver::ir_enum_fields(&defs, &enum_defs),
         Some("Report".to_string()),
     )
-    .with_napi_tagged_object_enums(&enum_defs);
+    .with_napi_tagged_object_enums(&enum_defs, &defs);
 
     let mut out = String::new();
     render_assertion(

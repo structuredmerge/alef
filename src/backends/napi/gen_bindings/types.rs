@@ -68,18 +68,20 @@ fn ts_type_for_string_enum_field(
     enums: &[EnumDef],
     core_import: &str,
     configured_features: Option<&std::collections::HashSet<&str>>,
+    types: &[TypeDef],
 ) -> Option<String> {
     fn inner(
         ty: &TypeRef,
         enums: &[EnumDef],
         core_import: &str,
         configured_features: Option<&std::collections::HashSet<&str>>,
+        types: &[TypeDef],
     ) -> Option<String> {
         match ty {
             TypeRef::Named(name) => {
                 let enum_def = enums.iter().find(|e| e.name == *name)?;
                 let is_host_enum = crate::codegen::cfg::is_host_owned_rust_path(core_import, &enum_def.rust_path);
-                let values = string_enum_js_values(enum_def, is_host_enum, configured_features)?;
+                let values = string_enum_js_values(enum_def, is_host_enum, configured_features, types)?;
                 Some(format!(
                     "{} | {}",
                     name,
@@ -91,16 +93,16 @@ fn ts_type_for_string_enum_field(
                 ))
             }
             TypeRef::Optional(i) => {
-                inner(i, enums, core_import, configured_features).map(|s| format!("{s} | null | undefined"))
+                inner(i, enums, core_import, configured_features, types).map(|s| format!("{s} | null | undefined"))
             }
-            TypeRef::Vec(i) => inner(i, enums, core_import, configured_features).map(|s| format!("Array<{s}>")),
+            TypeRef::Vec(i) => inner(i, enums, core_import, configured_features, types).map(|s| format!("Array<{s}>")),
             TypeRef::Map(_k, v) => {
-                inner(v, enums, core_import, configured_features).map(|s| format!("Record<string, {s}>"))
+                inner(v, enums, core_import, configured_features, types).map(|s| format!("Record<string, {s}>"))
             }
             _ => None,
         }
     }
-    inner(ty, enums, core_import, configured_features)
+    inner(ty, enums, core_import, configured_features, types)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -115,6 +117,7 @@ pub(super) fn gen_struct(
     core_import: &str,
     core_to_binding_convertible: &ahash::AHashSet<String>,
     configured_features: Option<&std::collections::HashSet<&str>>,
+    types: &[TypeDef],
 ) -> String {
     let has_serde_with_field = has_serde
         && binding_fields(&typ.fields).any(|f| match &f.ty {
@@ -207,7 +210,7 @@ pub(super) fn gen_struct(
             typ.serde_rename_all.as_deref(),
         );
         let ts_type_override = ts_type_for_bytes_field(&field.ty)
-            .or_else(|| ts_type_for_string_enum_field(&field.ty, enums, core_import, configured_features));
+            .or_else(|| ts_type_for_string_enum_field(&field.ty, enums, core_import, configured_features, types));
         let napi_attr_inner: Vec<String> = {
             let mut v = vec![];
             if js_name != field.name {

@@ -82,14 +82,19 @@ fn event_variant_accessor(field: &str, chunks: &str, enum_def: &crate::core::ir:
         _ => return None,
     };
     let variant = enum_def.variants.iter().find(|variant| variant.name == variant_name)?;
-    if let Some(value) = crate::backends::napi::string_enum_variant_js_value(enum_def, variant_name) {
+    // `enum_def` here is always a streaming chunk-event enum (`Page`/`Error`/`Complete`), never
+    // an internally-tagged enum with a newtype payload serde would flatten -- there is no IR
+    // type list threaded this deep into assertion rendering to check that resolution-aware
+    // condition properly, so this narrow call site accepts the same fixed set of variant names
+    // as its only guard instead. (~keep)
+    if let Some(value) = crate::backends::napi::string_enum_variant_js_value(enum_def, variant_name, &[]) {
         let value = serde_json::to_string(&value).ok()?;
         return Some(format!(
             "{chunks}.some((event: {}) => event === {value})",
             enum_def.name
         ));
     }
-    if !crate::backends::napi::is_tagged_data_enum(enum_def) {
+    if !crate::backends::napi::is_tagged_data_enum(enum_def, &[]) {
         return None;
     }
     let tag_field = serde_json::to_string(crate::backends::napi::tagged_enum_discriminant_js_name(enum_def)).ok()?;

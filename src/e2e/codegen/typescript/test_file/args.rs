@@ -471,6 +471,7 @@ pub(in crate::e2e::codegen::typescript::test_file) fn build_args_and_setup(
                                                 enums,
                                                 wire_value,
                                                 &mut *referenced_enums,
+                                                type_defs,
                                             )
                                         },
                                     ),
@@ -678,8 +679,13 @@ mod tests {
     /// Convention updated for the newtype-payload-flattening change
     /// (`backends::napi::tagged_enum_flattened_newtype`): once `UserMessage` resolves in
     /// `type_defs`, napi's wire shape flattens the payload's own fields beside the tag
-    /// (`{ role: 'user', content: '...' }`), and an array of `Message` must match that per
-    /// element rather than nest it under a synthesized `user` field. See
+    /// (`{ role: 'user', content: '...' }`). `Message` has exactly one data-carrying variant, so
+    /// once resolved it also meets `enums::is_fully_flattened_internal_enum` ("EVERY data-carrying
+    /// variant flattens" -- true trivially for a single variant), which routes the napi binding
+    /// through the JSON-passthrough wrapper rather than a nominal struct, same as the single-object
+    /// case in `builders::tests::node_tagged_enum_variant_flattens_payload_onto_container_when_resolvable`.
+    /// The array element therefore renders as a `satisfies`-cast passthrough literal rather than an
+    /// `as`-cast typed object literal; the field values are unchanged. See
     /// `node_array_of_tagged_enum_elements_nests_payload_when_type_unresolved` below for the
     /// negative control covering the case that still nests.
     #[test]
@@ -722,7 +728,7 @@ mod tests {
         );
 
         assert_eq!(
-            call_args, "[{ role: \"user\", content: \"Hello\" } as Message]",
+            call_args, "[({ content: \"Hello\", role: \"user\" } satisfies Message)]",
             "array element must flatten the payload beside the tag once the payload type resolves"
         );
     }

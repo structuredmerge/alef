@@ -362,6 +362,7 @@ impl Backend for NapiBackend {
                     &core_import,
                     &core_to_binding_for_deserialize,
                     Some(&configured_features_set),
+                    &api.types,
                 ));
                 // Emit impl methods as standalone #[napi] free functions.
                 // #[napi(object)] structs cannot have impl blocks, so each method becomes a
@@ -569,8 +570,8 @@ impl Backend for NapiBackend {
             // predicates share one conversion branch: both route `gen_enum` to the same
             // `serde_json::Value` wrapper struct, and the `serde_json::to_value`/`from_value`
             // conversion below is generic over the payload shape either one produces. ~keep
-            let is_tagged_data_enum = enums::is_tagged_data_enum(e);
-            let is_json_passthrough_data_enum = enums::is_json_passthrough_data_enum(e);
+            let is_tagged_data_enum = enums::is_tagged_data_enum(e, &api.types);
+            let is_json_passthrough_data_enum = enums::is_json_passthrough_data_enum(e, &api.types);
             if is_tagged_data_enum {
                 builder.add_item(&methods::gen_tagged_enum_binding_to_core(
                     e,
@@ -638,7 +639,7 @@ impl Backend for NapiBackend {
         for enum_def in api.enums.iter() {
             // Asks `enums::is_tagged_data_enum` -- the same authority `enums::gen_enum` routes
             // through. (~keep)
-            if !enums::is_tagged_data_enum(enum_def) {
+            if !enums::is_tagged_data_enum(enum_def, &api.types) {
                 continue;
             }
             for variant in &enum_def.variants {
@@ -700,12 +701,10 @@ impl Backend for NapiBackend {
                 collect_enum_names(&field.ty, &mut field_enums);
                 for enum_name in field_enums {
                     if let Some(enum_def) = api.enums.iter().find(|e| e.name == enum_name) {
-                        // Asks `enums::is_tagged_data_enum`/`is_untagged_data_enum`/
-                        // `is_variant_untagged_string_enum` -- the same authority
-                        // `enums::gen_enum` routes through. (~keep)
-                        if enums::is_tagged_data_enum(enum_def)
-                            || enums::is_untagged_data_enum(enum_def)
-                            || enums::is_variant_untagged_string_enum(enum_def)
+                        // Asks `enums::is_tagged_data_enum`/`enums::is_json_passthrough_data_enum`
+                        // -- the same authority `enums::gen_enum` routes through. (~keep)
+                        if enums::is_tagged_data_enum(enum_def, &api.types)
+                            || enums::is_json_passthrough_data_enum(enum_def, &api.types)
                         {
                             continue;
                         }

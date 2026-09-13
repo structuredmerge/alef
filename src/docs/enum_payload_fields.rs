@@ -45,7 +45,7 @@ where
 {
     let single_tuple_payload = variant.is_tuple && variant.fields.len() == 1;
 
-    if single_tuple_payload && serde_flattens_newtype_payload(en, variant) {
+    if single_tuple_payload && serde_flattens_newtype_payload(en, variant, &api.types) {
         let payload_field = &variant.fields[0];
         let descs = flattened_payload_field_descs(payload_field, api, &field_name_for, &type_desc_for);
         return (descs, "Fields (flattened into the tagged object)");

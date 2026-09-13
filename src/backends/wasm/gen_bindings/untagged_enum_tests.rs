@@ -866,14 +866,14 @@ fn output_format_enum() -> EnumDef {
 fn variant_untagged_output_format_predicates() {
     let e = output_format_enum();
     assert!(
-        !super::enums::is_tagged_data_enum(&e),
+        !super::enums::is_tagged_data_enum(&e, &[]),
         "a data variant that opts out via its own #[serde(untagged)] must not force the tagged-object shape"
     );
     assert!(
         super::enums::is_variant_untagged_string_enum(&e),
         "every data-carrying variant here is serde_untagged"
     );
-    assert!(super::enums::is_json_passthrough_data_enum(&e));
+    assert!(super::enums::is_json_passthrough_data_enum(&e, &[]));
 }
 
 #[test]

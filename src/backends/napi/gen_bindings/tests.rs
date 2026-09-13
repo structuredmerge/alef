@@ -95,7 +95,7 @@ fn plain_data_enum_in_input_type_struct_gets_binding_to_core_impl() {
     // `gen_enum` and `errors::gen_dts` both route through) and never reaches the lossy helpers
     // exercised below.
     assert!(
-        is_tagged_data_enum(&auth_format_enum),
+        is_tagged_data_enum(&auth_format_enum, &[]),
         "napi's pipeline must treat a default-tagged data enum as a tagged data enum, \
          routing it away from the data-discarding helpers this test exercises directly"
     );
@@ -487,6 +487,51 @@ fn core_to_binding_keeps_expr_form_when_conversion_is_required() {
     assert!(
         core_to_binding.contains("items: items.map(|v| v.into_iter().map(Into::into).collect())"),
         "Vec<Named> optional field must keep its real conversion expression:\n{core_to_binding}"
+    );
+}
+
+/// Regression test: an optional `Named` tagged-enum field whose type has a generated binding
+/// struct (`has_binding` in the old code) must NOT be dereferenced unless the CORE field is
+/// actually `Option<Box<T>>`. Before the fix, `core_to_binding_field_init` picked the deref
+/// form purely off `has_binding`, so a plain (unboxed) `Option<T>` field emitted
+/// `nested.map(|v| (*v).into())`, which fails to compile with E0614 because `v` is `T`, not
+/// `Box<T>`. Mirrors the real-world defect on `DocxAppProperties`/`CoreProperties`/`YearRange`
+/// fields (all plain `Option<T>`, all with a binding struct, none boxed).
+#[test]
+fn core_to_binding_optional_unboxed_named_field_is_not_dereferenced() {
+    let enum_def = EnumDef {
+        name: "Content".to_string(),
+        rust_path: "fixture_core::Content".to_string(),
+        variants: vec![EnumVariant {
+            name: "WithNested".to_string(),
+            fields: vec![FieldDef {
+                name: "nested".to_string(),
+                ty: TypeRef::Named("Nested".to_string()),
+                optional: true,
+                is_boxed: false,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        serde_content: None,
+        serde_tag: Some("type".to_string()),
+        serde_rename_all: Some("snake_case".to_string()),
+        ..Default::default()
+    };
+
+    // `struct_names` containing "Nested" is what makes `has_binding` true for this field --
+    // exactly the condition the old code (wrongly) used to decide whether to dereference.
+    let mut struct_names = AHashSet::new();
+    struct_names.insert("Nested".to_string());
+    let core_to_binding = gen_tagged_enum_core_to_binding(&enum_def, "fixture_core", "Js", &struct_names, None, &[]);
+
+    assert!(
+        !core_to_binding.contains("nested.map(|v| (*v).into())"),
+        "unboxed Option<T> field must not be dereferenced (E0614 -- v is T, not Box<T>):\n{core_to_binding}"
+    );
+    assert!(
+        core_to_binding.contains("nested: nested.map(|v| v.into())"),
+        "expected the unboxed optional Named field conversion:\n{core_to_binding}"
     );
 }
 

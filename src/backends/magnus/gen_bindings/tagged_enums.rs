@@ -69,7 +69,11 @@ fn flattened_newtype_from_hash_body(field: &crate::core::ir::FieldDef, tag_field
 ///
 /// This is the Ruby 3.2+ idiomatic pattern for sealed sum types using Data classes
 /// mixed into marker modules. Each variant instance `is_a?(MarkerModule)` returns true.
-pub(super) fn gen_tagged_enum_ruby_classes(enum_def: &crate::core::ir::EnumDef, module_name: &str) -> String {
+pub(super) fn gen_tagged_enum_ruby_classes(
+    enum_def: &crate::core::ir::EnumDef,
+    module_name: &str,
+    types: &[crate::core::ir::TypeDef],
+) -> String {
     use crate::codegen::doc_emission::emit_yard_doc;
     let mut out = String::new();
 
@@ -186,43 +190,44 @@ pub(super) fn gen_tagged_enum_ruby_classes(enum_def: &crate::core::ir::EnumDef, 
             ));
         }
 
-        let from_hash_body = if crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant) {
-            flattened_newtype_from_hash_body(&variant.fields[0], tag_field)
-        } else {
-            // Under adjacent tagging (`tag = "t", content = "c"`) serde puts a newtype payload
-            // under the CONTENT key, never under the synthesized positional name -- `_0` is an
-            // alef-internal field name that appears on no wire. Reading `hash[:_0]` there yields
-            // nil for every such variant, the same defect the flattened branch above fixes for
-            // internal tagging (e.g. a diff-line enum with `tag="kind", content="text"`). ~keep
-            let positional_wire_key = crate::codegen::serde_enum_repr::serde_enum_repr(enum_def)
-                .content()
-                .map(str::to_string);
-            let field_args: Vec<String> = variant
-                .fields
-                .iter()
-                .map(|f| {
-                    let is_positional = f.name == "_0";
-                    let key_string = match (is_positional, positional_wire_key.as_deref()) {
-                        (true, Some(content)) => content,
-                        (true, None) => "_0",
-                        (false, _) => f.name.as_str(),
-                    };
-                    let param_name = if is_positional {
-                        "value".to_string()
-                    } else {
-                        f.name.clone()
-                    };
-                    let val_expr = format!("hash[:{key_string}] || hash[\"{key_string}\"]");
-                    format!("{param_name}: {val_expr}")
-                })
-                .collect();
-            let call = if field_args.is_empty() {
-                "new".to_string()
+        let from_hash_body =
+            if crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant, types) {
+                flattened_newtype_from_hash_body(&variant.fields[0], tag_field)
             } else {
-                format!("new({})", field_args.join(", "))
+                // Under adjacent tagging (`tag = "t", content = "c"`) serde puts a newtype payload
+                // under the CONTENT key, never under the synthesized positional name -- `_0` is an
+                // alef-internal field name that appears on no wire. Reading `hash[:_0]` there yields
+                // nil for every such variant, the same defect the flattened branch above fixes for
+                // internal tagging (e.g. a diff-line enum with `tag="kind", content="text"`). ~keep
+                let positional_wire_key = crate::codegen::serde_enum_repr::serde_enum_repr(enum_def)
+                    .content()
+                    .map(str::to_string);
+                let field_args: Vec<String> = variant
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        let is_positional = f.name == "_0";
+                        let key_string = match (is_positional, positional_wire_key.as_deref()) {
+                            (true, Some(content)) => content,
+                            (true, None) => "_0",
+                            (false, _) => f.name.as_str(),
+                        };
+                        let param_name = if is_positional {
+                            "value".to_string()
+                        } else {
+                            f.name.clone()
+                        };
+                        let val_expr = format!("hash[:{key_string}] || hash[\"{key_string}\"]");
+                        format!("{param_name}: {val_expr}")
+                    })
+                    .collect();
+                let call = if field_args.is_empty() {
+                    "new".to_string()
+                } else {
+                    format!("new({})", field_args.join(", "))
+                };
+                format!("      {call}\n")
             };
-            format!("      {call}\n")
-        };
 
         let doc_comment = doc_comment.replace("  # ", "  ## ");
 
@@ -332,7 +337,7 @@ mod tests {
             ..Default::default()
         };
 
-        let code = gen_tagged_enum_ruby_classes(&enum_def, "TestLib");
+        let code = gen_tagged_enum_ruby_classes(&enum_def, "TestLib", &[]);
 
         assert!(
             code.contains("when \"KeyValue\" then"),
@@ -406,7 +411,7 @@ mod discriminator_key_parity_tests {
                 "napi discriminant must come from the shared authority (serde_tag = {serde_tag:?})"
             );
 
-            let ruby = gen_tagged_enum_ruby_classes(&enum_def, "TestLib");
+            let ruby = gen_tagged_enum_ruby_classes(&enum_def, "TestLib", &[]);
             assert!(
                 ruby.contains(&format!("discriminator = hash[:{expected}] || hash[\"{expected}\"]")),
                 "ruby from_hash must read `{expected}` (serde_tag = {serde_tag:?}), got:\n{ruby}"
@@ -422,7 +427,7 @@ mod discriminator_key_parity_tests {
         let enum_def = sample_enum(None);
         assert_eq!(tagged_object_tag_key(&enum_def), "type");
 
-        let ruby = gen_tagged_enum_ruby_classes(&enum_def, "TestLib");
+        let ruby = gen_tagged_enum_ruby_classes(&enum_def, "TestLib", &[]);
         assert!(
             !ruby.contains("hash[:kind]"),
             "the untagged fallback must not reintroduce the magnus-only `kind` key, got:\n{ruby}"

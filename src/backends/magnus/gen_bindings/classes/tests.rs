@@ -226,7 +226,7 @@ fn gen_enum_unit_variants_emit_ruby_symbols() {
         excluded_variants: vec![],
         version: Default::default(),
     };
-    let code = gen_enum(&enum_def, "test_lib", None);
+    let code = gen_enum(&enum_def, "test_lib", None, &[]);
     assert!(code.contains("enum Status"), "must emit enum definition");
     assert!(code.contains("to_symbol"), "unit enums use Ruby symbols");
     assert!(
@@ -248,7 +248,7 @@ fn gen_enum_unit_variant_wire_value_is_verbatim_without_rename_all() {
         variants: vec![make_variant("KeyValue", vec![]), make_variant("Sequence", vec![])],
         ..Default::default()
     };
-    let code = gen_enum(&enum_def, "test_lib", None);
+    let code = gen_enum(&enum_def, "test_lib", None, &[]);
     assert!(
         code.contains("DataNodeKind::KeyValue => \"KeyValue\","),
         "serde's real default (no rename_all) serializes unit variants verbatim, not snake_cased:\n{code}"
@@ -270,7 +270,7 @@ fn gen_enum_unit_variant_try_convert_still_accepts_the_legacy_snake_case_spellin
         variants: vec![make_variant("KeyValue", vec![])],
         ..Default::default()
     };
-    let code = gen_enum(&enum_def, "test_lib", None);
+    let code = gen_enum(&enum_def, "test_lib", None, &[]);
     assert!(
         code.contains("\"key_value\""),
         "existing consumer code passing the old snake_case symbol must keep working:\n{code}"
@@ -328,7 +328,12 @@ fn make_data_enum(name: &str, serde_tag: Option<&str>) -> EnumDef {
 #[test]
 fn gen_enum_wraps_string_for_internally_tagged_enum() {
     // For an internally-tagged enum (`#[serde(tag = "...")]`), serde cannot deserialize a bare
-    let code = gen_enum(&make_data_enum("ImageOutputFormat", Some("type")), "test_lib", None);
+    let code = gen_enum(
+        &make_data_enum("ImageOutputFormat", Some("type")),
+        "test_lib",
+        None,
+        &[],
+    );
     assert!(
         code.contains(r#".or_else(|_| serde_json::from_value(serde_json::json!({ "type": json_str })))"#),
         "expected tagged string wrap for internally-tagged enum: {code}"
@@ -338,7 +343,7 @@ fn gen_enum_wraps_string_for_internally_tagged_enum() {
 #[test]
 fn gen_enum_keeps_bare_string_for_externally_tagged_enum() {
     // An externally-tagged data enum (no `#[serde(tag)]`) must not gain the tag-wrap branch.
-    let code = gen_enum(&make_data_enum("ExternallyTagged", None), "test_lib", None);
+    let code = gen_enum(&make_data_enum("ExternallyTagged", None), "test_lib", None, &[]);
     assert!(
         !code.contains("serde_json::from_value(serde_json::json!({"),
         "externally-tagged enum must not wrap the string in a tag object: {code}"
@@ -356,7 +361,7 @@ fn gen_enum_emits_adjacent_serde_representation() {
     enum_def.variants[1].is_tuple = true;
     enum_def.variants[1].fields[0].name = "_0".to_string();
 
-    let code = gen_enum(&enum_def, "test_lib", None);
+    let code = gen_enum(&enum_def, "test_lib", None, &[]);
 
     assert!(code.contains(r#"#[serde(tag = "type", content = "output")]"#));
     assert!(code.contains("Jpeg(String)"));
@@ -373,7 +378,7 @@ fn adjacent_tuple_default_uses_tuple_constructor_syntax() {
     enum_def.variants[1].is_default = true;
     enum_def.variants[1].fields[0].name = "_0".to_string();
 
-    let code = gen_enum(&enum_def, "test_lib", None);
+    let code = gen_enum(&enum_def, "test_lib", None, &[]);
 
     assert!(code.contains("Self::Jpeg(Default::default())"), "{code}");
     assert!(!code.contains("Self::Jpeg { _0:"), "{code}");
@@ -717,7 +722,7 @@ fn adjacently_tagged_tuple_variant_uses_tuple_form_in_both_definition_and_conver
     adjacent.variants[1].fields[0].name = "_0".to_string();
 
     // The definition emits tuple form ...
-    let code = gen_enum(&adjacent, "test_lib", None);
+    let code = gen_enum(&adjacent, "test_lib", None, &[]);
     assert!(code.contains("Jpeg(String)"), "{code}");
     assert!(!code.contains("Self::Jpeg { _0 }"), "{code}");
 

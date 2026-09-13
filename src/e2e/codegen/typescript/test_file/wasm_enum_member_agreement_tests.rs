@@ -91,7 +91,7 @@ fn owner_type_def(enum_name: &str) -> TypeDef {
 /// snippet referenced `WasmOutputFormat.Markdown` against a binding that declares no such
 /// member. ~keep
 fn declared_members(enum_def: &EnumDef) -> Vec<String> {
-    if crate::backends::wasm::gen_bindings::enums::is_json_passthrough_data_enum(enum_def) {
+    if crate::backends::wasm::gen_bindings::enums::is_json_passthrough_data_enum(enum_def, &[]) {
         return Vec::new();
     }
     let source = crate::backends::wasm::gen_bindings::enums::gen_enum(
@@ -99,6 +99,7 @@ fn declared_members(enum_def: &EnumDef) -> Vec<String> {
         WASM_TYPE_PREFIX,
         CORE_CRATE,
         &std::collections::HashSet::new(),
+        &[],
     );
     let header = format!("pub enum {WASM_TYPE_PREFIX}{} {{", enum_def.name);
     let Some(start) = source.find(&header) else {

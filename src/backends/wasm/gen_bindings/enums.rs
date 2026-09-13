@@ -1,6 +1,6 @@
 //! WASM enum code generation.
 
-use crate::core::ir::{ApiSurface, EnumDef, EnumVariant, FieldDef, TypeRef};
+use crate::core::ir::{ApiSurface, EnumDef, EnumVariant, FieldDef, TypeDef, TypeRef};
 use ahash::AHashSet;
 
 use crate::backends::wasm::type_map::WasmMapper;
@@ -28,12 +28,12 @@ use super::functions::emit_rustdoc;
 /// [`is_fully_flattened_internal_enum`] claims it instead -- a discriminator struct keyed on the
 /// synthesized `_0` field name cannot represent a wire shape with no `_0` key at all (see that
 /// function's doc comment). ~keep
-pub(crate) fn is_tagged_data_enum(enum_def: &EnumDef) -> bool {
+pub(crate) fn is_tagged_data_enum(enum_def: &EnumDef, types: &[TypeDef]) -> bool {
     let has_data_variants = enum_def.variants.iter().any(|v| !v.fields.is_empty());
     has_data_variants
         && (enum_def.serde_tag.is_some() || !enum_def.serde_untagged)
         && !is_variant_untagged_string_enum(enum_def)
-        && !is_fully_flattened_internal_enum(enum_def)
+        && !is_fully_flattened_internal_enum(enum_def, types)
 }
 
 /// True if this enum is a serde-untagged data enum (`#[serde(untagged)]` with at least one
@@ -97,13 +97,19 @@ pub(crate) fn is_variant_untagged_string_enum(enum_def: &EnumDef) -> bool {
 /// variants with their own real field names) does NOT qualify here -- only the struct-field
 /// variants would need real accessors, and `gen_tagged_enum_as_struct` already unions those in
 /// correctly alongside the flattened variants' now-hidden fields (see `flattened_only_field_names`
-/// there), so a mixed enum keeps its nominal type. ~keep
-pub(crate) fn is_fully_flattened_internal_enum(enum_def: &EnumDef) -> bool {
+/// there), so a mixed enum keeps its nominal type.
+///
+/// `types` is required because `serde_flattens_newtype_payload` is resolution-aware: a newtype
+/// payload only flattens when it is a `Named` type this binding's own `types` list resolves to a
+/// struct/map. Passing the wrong (or an empty) `types` list makes every payload look
+/// unresolvable, which answers `false` here even for an enum that genuinely flattens on the
+/// wire -- callers must thread the real API surface's type list, not fabricate one. ~keep
+pub(crate) fn is_fully_flattened_internal_enum(enum_def: &EnumDef, types: &[TypeDef]) -> bool {
     let data_variants: Vec<&EnumVariant> = enum_def.variants.iter().filter(|v| !v.fields.is_empty()).collect();
     !data_variants.is_empty()
         && data_variants
             .iter()
-            .all(|v| crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, v))
+            .all(|v| crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, v, types))
 }
 
 /// Either flavor of "no nominal `Wasm{Enum}` type; bridge as `JsValue` via `serde_wasm_bindgen`"
@@ -114,10 +120,10 @@ pub(crate) fn is_fully_flattened_internal_enum(enum_def: &EnumDef) -> bool {
 /// rather than a real wasm-bindgen type" asks this instead of re-deriving the disjunction. Only
 /// the `.d.ts` declaration differs between the three, which is why they stay separate predicates.
 /// ~keep
-pub(crate) fn is_json_passthrough_data_enum(enum_def: &EnumDef) -> bool {
+pub(crate) fn is_json_passthrough_data_enum(enum_def: &EnumDef, types: &[TypeDef]) -> bool {
     is_untagged_data_enum(enum_def)
         || is_variant_untagged_string_enum(enum_def)
-        || is_fully_flattened_internal_enum(enum_def)
+        || is_fully_flattened_internal_enum(enum_def, types)
 }
 
 /// Detect every [`is_json_passthrough_data_enum`] in `api` and default its `type_overrides`
@@ -133,7 +139,7 @@ pub(super) fn register_untagged_data_enum_overrides(
     let names: AHashSet<String> = api
         .enums
         .iter()
-        .filter(|e| is_json_passthrough_data_enum(e))
+        .filter(|e| is_json_passthrough_data_enum(e, &api.types))
         .map(|e| e.name.clone())
         .collect();
     for name in &names {
@@ -344,11 +350,11 @@ pub(super) fn variant_tag_value(
 /// tagging that overlap is unreachable in practice — `serde_derive` rejects a tuple variant of
 /// any other arity outright — but the union is keyed on the name alone, so the set is narrowed
 /// rather than assumed. ~keep
-fn flattened_only_field_names(enum_def: &EnumDef) -> std::collections::BTreeSet<&str> {
+fn flattened_only_field_names<'a>(enum_def: &'a EnumDef, types: &[TypeDef]) -> std::collections::BTreeSet<&'a str> {
     let mut flattened: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     let mut plain: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for variant in &enum_def.variants {
-        let target = if crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant) {
+        let target = if crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant, types) {
             &mut flattened
         } else {
             &mut plain
@@ -370,7 +376,7 @@ fn flattened_only_field_names(enum_def: &EnumDef) -> std::collections::BTreeSet<
 /// This mirrors the NAPI backend's `gen_tagged_enum_as_object` path. The corresponding
 /// `From<Wasm{Enum}> for core::{Enum}` (and reverse) impls are emitted by
 /// `gen_tagged_enum_binding_to_core` / `gen_tagged_enum_core_to_binding`.
-pub(super) fn gen_tagged_enum_as_struct(enum_def: &EnumDef, prefix: &str) -> String {
+pub(super) fn gen_tagged_enum_as_struct(enum_def: &EnumDef, prefix: &str, types: &[TypeDef]) -> String {
     let js_name = format!("{prefix}{}", enum_def.name);
     let tag_field = crate::codegen::serde_enum_repr::tagged_object_tag_key(enum_def);
     let tag_field_ident = escape_rust_keyword(tag_field);
@@ -444,7 +450,7 @@ pub(super) fn gen_tagged_enum_as_struct(enum_def: &EnumDef, prefix: &str) -> Str
         "    pub fn {setter_ident_escaped}(&mut self, value: String) {{ self.{tag_field_ident} = value; }}"
     ));
 
-    let flattened_only = flattened_only_field_names(enum_def);
+    let flattened_only = flattened_only_field_names(enum_def, types);
     for (name, ty) in &field_entries {
         // serde flattens this variant's payload into the tag object, so the `"0"` key a
         // positional field's accessor advertised exists on no wire form of this enum. The struct
@@ -837,9 +843,10 @@ pub(crate) fn gen_enum(
     prefix: &str,
     core_import: &str,
     configured_features: &std::collections::HashSet<&str>,
+    types: &[TypeDef],
 ) -> String {
-    if is_tagged_data_enum(enum_def) {
-        return gen_tagged_enum_as_struct(enum_def, prefix);
+    if is_tagged_data_enum(enum_def, types) {
+        return gen_tagged_enum_as_struct(enum_def, prefix, types);
     }
 
     let js_name = format!("{prefix}{}", enum_def.name);

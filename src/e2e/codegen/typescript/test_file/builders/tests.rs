@@ -84,6 +84,17 @@ fn user_message_type_def() -> TypeDef {
     }
 }
 
+/// `Message` has exactly one data-carrying variant (`User`), and once `UserMessage` resolves
+/// that variant's payload flattens completely -- which meets
+/// `enums::is_fully_flattened_internal_enum`'s definition ("EVERY data-carrying variant
+/// flattens") regardless of the variant count. That predicate now routes the napi binding
+/// through the same JSON-passthrough wrapper the wasm backend already uses for this shape (see
+/// `enums::is_json_passthrough_data_enum`), rather than a nominal `#[napi(object)]` struct, so
+/// this builder takes the JSON-passthrough branch of `ts_builder_expression_inner` and casts with
+/// `satisfies` instead of building a typed object literal cast with `as`. The asserted field
+/// values are unchanged -- only the surrounding TypeScript expression shape differs, and the
+/// object key order comes from `serde_json::Map`'s default `BTreeMap` (alphabetical), not fixture
+/// order. ~keep
 #[test]
 fn node_tagged_enum_variant_flattens_payload_onto_container_when_resolvable() {
     let enums = [message_enum_def()];
@@ -104,7 +115,7 @@ fn node_tagged_enum_variant_flattens_payload_onto_container_when_resolvable() {
         &mut Default::default(),
     );
 
-    assert_eq!(expression, "{ role: \"user\", content: \"Hello\" } as Message");
+    assert_eq!(expression, "({ content: \"Hello\", role: \"user\" } satisfies Message)");
 }
 
 /// Negative control for the resolvability requirement itself: with `UserMessage` absent from
@@ -648,7 +659,7 @@ fn fieldless_untagged_enum_is_not_a_node_raw_payload_union() {
     }];
     let mut referenced = Default::default();
 
-    let expression = node_enum_string_literal("Mode", &enums, "Fast", &mut referenced);
+    let expression = node_enum_string_literal("Mode", &enums, "Fast", &mut referenced, &[]);
 
     assert_eq!(expression, "Mode.Fast");
     assert!(referenced.contains("Mode"));
@@ -666,7 +677,7 @@ fn fieldless_untagged_enum_is_not_a_wasm_raw_payload_union() {
         ..Default::default()
     }];
 
-    assert!(!wasm_enum_bridged_as_raw_value("WasmMode", &enums, "Wasm"));
+    assert!(!wasm_enum_bridged_as_raw_value("WasmMode", &enums, "Wasm", &[]));
 }
 
 #[test]
@@ -693,7 +704,7 @@ fn node_custom_tag_literal_compiles_against_declared_union() {
         ],
         ..Default::default()
     }];
-    let expression = node_enum_string_literal("RenderFormat", &enums, "text/plain", &mut Default::default());
+    let expression = node_enum_string_literal("RenderFormat", &enums, "text/plain", &mut Default::default(), &[]);
     let source = format!(
         "type RenderFormat = {{ \"content-type\": \"text/plain\" }} | {{ \"content-type\": \"Custom\"; custom: string }};\nconst value: RenderFormat = {expression};"
     );

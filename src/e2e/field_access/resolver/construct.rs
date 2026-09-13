@@ -386,11 +386,15 @@ impl FieldResolver {
     /// never disagree. The e2e generator was the one caller that did not, which is precisely why
     /// its assertion disagreed with both. Same single-authority relationship as
     /// `with_java_wrapper_enum_names` and `with_ruby_hash_serialized_enum_names`.
-    pub(crate) fn with_napi_tagged_object_enums(mut self, enums: &[crate::core::ir::EnumDef]) -> Self {
+    pub(crate) fn with_napi_tagged_object_enums(
+        mut self,
+        enums: &[crate::core::ir::EnumDef],
+        type_defs: &[crate::core::ir::TypeDef],
+    ) -> Self {
         use crate::backends::napi::{is_tagged_data_enum, tagged_enum_discriminant_js_name};
         self.napi_tagged_object_enums = enums
             .iter()
-            .filter(|enum_def| is_tagged_data_enum(enum_def))
+            .filter(|enum_def| is_tagged_data_enum(enum_def, type_defs))
             .map(|enum_def| {
                 (
                     enum_def.name.clone(),

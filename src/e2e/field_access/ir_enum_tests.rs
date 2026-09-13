@@ -553,7 +553,14 @@ fn variant_payload_tuple_is_true_only_for_the_flattening_representation() {
         ..EnumDef::default()
     };
 
-    let map = build_ir_enum_map(&[], &[internal, adjacent, untagged, external]);
+    // `serde_flattens_newtype_payload` is resolution-aware: internal tagging only flattens a
+    // newtype payload that resolves to a real struct/map, so the "Payload" type must actually be
+    // present here or the "Internal" case below would wrongly read as unflattened. ~keep
+    let payload_type = TypeDef {
+        name: "Payload".to_string(),
+        ..TypeDef::default()
+    };
+    let map = build_ir_enum_map(&[payload_type], &[internal, adjacent, untagged, external]);
 
     assert!(
         map.variant_payload_tuple

@@ -20,7 +20,7 @@
 
 use super::gen_enum;
 use crate::backends::napi::gen_bindings::errors::gen_dts;
-use crate::core::ir::{ApiSurface, EnumDef, EnumVariant, FieldDef, TypeRef};
+use crate::core::ir::{ApiSurface, EnumDef, EnumVariant, FieldDef, TypeDef, TypeRef};
 
 /// A default-representation (no `serde_tag`, no `serde_content`, not `serde_untagged`) enum with
 /// one data-carrying tuple variant and one unit variant -- the shape that must route through the
@@ -155,4 +155,128 @@ fn dts_and_runtime_agree_on_discriminant_and_payload_field_names() {
         .find(|l| l.trim_start().starts_with("| { type: 'Function';"))
         .expect(".d.ts must declare the Function variant's member shape");
     assert_eq!(function_member.trim(), "| { type: 'Function'; function: string }");
+}
+
+/// A fully flattened internally-tagged enum -- EVERY data-carrying variant's single tuple
+/// payload resolves to a `Named` struct and therefore flattens (see
+/// `super::is_fully_flattened_internal_enum`). Unlike [`sample_kind_enum`], `gen_enum` cannot
+/// emit this as one `#[napi(object)]` struct at all (different variants can want the same field
+/// name at different Rust types), so both sides route through the JSON-passthrough wrapper
+/// instead of the tagged-object emitter.
+fn fully_flattened_format_metadata_enum() -> EnumDef {
+    EnumDef {
+        name: "FormatMetadata".to_string(),
+        rust_path: "test_core::FormatMetadata".to_string(),
+        serde_tag: Some("format_type".to_string()),
+        serde_rename_all: Some("snake_case".to_string()),
+        variants: vec![
+            EnumVariant {
+                name: "Excel".to_string(),
+                is_tuple: true,
+                fields: vec![FieldDef {
+                    name: "_0".to_string(),
+                    ty: TypeRef::Named("ExcelMetadata".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            EnumVariant {
+                name: "Csv".to_string(),
+                is_tuple: true,
+                fields: vec![FieldDef {
+                    name: "_0".to_string(),
+                    ty: TypeRef::Named("CsvMetadata".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+fn fully_flattened_format_metadata_types() -> Vec<TypeDef> {
+    vec![
+        TypeDef {
+            name: "ExcelMetadata".to_string(),
+            rust_path: "test_core::ExcelMetadata".to_string(),
+            fields: vec![FieldDef {
+                name: "sheet_count".to_string(),
+                ty: TypeRef::Primitive(crate::core::ir::PrimitiveType::U32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        TypeDef {
+            name: "CsvMetadata".to_string(),
+            rust_path: "test_core::CsvMetadata".to_string(),
+            fields: vec![FieldDef {
+                name: "delimiter".to_string(),
+                ty: TypeRef::String,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    ]
+}
+
+/// Runtime half: a fully flattened enum must compile as the `serde_json::Value` passthrough
+/// wrapper, never a `#[napi(object)]` struct.
+#[test]
+fn runtime_is_json_passthrough_for_fully_flattened_enum() {
+    let enum_def = fully_flattened_format_metadata_enum();
+    let types = fully_flattened_format_metadata_types();
+    let runtime = gen_enum(&enum_def, "Js", true, "test_core", None, &types);
+
+    assert!(
+        runtime.contains("pub struct JsFormatMetadata(pub serde_json::Value)"),
+        "must route through the JSON passthrough wrapper; got:\n{runtime}"
+    );
+    assert!(!runtime.contains("#[napi(object"), "got:\n{runtime}");
+}
+
+/// `.d.ts` half: the declared union must use serde's OWN field names (never napi's camelCase
+/// `js_name` renaming, since there is no nominal napi struct to rename fields on), and no
+/// `export declare enum` fallback. `WireTypes` derives this shape generically for
+/// `SerdeEnumRepr::Internal`, the same helper the container-level-untagged branch already reuses,
+/// so this pins that reuse rather than a hand-written second copy.
+#[test]
+fn dts_declaration_uses_serde_field_names_for_fully_flattened_enum() {
+    let enum_def = fully_flattened_format_metadata_enum();
+    let api = ApiSurface {
+        enums: vec![enum_def],
+        types: fully_flattened_format_metadata_types(),
+        ..Default::default()
+    };
+    let dts = gen_dts(
+        &api,
+        "Js",
+        &Default::default(),
+        &[],
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        "",
+        None,
+    );
+
+    let start = dts
+        .find("export type FormatMetadata =")
+        .expect("gen_dts must declare FormatMetadata as a union type, not a plain enum");
+    let declaration_block = &dts[start..];
+
+    assert!(
+        declaration_block.contains("format_type: \"excel\""),
+        "the tag key must be the enum's own serde_tag, not napi's synthesized 'kind'; got:\n{dts}"
+    );
+    assert!(declaration_block.contains("format_type: \"csv\""), "got:\n{dts}");
+    // Serde's own (snake_case) field names, never a camelCase `js_name` rename -- there is no
+    // nominal napi struct here to rename fields on. ~keep
+    assert!(dts.contains("sheet_count: number"), "got:\n{dts}");
+    assert!(dts.contains("delimiter: string"), "got:\n{dts}");
+    assert!(
+        !dts.contains("export declare enum FormatMetadata"),
+        "must never fall back to a plain string enum; got:\n{dts}"
+    );
 }

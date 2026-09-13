@@ -1052,7 +1052,9 @@ fn flattened_internal_enum_intersects_tag_literal_with_payload_shape() {
         ..Default::default()
     }];
     api.enums = vec![enum_def.clone()];
-    assert!(super::super::enums::is_fully_flattened_internal_enum(&enum_def));
+    assert!(super::super::enums::is_fully_flattened_internal_enum(
+        &enum_def, &api.types
+    ));
 
     let all_plans =
         build_flattened_internal_enum_ts_plan_for_api(&api, &[], &AHashSet::default(), &AHashSet::default(), "Alef");
@@ -1110,7 +1112,7 @@ fn mixed_enum_is_not_a_flattened_internal_enum_and_gets_no_plan() {
         ],
         ..Default::default()
     };
-    assert!(!super::super::enums::is_fully_flattened_internal_enum(&enum_def));
+    assert!(!super::super::enums::is_fully_flattened_internal_enum(&enum_def, &[]));
 
     let mut api = empty_api();
     api.enums = vec![enum_def];
@@ -1133,5 +1135,5 @@ fn adjacent_tagging_is_not_a_flattened_internal_enum() {
         variants: vec![tuple_variant("Added", TypeRef::String)],
         ..Default::default()
     };
-    assert!(!super::super::enums::is_fully_flattened_internal_enum(&enum_def));
+    assert!(!super::super::enums::is_fully_flattened_internal_enum(&enum_def, &[]));
 }

@@ -1559,7 +1559,13 @@ fn test_tagged_enum_different_named_types_per_variant_uses_into_not_serde_json()
         serde_rename: Some(rename.to_string()),
         binding_excluded: false,
         binding_exclusion_reason: None,
-        is_tuple: false,
+        // The extractor sets `is_tuple` and names the field `_0` TOGETHER for `Fields::Unnamed`.
+        // With the flag left false this fixture modelled a named-fields variant whose field is
+        // literally called `_0`, which serde does not flatten -- so the nested shape was emitted
+        // and the `pub content: Option<String>` assertion below passed vacuously off the
+        // `JsSystemMessage`/`JsUserMessage` structs' own fields rather than off any flattening.
+        // ~keep
+        is_tuple: true,
         originally_had_data_fields: false,
         cfg: None,
         version: Default::default(),
@@ -1613,6 +1619,18 @@ fn test_tagged_enum_different_named_types_per_variant_uses_into_not_serde_json()
             variants: vec![
                 make_variant("System", "system", "SystemMessage"),
                 make_variant("User", "user", "UserMessage"),
+                // A struct variant, which serde never flattens. It keeps the enum only PARTIALLY
+                // flattened, so it stays on the nominal `#[napi(object)]` path that emits the
+                // `From` impls this test inspects. Without it every data variant would flatten,
+                // the enum would route to the `serde_json::Value` passthrough, and there would be
+                // no destructure left to assert a qualified path on. ~keep
+                EnumVariant {
+                    fields: vec![make_field("tool_name", TypeRef::String, false)],
+                    name: "Tool".to_string(),
+                    serde_rename: Some("tool".to_string()),
+                    is_tuple: false,
+                    ..make_variant("Tool", "tool", "ToolMessage")
+                },
             ],
             is_copy: false,
             has_serde: false,

@@ -3499,7 +3499,15 @@ fn test_option_and_bare_tagged_data_enum_fields_use_js_value() {
     let api = ApiSurface {
         crate_name: "test_lib".to_string(),
         version: "0.1.0".to_string(),
-        types: vec![request_type],
+        // `TextFormat` must be ON the surface: `is_fully_flattened_internal_enum` resolves each
+        // newtype payload against `types`, and an unresolvable one cannot be flattened (the
+        // `.d.ts` would reference a type it never declares). Omitting it made this fixture
+        // silently exercise the unresolvable path while its assertions described the resolved
+        // one. ~keep
+        types: vec![
+            request_type,
+            make_type_def("TextFormat", vec![make_field("value", TypeRef::String, false)]),
+        ],
         functions: vec![chat_fn],
         enums: vec![format_enum],
         errors: vec![],

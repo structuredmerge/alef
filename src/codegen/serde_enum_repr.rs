@@ -11,7 +11,7 @@
 //! Every backend that emits or parses the JSON form of an IR enum must classify it through
 //! [`serde_enum_repr`] so a future edit cannot reintroduce that divergence.
 
-use crate::core::ir::{EnumDef, EnumVariant};
+use crate::core::ir::{EnumDef, EnumVariant, TypeDef, TypeRef};
 
 /// serde's four enum representations, carrying the key names each one needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,20 +190,41 @@ mod tagged_object_tag_key_tests {
 /// key for the payload (external: the variant name; adjacent: the content key; untagged: the
 /// bare payload), so a tuple variant's `_0` is legitimate there and must keep working.
 ///
+/// serde only flattens a newtype payload that itself serializes as a JSON *map* — internal
+/// tagging is rejected outright by `serde_derive` for a payload that is not a struct/map, so the
+/// wire shape this predicate describes exists only for a payload that resolves to a real `types`
+/// entry. `types` is therefore required, not optional: a primitive payload, or a `Named` payload
+/// this binding's IR did not resolve, answers `false` here exactly as
+/// [`crate::backends::napi::gen_bindings::enums::tagged_enum_flattened_newtype`] (the
+/// resolution-aware reference this predicate now mirrors) already required. Passing an empty
+/// `types` slice therefore is NOT a safe stand-in for "I don't have the type list" — it makes
+/// every payload answer unresolvable, silently reintroducing the callers' `_0`/`"0"` defect this
+/// function exists to prevent. A caller with no type list in scope must thread one down from its
+/// own caller instead. ~keep
+///
 /// This exists as one predicate because the split already happened once: alef 0.85.11 taught the
 /// Magnus *binding* to emit `#[serde(flatten)]` here and left the surfaces that read the same
 /// variant still emitting the `_0` hop, which turned every tagged-enum payload assertion in a
 /// consumer's Ruby suite into a `KeyError` (recorded at
 /// `crate::e2e::field_access::types::FieldAccessIndex::variant_payload_tuple`). ~keep
 #[must_use]
-pub fn serde_flattens_newtype_payload(enum_def: &EnumDef, variant: &EnumVariant) -> bool {
-    variant.is_tuple && variant.fields.len() == 1 && matches!(serde_enum_repr(enum_def), SerdeEnumRepr::Internal { .. })
+pub fn serde_flattens_newtype_payload(enum_def: &EnumDef, variant: &EnumVariant, types: &[TypeDef]) -> bool {
+    if !matches!(serde_enum_repr(enum_def), SerdeEnumRepr::Internal { .. }) {
+        return false;
+    }
+    if !(variant.is_tuple && variant.fields.len() == 1) {
+        return false;
+    }
+    let TypeRef::Named(inner_name) = &variant.fields[0].ty else {
+        return false;
+    };
+    types.iter().any(|t| &t.name == inner_name)
 }
 
 #[cfg(test)]
 mod serde_flattens_newtype_payload_tests {
     use super::*;
-    use crate::core::ir::{FieldDef, TypeRef};
+    use crate::core::ir::FieldDef;
 
     fn enum_with(tag: Option<&str>, content: Option<&str>, untagged: bool, variant: EnumVariant) -> EnumDef {
         EnumDef {
@@ -232,19 +253,48 @@ mod serde_flattens_newtype_payload_tests {
         }
     }
 
-    /// One row: case name, tag, content, untagged, the variant, and whether serde flattens it.
-    type FlattenCase<'a> = (&'a str, Option<&'a str>, Option<&'a str>, bool, EnumVariant, bool);
+    /// The payload struct `variant`'s single field resolves to, so the resolution-aware
+    /// predicate can actually see a match. Every "flattened" row needs this in `types`; the
+    /// unresolvable row deliberately omits it. ~keep
+    fn excel_metadata_types() -> Vec<TypeDef> {
+        vec![TypeDef {
+            name: "ExcelMetadata".to_string(),
+            ..TypeDef::default()
+        }]
+    }
+
+    /// One row: case name, tag, content, untagged, the variant, the `types` list, and whether
+    /// serde flattens it.
+    type FlattenCase<'a> = (
+        &'a str,
+        Option<&'a str>,
+        Option<&'a str>,
+        bool,
+        EnumVariant,
+        Vec<TypeDef>,
+        bool,
+    );
 
     #[test]
-    fn should_flatten_only_an_internally_tagged_newtype_variant() {
-        let cases: [FlattenCase<'_>; 7] = [
+    fn should_flatten_only_an_internally_tagged_newtype_variant_whose_payload_resolves() {
+        let cases: [FlattenCase<'_>; 8] = [
             (
                 "internally tagged newtype is the flattened shape",
                 Some("format_type"),
                 None,
                 false,
                 variant(true, &["_0"]),
+                excel_metadata_types(),
                 true,
+            ),
+            (
+                "an internally tagged newtype whose payload type does not resolve is not flattened",
+                Some("format_type"),
+                None,
+                false,
+                variant(true, &["_0"]),
+                Vec::new(),
+                false,
             ),
             (
                 "adjacent tagging keeps the payload under the content key",
@@ -252,6 +302,7 @@ mod serde_flattens_newtype_payload_tests {
                 Some("payload"),
                 false,
                 variant(true, &["_0"]),
+                excel_metadata_types(),
                 false,
             ),
             (
@@ -260,6 +311,7 @@ mod serde_flattens_newtype_payload_tests {
                 None,
                 true,
                 variant(true, &["_0"]),
+                excel_metadata_types(),
                 false,
             ),
             (
@@ -268,6 +320,7 @@ mod serde_flattens_newtype_payload_tests {
                 None,
                 false,
                 variant(true, &["_0"]),
+                excel_metadata_types(),
                 false,
             ),
             (
@@ -276,6 +329,7 @@ mod serde_flattens_newtype_payload_tests {
                 None,
                 true,
                 variant(true, &["_0"]),
+                excel_metadata_types(),
                 false,
             ),
             (
@@ -284,6 +338,7 @@ mod serde_flattens_newtype_payload_tests {
                 None,
                 false,
                 variant(false, &["sheet_count"]),
+                excel_metadata_types(),
                 false,
             ),
             (
@@ -292,14 +347,15 @@ mod serde_flattens_newtype_payload_tests {
                 None,
                 false,
                 variant(true, &["_0", "_1"]),
+                excel_metadata_types(),
                 false,
             ),
         ];
 
-        for (case, tag, content, untagged, variant, expected) in cases {
+        for (case, tag, content, untagged, variant, types, expected) in cases {
             let enum_def = enum_with(tag, content, untagged, variant);
             assert_eq!(
-                serde_flattens_newtype_payload(&enum_def, &enum_def.variants[0]),
+                serde_flattens_newtype_payload(&enum_def, &enum_def.variants[0], &types),
                 expected,
                 "{case}"
             );

@@ -346,7 +346,7 @@ pub(super) fn gen_tagged_enum_binding_to_core(
 /// `gen_tagged_enum_core_to_binding`). Both shapes bind a local variable named exactly `f`, so
 /// this function is agnostic to which one produced it. Reused by both call sites so they can
 /// never diverge on how a given field type converts.
-fn core_to_binding_field_init(f: &str, field: &FieldDef, has_binding: bool, is_mixed: bool) -> String {
+fn core_to_binding_field_init(f: &str, field: &FieldDef, _has_binding: bool, is_mixed: bool) -> String {
     use crate::core::ir::TypeRef;
     let boxed_deref = if field.is_boxed { "*" } else { "" };
     if field.sanitized {
@@ -356,8 +356,14 @@ fn core_to_binding_field_init(f: &str, field: &FieldDef, has_binding: bool, is_m
         match &field.ty {
             TypeRef::Path => format!("{f}: {f}.map(|p| p.to_string_lossy().to_string())"),
             TypeRef::Named(_) if is_mixed => format!("{f}: {f}.and_then(|v| serde_json::to_string(&v).ok())"),
-            TypeRef::Named(_) if has_binding => format!("{f}: {f}.map(|v| (*v).into())"),
-            TypeRef::Named(_) => format!("{f}: {f}.map(|v| v.into())"),
+            // ~keep The deref must track whether the CORE field is `Option<Box<T>>`
+            // (`field.is_boxed`), not whether the field's type has a generated binding struct
+            // (`has_binding`): a plain `Option<T>` field whose type has a binding struct was
+            // getting `(*v).into()` and hitting E0614, since `v` was never a `Box<T>`.
+            TypeRef::Named(_) => {
+                let v = if field.is_boxed { "(*v)" } else { "v" };
+                format!("{f}: {f}.map(|v| {v}.into())")
+            }
             TypeRef::Vec(inner) if matches!(inner.as_ref(), TypeRef::Named(_)) => {
                 format!("{f}: {f}.map(|v| v.into_iter().map(Into::into).collect())")
             }

@@ -304,13 +304,18 @@ fn node_doc_request_arrays_lower_tagged_tuple_payloads_through_the_declared_inpu
         wasm_type_prefix: "",
         config: &Default::default(),
     });
-    // `Message` is internally tagged (`serde_tag = "role"`), so serde merges `UserMessage`'s
-    // own fields as siblings of the tag rather than nesting them under the variant name --
-    // which is exactly the shape this fixture's own input already uses. ~keep
-    assert!(
-        body.contains("{ role: \"user\", content: \"proof\" } as Message"),
-        "{body}"
-    );
+    // `Message` is internally tagged (`serde_tag = "role"`) with exactly one data-carrying
+    // variant, so once `UserMessage` resolves it meets `enums::is_fully_flattened_internal_enum`
+    // ("EVERY data-carrying variant flattens" -- true trivially for a single variant) and routes
+    // through the napi JSON-passthrough wrapper rather than a nominal struct (see
+    // `builders::tests::node_tagged_enum_variant_flattens_payload_onto_container_when_resolvable`).
+    // An array element of a passthrough-typed enum renders as a bare object literal with no `as`
+    // cast at all -- `node_value_expression`'s `is_json_passthrough_data_enum` branch returns
+    // `json_to_js(value)` unconditionally, and only `ts_builder_expression_inner`'s top-level
+    // entry point adds the `satisfies` cast this recursive per-element call never reaches. Key
+    // order is `serde_json::Map`'s default `BTreeMap` order (alphabetical), not fixture order. ~keep
+    assert!(body.contains("{ content: \"proof\", role: \"user\" }"), "{body}");
+    assert!(!body.contains("as Message"), "{body}");
     // Negative control: the pre-flatten nested form must not come back. ~keep
     assert!(!body.contains("user: { content:"), "{body}");
 }

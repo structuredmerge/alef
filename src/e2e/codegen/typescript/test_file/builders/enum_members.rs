@@ -29,11 +29,16 @@ use super::*;
 /// generator still emitted `WasmOutputFormat.Markdown`, so every generated snippet touching such
 /// an enum failed to compile with `TS2339: Property 'Markdown' does not exist on type 'typeof
 /// WasmOutputFormat'`. Delegating removes the second opinion instead of re-syncing it. ~keep
-pub(super) fn is_tagged_data_enum(type_name: &str, enums: &[EnumDef], wasm_type_prefix: &str) -> bool {
+pub(super) fn is_tagged_data_enum(
+    type_name: &str,
+    enums: &[EnumDef],
+    wasm_type_prefix: &str,
+    type_defs: &[TypeDef],
+) -> bool {
     let stripped = type_name.strip_prefix(wasm_type_prefix).unwrap_or(type_name);
     enums
         .iter()
-        .any(|e| e.name == stripped && crate::backends::wasm::gen_bindings::enums::is_tagged_data_enum(e))
+        .any(|e| e.name == stripped && crate::backends::wasm::gen_bindings::enums::is_tagged_data_enum(e, type_defs))
 }
 
 /// True when `enum_name` (already unprefixed IR name) is an enum the binding routes through raw
@@ -49,16 +54,16 @@ pub(super) fn is_tagged_data_enum(type_name: &str, enums: &[EnumDef], wasm_type_
 /// `OutputFormat.Markdown` is a type-used-as-value error rather than a missing member. Naming only
 /// the container-level predicate here is what let the fixture and snippet emitters keep emitting
 /// member references after the `.d.ts` emitter had already been fixed. ~keep
-fn is_node_untagged_data_enum(enum_name: &str, enums: &[EnumDef]) -> bool {
+fn is_node_untagged_data_enum(enum_name: &str, enums: &[EnumDef], type_defs: &[TypeDef]) -> bool {
     enums
         .iter()
-        .any(|e| e.name == enum_name && crate::backends::napi::is_json_passthrough_data_enum(e))
+        .any(|e| e.name == enum_name && crate::backends::napi::is_json_passthrough_data_enum(e, type_defs))
 }
 
-fn is_wasm_untagged_data_enum(enum_name: &str, enums: &[EnumDef]) -> bool {
-    enums
-        .iter()
-        .any(|e| e.name == enum_name && crate::backends::wasm::gen_bindings::enums::is_json_passthrough_data_enum(e))
+fn is_wasm_untagged_data_enum(enum_name: &str, enums: &[EnumDef], type_defs: &[TypeDef]) -> bool {
+    enums.iter().any(|e| {
+        e.name == enum_name && crate::backends::wasm::gen_bindings::enums::is_json_passthrough_data_enum(e, type_defs)
+    })
 }
 
 /// True when the WASM binding exposes `enum_name` as a raw serde value rather than as a C-style
@@ -71,9 +76,15 @@ fn is_wasm_untagged_data_enum(enum_name: &str, enums: &[EnumDef]) -> bool {
 /// An enum name this generator has no IR entry for (an `alef.toml` `enum_fields` override naming
 /// a type that never entered the IR) is reported `false`: there is no declaration to contradict,
 /// and reporting `true` would silently drop a member reference that used to be emitted. ~keep
-pub(super) fn wasm_enum_bridged_as_raw_value(enum_name: &str, enums: &[EnumDef], wasm_type_prefix: &str) -> bool {
+pub(super) fn wasm_enum_bridged_as_raw_value(
+    enum_name: &str,
+    enums: &[EnumDef],
+    wasm_type_prefix: &str,
+    type_defs: &[TypeDef],
+) -> bool {
     let stripped = enum_name.strip_prefix(wasm_type_prefix).unwrap_or(enum_name);
-    is_tagged_data_enum(enum_name, enums, wasm_type_prefix) || is_wasm_untagged_data_enum(stripped, enums)
+    is_tagged_data_enum(enum_name, enums, wasm_type_prefix, type_defs)
+        || is_wasm_untagged_data_enum(stripped, enums, type_defs)
 }
 
 /// The member identifier the binding declares for the variant a fixture named by its wire value,
@@ -121,10 +132,11 @@ pub(super) fn node_tagged_unit_variant_literal(
     enums: &[EnumDef],
     wire_value: &str,
     referenced_enums: &mut std::collections::BTreeSet<String>,
+    type_defs: &[TypeDef],
 ) -> Option<String> {
-    let enum_def = enums
-        .iter()
-        .find(|definition| definition.name == enum_name && crate::backends::napi::is_tagged_data_enum(definition))?;
+    let enum_def = enums.iter().find(|definition| {
+        definition.name == enum_name && crate::backends::napi::is_tagged_data_enum(definition, type_defs)
+    })?;
     let variant_name = crate::codegen::serde_enum_repr::variant_name_for_wire(enum_def, wire_value)?;
     let variant = enum_def
         .variants
@@ -147,11 +159,12 @@ pub(in crate::e2e::codegen::typescript::test_file) fn node_enum_string_literal(
     enums: &[EnumDef],
     wire_value: &str,
     referenced_enums: &mut std::collections::BTreeSet<String>,
+    type_defs: &[TypeDef],
 ) -> String {
-    if is_node_untagged_data_enum(enum_name, enums) {
+    if is_node_untagged_data_enum(enum_name, enums, type_defs) {
         return serde_json::to_string(wire_value).expect("enum payloads serialize as JSON strings");
     }
-    if let Some(literal) = node_tagged_unit_variant_literal(enum_name, enums, wire_value, referenced_enums) {
+    if let Some(literal) = node_tagged_unit_variant_literal(enum_name, enums, wire_value, referenced_enums, type_defs) {
         return literal;
     }
     let member = declared_enum_member_for_prefixed(enum_name, enums, "", wire_value);

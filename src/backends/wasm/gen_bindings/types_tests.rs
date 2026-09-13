@@ -155,6 +155,7 @@ fn gen_struct_methods_skips_method_wrapper_when_field_getter_already_emitted() {
         &ahash::AHashMap::default(),
         &no_untagged_ts_types(),
         &[],
+        &[],
     );
 
     let occurrences = out.matches("fn providers(").count();
