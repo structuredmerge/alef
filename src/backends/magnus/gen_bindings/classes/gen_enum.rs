@@ -95,11 +95,18 @@ pub fn gen_enum(
             let fields: Vec<minijinja::Value> = variant
                 .fields
                 .iter()
-                .map(|f| {
+                .enumerate()
+                .map(|(idx, f)| {
+                    let serde_rename = if flatten_newtype {
+                        None
+                    } else {
+                        positional_field_serde_rename(f, idx, &variant.name, variant.fields.len())
+                    };
                     minijinja::context! {
                         name => &f.name,
                         field_type => field_type_for_serde(f),
                         flatten_newtype => flatten_newtype,
+                        serde_rename => serde_rename,
                     }
                 })
                 .collect();
@@ -160,6 +167,68 @@ fn accepted_unit_variant_input_spellings(variant_name: &str, snake_name: &str, w
 fn emits_tuple_variant(enum_def: &EnumDef, variant: &crate::core::ir::EnumVariant) -> bool {
     // ~keep Delegates so the enum body emitter and the conversion match arms cannot drift.
     crate::codegen::conversions::helpers::variant_emits_tuple_form(enum_def, variant)
+}
+
+/// A `#[serde(rename = "...")]` for a variant field whose IR name is a synthesized positional
+/// name (`_0`, `_1`, ...), or `None` for a genuinely named field (left untouched).
+///
+/// This USED to be the only fix applied for the common consumer shape of externally-tagged unit
+/// variants plus a newtype `Custom(String)`, but
+/// renaming `_0` to `value` on a STRUCT-form field only hid the symptom: it still produced
+/// `{"custom": {"value": "foo"}}` against serde's real wire for that shape, `{"custom": "foo"}`
+/// (confirmed against a real consumer enum). The real fix landed in
+/// `codegen::conversions::helpers::variant_emits_tuple_form`
+/// (`src/codegen/conversions/helpers/eligibility.rs`), which now emits TUPLE form for
+/// externally-tagged newtype variants too (in addition to untagged and adjacently-tagged, which
+/// it already covered) -- matching serde's real wire directly, with no field name involved at
+/// all. That widening was proven single-consumer-safe before landing: the shared conversion arms
+/// in `codegen/conversions/enums.rs` that must stay in lockstep with whatever this predicate says
+/// are gated behind `ConversionConfig::binding_tuple_form_for_variants`
+/// (`src/codegen/conversions/config.rs`), which only Magnus's own declaration sets `true`
+/// (`magnus/gen_bindings/mod.rs`) -- so no other backend's declaration or conversion arms could
+/// be affected by the change.
+///
+/// With that landed, this function is UNREACHABLE for every externally-tagged, untagged, and
+/// adjacently-tagged newtype variant the extractor can produce -- [`emits_tuple_variant`] is
+/// `true` for all of those now, and the template only calls this function on the struct-form
+/// branch. It survives for exactly one residual shape: an INTERNALLY-tagged (`#[serde(tag =
+/// "...")]`, no `content`) newtype variant whose payload type IS `Named` and serde WOULD flatten
+/// onto the tag object at runtime, but the payload type definition isn't present in the `types`
+/// slice this call received. `serde_flattens_newtype_payload` (and this file's own
+/// `flatten_newtype`) silently falls back to `false` -- i.e. struct form -- when the payload type
+/// is out of reach, and internally-tagged enums are the one representation
+/// `variant_emits_tuple_form` deliberately keeps in struct form even when `is_tuple` is true (a
+/// flattening newtype payload has no positional slot for tuple form to fill). In that residual
+/// case the Rust field is still literally `_0`/`_1`/... in struct form, so it still needs a
+/// semantic rename. Renames ONLY the field's serde wire name -- the Rust identifier itself stays
+/// `_0`/`_1`/... unchanged, since `codegen::conversions::helpers::enum_arms` (shared by every
+/// backend, not just Magnus) pattern-matches and struct-literals on that identifier verbatim;
+/// renaming the identifier here without also touching that shared file is a hard compile error
+/// (`E0559`/`E0026`). ~keep
+fn positional_field_serde_rename(
+    field: &FieldDef,
+    field_idx: usize,
+    variant_name: &str,
+    total_fields: usize,
+) -> Option<String> {
+    let stripped = field.name.strip_prefix('_')?;
+    if stripped.is_empty() || !stripped.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+
+    if total_fields == 1 {
+        if let TypeRef::Named(type_name) = &field.ty
+            && let Some(remainder) = type_name.strip_prefix(variant_name)
+        {
+            let derived = crate::codegen::naming::pascal_to_snake(remainder);
+            if !derived.is_empty() {
+                return Some(derived);
+            }
+        }
+        return Some("value".to_string());
+    }
+
+    Some(format!("value{field_idx}"))
 }
 
 /// Map a field type to a Rust type suitable for serde deserialization in data enums.

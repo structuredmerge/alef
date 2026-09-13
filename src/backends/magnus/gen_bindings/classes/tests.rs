@@ -385,6 +385,103 @@ fn adjacent_tuple_default_uses_tuple_constructor_syntax() {
     syn::parse_file(&code).unwrap_or_else(|error| panic!("generated Rust must parse: {error}\n{code}"));
 }
 
+/// `EntityCategory`/`OutputFormat`/`PiiCategory` (real xberg consumer enums) are
+/// externally-tagged (`#[serde(rename_all = "snake_case")]`, no `tag`/`content`, not
+/// `#[serde(untagged)]`) unit variants plus one newtype `Custom(String)` variant. A tuple
+/// variant is modeled in the IR with BOTH `is_tuple: true` AND fields named `_0`, `_1`, ... --
+/// set together by the extractor -- so this fixture sets both, matching an IR state the
+/// extractor can actually produce (a fixture setting only the field name would model a
+/// named-fields variant whose field happens to be called `_0`, a shape serde never emits).
+///
+/// Regression: this used to emit STRUCT form for the newtype variant (`Custom { _0: String }`),
+/// so `serde_json::to_value` produced `{"custom": {"_0": "foo"}}` -- an extra level of nesting
+/// versus core's own wire `{"custom": "foo"}` (confirmed against
+/// `crates/xberg/src/types/entity.rs`'s `EntityCategory::Custom(String)` in the consumer repo),
+/// with `_0` as the most visible symptom. `variant_emits_tuple_form`
+/// (`codegen/conversions/helpers/eligibility.rs`) now emits TUPLE form for externally-tagged
+/// newtype variants too, matching core's wire exactly with no field name on the wire at all.
+#[test]
+fn gen_enum_emits_tuple_form_matching_core_wire_for_externally_tagged_newtype_variant() {
+    let mut enum_def = make_data_enum("EntityCategory", None);
+    enum_def.variants[1].name = "Custom".to_string();
+    enum_def.variants[1].is_tuple = true;
+    enum_def.variants[1].fields[0].name = "_0".to_string();
+
+    let code = gen_enum(&enum_def, "test_lib", None, &[]);
+
+    assert!(
+        code.contains("Custom(String)"),
+        "a single-field newtype variant under default (externally-tagged) serde representation \
+         must emit tuple form, matching core's own `Custom(String)` declaration and its \
+         `{{\"custom\": \"foo\"}}` wire -- struct form would add a nesting level core's wire \
+         does not have:\n{code}"
+    );
+    assert!(
+        !code.contains("_0"),
+        "tuple form carries no field name at all, so the synthesized positional name `_0` must \
+         not reach the generated code in any form:\n{code}"
+    );
+    syn::parse_file(&code).unwrap_or_else(|error| panic!("generated Rust must parse: {error}\n{code}"));
+}
+
+/// The one shape `positional_field_serde_rename` still guards after the predicate widening
+/// above: an INTERNALLY-tagged (`tag` set, no `content`) newtype variant whose payload type is
+/// `Named` and serde would flatten at runtime, but whose type definition is not present in the
+/// `types` slice `gen_enum` received (passing `&[]` here, as if the payload type's `TypeDef`
+/// were simply unreachable from this call site). `serde_flattens_newtype_payload` then falls
+/// back to `false`, so this generator keeps struct form -- correctly, since internally-tagged
+/// newtype variants have no positional slot for tuple form to fill -- and the field still needs
+/// a semantic rename rather than the bare synthesized `_0`. Mirrors
+/// `backends::kotlin::gen_bindings::shared::kotlin_field_name_with_type`'s type-derived naming.
+#[test]
+fn gen_enum_renames_positional_field_for_internally_tagged_variant_with_unreachable_payload_type() {
+    let mut enum_def = make_data_enum("DocumentSource", Some("type"));
+    enum_def.variants[1].name = "Pdf".to_string();
+    enum_def.variants[1].is_tuple = true;
+    enum_def.variants[1].fields[0] = make_field("_0", TypeRef::Named("PdfMetadata".to_string()), false);
+
+    let code = gen_enum(&enum_def, "test_lib", None, &[]);
+
+    assert!(
+        code.contains("Pdf { "),
+        "internally-tagged must stay struct form even though the variant is a tuple in the IR:\n{code}"
+    );
+    assert!(
+        code.contains(r#"#[serde(rename = "metadata")] _0: PdfMetadata"#),
+        "a `Pdf(PdfMetadata)` payload should derive `metadata`, not the generic `value`:\n{code}"
+    );
+    syn::parse_file(&code).unwrap_or_else(|error| panic!("generated Rust must parse: {error}\n{code}"));
+}
+
+/// A multi-field tuple variant (`_0`, `_1`, ...) under externally-tagged representation now also
+/// gets tuple form from the widened predicate, so neither field name reaches the wire at all --
+/// the fix for the historical `_1`-never-renamed gap (`tagged_enums.rs` matched only the literal
+/// `"_0"`, never `"_1"`) is that tuple form carries no field names to begin with.
+#[test]
+fn gen_enum_emits_tuple_form_for_multi_field_externally_tagged_variant() {
+    let mut enum_def = make_data_enum("Pair", None);
+    enum_def.variants[1].name = "Range".to_string();
+    enum_def.variants[1].is_tuple = true;
+    enum_def.variants[1].fields = vec![
+        make_field("_0", TypeRef::Primitive(crate::core::ir::PrimitiveType::U32), false),
+        make_field("_1", TypeRef::Primitive(crate::core::ir::PrimitiveType::U32), false),
+    ];
+
+    let code = gen_enum(&enum_def, "test_lib", None, &[]);
+
+    assert!(
+        code.contains("Range(u32, u32)"),
+        "a multi-field tuple variant under externally-tagged representation must emit tuple \
+         form:\n{code}"
+    );
+    assert!(
+        !code.contains("_0") && !code.contains("_1"),
+        "tuple form carries no field names, so neither synthesized positional name may reach \
+         the generated code:\n{code}"
+    );
+    syn::parse_file(&code).unwrap_or_else(|error| panic!("generated Rust must parse: {error}\n{code}"));
+}
+
 #[test]
 fn gen_struct_emits_magnus_wrap_attribute() {
     let typ = make_typedef("Config", vec![make_field("value", TypeRef::String, false)]);

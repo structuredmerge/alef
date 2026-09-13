@@ -2327,7 +2327,7 @@ fn test_tuple_variant_vec_primitive_stays_as_vec() {
     let content = &lib.content;
 
     assert!(
-        content.contains("_0: Vec<u8>"),
+        content.contains("Data(Vec<u8>)"),
         "Vec<u8> tuple variant field must stay as Vec<u8>, got:\n{content}"
     );
     assert!(
@@ -2400,7 +2400,7 @@ fn test_tuple_variant_bytes_stays_as_vec() {
     let content = &lib.content;
 
     assert!(
-        content.contains("_0: Vec<u8>"),
+        content.contains("Binary(Vec<u8>)"),
         "TypeRef::Bytes tuple variant field must stay as Vec<u8>, got:\n{content}"
     );
     assert!(
@@ -2714,7 +2714,7 @@ fn test_tuple_variant_vec_named_stays_as_vec_and_uses_into() {
     let content = &lib.content;
 
     assert!(
-        content.contains("_0: Vec<Bar>"),
+        content.contains("Multi(Vec<Bar>)"),
         "Vec<Named> tuple variant field must stay as Vec<Bar>, got:\n{content}"
     );
     assert!(

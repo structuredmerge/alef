@@ -341,15 +341,38 @@ pub fn is_tuple_variant(fields: &[FieldDef]) -> bool {
 /// Returns true if serde represents `variant` in tuple form `Variant(T)` rather than
 /// struct form `Variant { _0: T }`.
 ///
-/// Serde uses tuple form for BOTH untagged enums and adjacently-tagged ones (`tag` +
-/// `content`). A backend whose enum body emitter follows serde here must use this same
-/// predicate for its conversion match arms, or the definition and the `From` impls
-/// disagree in shape and rustc rejects them with E0559 / E0769.
+/// Covers all four serde enum representations explicitly, one arm each, rather than
+/// letting a case fall out by accident:
+/// - **Untagged** (`#[serde(untagged)]`): tuple form -- `Variant(T)` serializes as the bare
+///   value of `T`.
+/// - **Adjacently tagged** (`tag` + `content`): tuple form -- `{"<tag>": "Variant", "<content>":
+///   T}`.
+/// - **Internally tagged** (`tag`, no `content`): struct form, and ONLY struct form -- a
+///   newtype payload here must flatten its own fields onto the tag object at the top level
+///   (`serde` requires the payload be a map), so there is no positional slot to fill; tuple
+///   form would be a different kind of wrong (the payload has no shape to hold it).
+/// - **Externally tagged** (the default: no `tag`, no `content`, not untagged): tuple form --
+///   `Variant(T)` serializes as `{"Variant": T}`, the payload directly under the tag key, with
+///   no extra nesting. (Confirmed against a real consumer enum of this shape, whose actual wire
+///   is `{"custom": "foo"}`, not `{"custom": {"_0": "foo"}}` -- the
+///   struct-form shape this predicate used to imply for this exact case.)
+///
+/// A backend whose enum body emitter follows serde here must use this same predicate for its
+/// conversion match arms, or the definition and the `From` impls disagree in shape and rustc
+/// rejects them with E0559 / E0769.
 ///
 /// Project-agnostic on purpose: the emitter and the conversion layer must not each
 /// carry their own copy of this rule. ~keep
 pub fn variant_emits_tuple_form(enum_def: &EnumDef, variant: &EnumVariant) -> bool {
-    variant.is_tuple && (enum_def.serde_untagged || enum_def.serde_content.is_some())
+    if !variant.is_tuple {
+        return false;
+    }
+    if enum_def.serde_untagged || enum_def.serde_content.is_some() {
+        return true;
+    }
+    // Internally tagged (`tag` set, no `content`) is the one representation that must stay
+    // struct form: a newtype payload flattens onto the tag object, so no positional slot exists.
+    enum_def.serde_tag.is_none()
 }
 
 /// Returns true if a TypeDef represents a newtype struct (single unnamed field `_0`).
@@ -366,4 +389,93 @@ pub(crate) fn is_tuple_type_name(name: &str) -> bool {
 /// Check if a type has any sanitized fields (binding→core conversion is lossy).
 pub fn has_sanitized_fields(typ: &TypeDef) -> bool {
     binding_fields(&typ.fields).any(|f| f.sanitized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tuple_variant() -> EnumVariant {
+        EnumVariant {
+            name: "Custom".to_string(),
+            is_tuple: true,
+            fields: vec![FieldDef {
+                name: "_0".to_string(),
+                ty: TypeRef::String,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Untagged (`#[serde(untagged)]`): tuple form -- the payload serializes as the bare value.
+    #[test]
+    fn untagged_enum_newtype_variant_emits_tuple_form() {
+        let enum_def = EnumDef {
+            serde_untagged: true,
+            ..Default::default()
+        };
+        assert!(variant_emits_tuple_form(&enum_def, &tuple_variant()));
+    }
+
+    /// Adjacently tagged (`tag` + `content`): tuple form -- `{"<tag>": "Custom", "<content>": T}`.
+    #[test]
+    fn adjacently_tagged_enum_newtype_variant_emits_tuple_form() {
+        let enum_def = EnumDef {
+            serde_tag: Some("type".to_string()),
+            serde_content: Some("value".to_string()),
+            ..Default::default()
+        };
+        assert!(variant_emits_tuple_form(&enum_def, &tuple_variant()));
+    }
+
+    /// Internally tagged (`tag`, no `content`): the ONE representation that must stay struct
+    /// form -- a newtype payload flattens its own fields onto the tag object, so there is no
+    /// positional slot for tuple form to fill. This is the negative case a careless widening of
+    /// the predicate breaks: before this test existed, the predicate covered exactly untagged
+    /// and adjacently-tagged, and simply adding "also true when `serde_tag.is_none()`" without
+    /// this case pinned would have been indistinguishable, on the type signature alone, from
+    /// "also true whenever `serde_tag` is anything" -- which would wrongly flip this case too.
+    #[test]
+    fn internally_tagged_enum_newtype_variant_does_not_emit_tuple_form() {
+        let enum_def = EnumDef {
+            serde_tag: Some("type".to_string()),
+            ..Default::default()
+        };
+        assert!(!variant_emits_tuple_form(&enum_def, &tuple_variant()));
+    }
+
+    /// Externally tagged (the serde default: no `tag`, no `content`, not untagged): tuple form
+    /// -- `Custom(String)` serializes as `{"custom": "foo"}`, the payload directly under the tag
+    /// key with no extra nesting. This is the representation the predicate used to omit
+    /// entirely (returning struct form, i.e. `{"custom": {"_0": "foo"}}` once a backend rendered
+    /// it), which was the root cause behind Magnus's Ruby bindings exposing the synthesized
+    /// positional field name `_0` on the wire for `EntityCategory::Custom(String)` and similar
+    /// real xberg core enums.
+    #[test]
+    fn externally_tagged_enum_newtype_variant_emits_tuple_form() {
+        let enum_def = EnumDef::default();
+        assert!(variant_emits_tuple_form(&enum_def, &tuple_variant()));
+    }
+
+    /// A unit variant (no fields, `is_tuple: false`) must never emit tuple form under any
+    /// representation -- guards against a fixture mistake in the four cases above ever
+    /// silently passing because `is_tuple` was left `false`.
+    #[test]
+    fn unit_variant_never_emits_tuple_form() {
+        let unit_variant = EnumVariant::default();
+        for enum_def in [
+            EnumDef::default(),
+            EnumDef {
+                serde_untagged: true,
+                ..Default::default()
+            },
+            EnumDef {
+                serde_tag: Some("type".to_string()),
+                ..Default::default()
+            },
+        ] {
+            assert!(!variant_emits_tuple_form(&enum_def, &unit_variant));
+        }
+    }
 }
