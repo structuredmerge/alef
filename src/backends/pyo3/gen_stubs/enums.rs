@@ -159,8 +159,18 @@ fn gen_data_enum_typeddicts(
 
         // A flattened newtype variant carries the PAYLOAD's fields beside the tag and no key of
         // its own, so declaring the synthetic `_0` advertised a key no payload ever has. ~keep
-        let flattened_fields = crate::codegen::serde_enum_repr::serde_flattens_newtype_payload(enum_def, variant)
-            .then(|| flattened_payload_fields(variant, api_types).unwrap_or_default());
+        // Deliberately NOT the resolution-aware `serde_flattens_newtype_payload`: serde flattens
+        // on the payload's own `Serialize` impl, so an internally tagged newtype variant is
+        // flattened at runtime whether or not `api_types` can resolve it. A stub only describes
+        // shape, so the unresolvable case must still take the flattened arm (tag alone) instead
+        // of falling through to the verbatim arm and advertising `_0` as a real key. ~keep
+        let is_internal_newtype_payload =
+            matches!(repr, crate::codegen::serde_enum_repr::SerdeEnumRepr::Internal { .. })
+                && variant.is_tuple
+                && variant.fields.len() == 1
+                && matches!(variant.fields[0].ty, TypeRef::Named(_));
+        let flattened_fields =
+            is_internal_newtype_payload.then(|| flattened_payload_fields(variant, api_types).unwrap_or_default());
 
         match (repr.content(), payload_type_name, flattened_fields) {
             (Some(content_field), Some(payload_type), _) => {
