@@ -115,8 +115,16 @@ pub(crate) fn api_needs_json_value_type(api: &ApiSurface, known_dto_names: &Hash
 /// `struct Foo { var next: Foo? }` outright, and this function must not paper over that. Only the
 /// fixed-point loop in `compute_first_class_dto_names` calls this, to bootstrap a type's own
 /// eligibility past the "referenced name must already be known" rule that would otherwise make
-/// self-reference permanently unresolvable. ~keep
-fn is_self_reference_through_indirection(ty: &TypeRef, self_name: &str) -> bool {
+/// self-reference permanently unresolvable.
+///
+/// `pub(crate)`, not private: the e2e Swift generator's own fixed point
+/// (`e2e::codegen::swift::values::build_swift_first_class_map`) must apply the identical
+/// bootstrap, or a self-referential DTO (`struct Node { children: Vec<Node> }`) is classified
+/// first-class by the binding emitter and opaque by the e2e generator for the exact same IR —
+/// the binding emits `public let children: [Node]` while generated e2e assertions still walk it
+/// with `.children()` method-call syntax. See
+/// `e2e::codegen::swift::self_referential_first_class_tests` for the regression this closes. ~keep
+pub(crate) fn is_self_reference_through_indirection(ty: &TypeRef, self_name: &str) -> bool {
     match ty {
         TypeRef::Vec(inner) => {
             matches!(inner.as_ref(), TypeRef::Named(n) if n == self_name)

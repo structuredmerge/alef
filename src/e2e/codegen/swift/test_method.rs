@@ -122,7 +122,7 @@ pub(super) fn render_test_method(
     // `with_ir_fields`'s bare-name-only optional set once the path crosses more than one
     // segment, so without an anchored root the per-segment accessor renderer emitted an
     // un-unwrapped `RustString`/collection access.
-    .with_ir_result_fields(FieldResolver::ir_result_field_facts(type_defs, lang), call_root_type)
+    .with_ir_result_fields(FieldResolver::ir_result_field_facts(type_defs, lang), call_root_type.clone())
     .with_ir_fields(ir_reachable_fields, ir_known_excluded_fields, ir_optional_fields)
     // `with_ir_fields` only proves a bare field name optional, with no path context; anchors
     // this fixture's assertion paths via the IR's real per-type walk instead, matching
@@ -446,18 +446,34 @@ pub(super) fn render_test_method(
     // Each fixture's call returns a different IR type. Override the resolver's
     // Swift first-class-map `root_type` with the call's `result_type` (looked up
     // across c/csharp/java/kotlin/go/php overrides — these are language-agnostic
-    // IR type names that any backend can use to anchor field-access dispatch).
-    let fixture_root_type: Option<String> = swift_call_result_type(call_config);
+    // IR type names that any backend can use to anchor field-access dispatch),
+    // falling back to `call_root_type` -- the same IR-derived answer
+    // `call_ir::resolve_declared_result_type` already gave `with_ir_enum_map`/
+    // `with_ir_collection_map`/`with_ir_result_fields` above -- when no override
+    // supplies one.
+    //
+    // ~keep Without the fallback, a fixture whose language overrides never set an
+    // explicit `result_type` left the Swift root permanently unresolved, so
+    // `swift_is_first_class(None)` always answered `false` regardless of what
+    // `build_swift_first_class_map`'s own fixed point had decided about the call's
+    // real return type. That was invisible as long as the return type stayed opaque
+    // (opaque is also the "unknown root" default), and became a real compile break
+    // the moment the return type was promoted into the first-class set: the binding
+    // started emitting a stored property while this resolver kept emitting a
+    // method-call accessor against it, because it never learned the promotion.
+    let fixture_root_type: Option<String> = swift_call_result_type(call_config).or_else(|| call_root_type.clone());
     let fixture_resolver = field_resolver.with_swift_root_type(fixture_root_type);
     // ~keep The anchor the EXCLUSION walk uses, kept separate from the resolver's.
     // `with_swift_root_type` assigns unconditionally, so a fixture with no explicit `result_type`
-    // override leaves `fixture_resolver` with no Swift root at all -- and
-    // `is_assertion_field_swift_excluded` then cannot reach a single segment, falling through to
-    // the type-blind name fallback for every path. Recovering `build_swift_first_class_map`'s own
-    // `result_fields` answer here rather than on the resolver is deliberate: the resolver's root
+    // override and no IR-resolvable `call_root_type` leaves `fixture_resolver` with no Swift root
+    // at all -- and `is_assertion_field_swift_excluded` then cannot reach a single segment, falling
+    // through to the type-blind name fallback for every path. Recovering `build_swift_first_class_map`'s
+    // own `result_fields` answer here rather than on the resolver is deliberate: the resolver's root
     // also decides first-class-property versus getter-call rendering, so widening it there
     // rewrites accessors for every fixture that omits the override.
-    let exclusion_root_type = swift_call_result_type(call_config).or_else(|| swift_first_class_map.root_type.clone());
+    let exclusion_root_type = swift_call_result_type(call_config)
+        .or_else(|| call_root_type.clone())
+        .or_else(|| swift_first_class_map.root_type.clone());
 
     // Build per-type exclusion maps from the Swift language config so that
     // assertions referencing fields or types excluded from the Swift binding

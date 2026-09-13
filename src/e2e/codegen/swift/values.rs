@@ -250,11 +250,10 @@ pub(super) fn build_swift_first_class_map(
             if known_dto_names.contains(&td.name) {
                 continue;
             }
-            let all_supported = td
-                .fields
-                .iter()
-                .filter(|f| !f.binding_excluded)
-                .all(|f| swift_first_class_field_supported(&f.ty, &known_dto_names));
+            let all_supported = td.fields.iter().filter(|f| !f.binding_excluded).all(|f| {
+                swift_first_class_field_supported(&f.ty, &known_dto_names)
+                    || crate::backends::swift::gen_bindings::dto::is_self_reference_through_indirection(&f.ty, &td.name)
+            });
             if all_supported {
                 known_dto_names.insert(td.name.clone());
             }

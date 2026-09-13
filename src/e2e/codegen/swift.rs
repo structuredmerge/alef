@@ -279,9 +279,13 @@ pub use stubs::emit_test_backend;
 #[cfg(test)]
 mod assertion_wildcard_element_tests;
 #[cfg(test)]
+mod cascading_self_reference_promotion_tests;
+#[cfg(test)]
 mod collection_field_classification_tests;
 #[cfg(test)]
 mod enum_field_classification_tests;
+#[cfg(test)]
+mod first_class_classifier_parity_tests;
 #[cfg(test)]
 mod is_empty_optional_array_tests;
 #[cfg(test)]
@@ -293,15 +297,20 @@ mod json_bridged_traversal_tests;
 #[cfg(test)]
 mod materialise_vec_optional_tests;
 #[cfg(test)]
+mod mixed_first_class_and_opaque_root_tests;
+#[cfg(test)]
 mod non_void_not_error_only_tests;
 #[cfg(test)]
 mod optional_display_tests;
 #[cfg(test)]
 mod optional_parent_collection_tests;
 #[cfg(test)]
+mod promoted_result_type_root_tests;
+#[cfg(test)]
+mod runtime_compile_contract_tests;
+#[cfg(test)]
+mod self_referential_first_class_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod void_not_error_call_tests;
-
-#[cfg(test)]
-mod runtime_compile_contract_tests;
