@@ -65,7 +65,10 @@ impl<'a> JsonWireTypes<'a> {
     /// emitted name (including the shared absent-predicate helper) so napi- and wasm-generated
     /// wire types can never collide if both are ever generated into one crate.
     pub fn new(api: &'a ApiSurface, prefix: &str) -> Self {
-        let absent_fn_name = format!("__alef_wire_absent_{prefix}");
+        // ~keep The backend prefix is a TYPE-name prefix ("Js", "Wasm"), so interpolating it raw
+        // produced `__alef_wire_absent_Js`, which `clippy -D warnings` rejects as non_snake_case in
+        // the crate we emit. Snake-case it: these are function names, not type names.
+        let absent_fn_name = format!("__alef_wire_absent_{}", crate::codegen::naming::pascal_to_snake(prefix));
         let mut decls = BTreeMap::new();
         // ~keep The declared TypeScript surface these enums bridge to has no `null` state for
         // an optional field (`readonly sheetCount?: number;` -- absent or present, never null),
@@ -86,7 +89,7 @@ impl<'a> JsonWireTypes<'a> {
         // renamed once, at the top level only, on the way out. Top level only is the point: a
         // blind recursive rename would also rewrite genuine data keys (a `BTreeMap<String, _>`
         // whose keys are document-supplied), which is exactly the corruption this avoids.
-        let retag_fn_name = format!("__alef_wire_retag_{prefix}");
+        let retag_fn_name = format!("__alef_wire_retag_{}", crate::codegen::naming::pascal_to_snake(prefix));
         let retag_src = [
             format!("fn {retag_fn_name}(mut value: serde_json::Value, from: &str, to: &str) -> serde_json::Value {{"),
             "    if from != to {".to_string(),

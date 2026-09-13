@@ -127,11 +127,11 @@ fn recased_enum_field_conversion_and_declaration_move_together() {
 
     // --- Runtime half: the emitted `From` impl for `DocumentResult` must route `format` through
     // the camel wire-type pipeline, not a bare `serde_wasm_bindgen::to_value`/`from_value` on the
-    // raw core enum. `__alef_wire_retag_Wasm` only appears when the pipeline is actually used --
+    // raw core enum. `__alef_wire_retag_wasm` only appears when the pipeline is actually used --
     // see `codegen::conversions::core_to_binding::fields::camel_jsvalue` /
     // `codegen::conversions::binding_to_core::fields::camel_core_value`.
     assert!(
-        source.contains("serde_wasm_bindgen::to_value(&__alef_wire_retag_Wasm(serde_json::to_value(&val.format)"),
+        source.contains("serde_wasm_bindgen::to_value(&__alef_wire_retag_wasm(serde_json::to_value(&val.format)"),
         "core->binding conversion for `format` must route through the retag+wire-type pipeline, \
          not a bare serde_wasm_bindgen::to_value on the raw core enum; actual source:\n{source}"
     );

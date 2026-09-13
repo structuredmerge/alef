@@ -89,7 +89,7 @@ fn should_emit_no_alias_for_a_single_word_field() {
         "#[derive(Default, serde::Serialize, serde::Deserialize)]\n\
          #[serde(rename_all = \"camelCase\")]\n\
          pub struct __AlefWireOutJsPdfMetadata {\n    \
-         #[serde(default, skip_serializing_if = \"__alef_wire_absent_Js\")]\n    \
+         #[serde(default, skip_serializing_if = \"__alef_wire_absent_js\")]\n    \
          pub producer: Option<Option<serde_json::Value>>,\n}"
     );
     assert!(!decl.contains("alias ="), "{decl}");
@@ -326,14 +326,14 @@ fn should_route_every_non_flattened_field_through_the_shared_absent_predicate() 
     wire.register_struct(type_ref, Family::Out);
 
     let decls = wire.declarations();
-    let helper = decl_for(&decls, "fn __alef_wire_absent_Js");
+    let helper = decl_for(&decls, "fn __alef_wire_absent_js");
     assert_eq!(
         helper,
-        "fn __alef_wire_absent_Js<T>(value: &Option<Option<T>>) -> bool {\n    matches!(value, None | Some(None))\n}"
+        "fn __alef_wire_absent_js<T>(value: &Option<Option<T>>) -> bool {\n    matches!(value, None | Some(None))\n}"
     );
     let field_decl = decl_for(&decls, "pub struct __AlefWireOutJsPdfMetadata");
     assert!(
-        field_decl.contains("skip_serializing_if = \"__alef_wire_absent_Js\""),
+        field_decl.contains("skip_serializing_if = \"__alef_wire_absent_js\""),
         "{field_decl}"
     );
     // `matches!(value, None | Some(None))` is true for BOTH the absent (`None`) and the
