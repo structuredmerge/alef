@@ -186,8 +186,27 @@ fn gen_data_enum_typeddicts(
                 }
             }
             (None, _, None) => {
-                for field in &variant.fields {
-                    lines.push(typed_dict_field_line(field));
+                // A single positional field is the variant's whole payload with no wire key of
+                // its own: external tagging keys it on the variant name itself and untagged
+                // serde writes it bare, so serde never puts a `_0` key on the wire in either
+                // case. The class already exposes the value through a real runtime accessor --
+                // the typed property (`gen_data_enum_variant_accessor_stubs`) for a `Named`
+                // payload, or the untyped dict-shaped `#[getter]` otherwise -- so declaring `_0`
+                // here described a key the constructor never accepts and nothing in this file
+                // referenced. A multi-field tuple variant's shape is unaffected. ~keep
+                // Matches the exact tuple-field-name test `variant_accessor`
+                // (`codegen::generators::enums`) uses to recognize a synthesized positional
+                // field, rather than trusting `variant.is_tuple` alone -- a genuine multi-field
+                // tuple variant keeps every field the loop below still reaches.
+                let is_single_tuple_field = variant.fields.len() == 1
+                    && variant.fields[0]
+                        .name
+                        .strip_prefix('_')
+                        .is_some_and(|suffix| suffix.chars().all(|c| c.is_ascii_digit()));
+                if !is_single_tuple_field {
+                    for field in &variant.fields {
+                        lines.push(typed_dict_field_line(field));
+                    }
                 }
             }
         }
@@ -196,7 +215,13 @@ fn gen_data_enum_typeddicts(
     }
 
     lines.push(format!("class {}:", enum_def.name));
-    lines.push(format!("    {}: str", tag_field));
+    // `write_pyo3_serde_tag_getter` (`codegen::generators::enums`) only emits a `type`-style
+    // getter when the enum has an explicit `#[serde(tag = "...")]` -- true for Internal and
+    // Adjacent representations, both of which set `EnumDef::serde_tag`. External and Untagged
+    // enums never set it, so the wrapper pyclass exposes no such attribute for them at all. ~keep
+    if enum_def.serde_tag.is_some() {
+        lines.push(format!("    {}: str", tag_field));
+    }
     gen_data_enum_variant_accessor_stubs(lines, enum_def);
     gen_data_enum_variant_constructor_stubs(lines, enum_def, coercible_dtos, is_host_enum);
     // The runtime wrapper exposes a `#[new]` accepting a tag string, a `{"type": ...}` dict, or

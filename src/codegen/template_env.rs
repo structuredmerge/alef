@@ -418,6 +418,10 @@ static TEMPLATES: &[(&str, &str)] = &[
         include_str!("templates/generators/enums/match_variant.jinja"),
     ),
     (
+        "generators/enums/untagged_variant_match.jinja",
+        include_str!("templates/generators/enums/untagged_variant_match.jinja"),
+    ),
+    (
         "generators/enums/py_dict_getter.jinja",
         include_str!("templates/generators/enums/py_dict_getter.jinja"),
     ),

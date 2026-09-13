@@ -88,6 +88,50 @@ fn gen_pyo3_data_enum_emits_string_methods() {
     );
 }
 
+/// A single-field tuple variant carrying its own `#[serde(untagged)]` (e.g.
+/// `OutputFormat::Custom(String)`, `crates/xberg/src/core/config/formats.rs`) serializes as its
+/// bare field value, with no discriminant on the wire at all. The generic getter parses a tag out
+/// of the whole enum's JSON and so can never find it -- this variant must instead be matched
+/// directly on `&self.inner`, the same way the typed `Named`-payload accessor is.
+#[test]
+fn untagged_variant_getter_matches_the_rust_variant_instead_of_a_json_tag() {
+    let mut custom = variant("Custom", vec![field("_0")]);
+    custom.is_tuple = true;
+    custom.serde_untagged = true;
+    let generated = gen_pyo3_data_enum(&enum_def("OutputFormat", vec![custom]), "core");
+
+    assert!(
+        generated.contains("crate::OutputFormat::Custom(data) => {"),
+        "must match the variant directly rather than reading a tag out of the JSON: {generated}"
+    );
+    assert!(
+        generated.contains("serde_json::to_value(data)"),
+        "must serialize only the matched field, not the whole enum: {generated}"
+    );
+    assert!(
+        !generated.contains("\"custom\""),
+        "an untagged variant has no wire tag to look up: {generated}"
+    );
+}
+
+/// The untagged accessor drops a foreign-cfg-gated variant's match arm the same way the typed
+/// accessor does, falling back to the `_ => Ok(None)` catch-all rather than referencing
+/// `core_path::Variant` under a `#[cfg(...)]` this crate cannot declare as a Cargo feature.
+#[test]
+fn untagged_variant_getter_drops_foreign_cfg_gated_arm() {
+    let mut custom = variant("Custom", vec![field("_0")]);
+    custom.is_tuple = true;
+    custom.serde_untagged = true;
+    custom.cfg = Some(r#"feature = "extra""#.to_string());
+    let generated = gen_pyo3_data_enum(&enum_def("OutputFormat", vec![custom]), "core");
+
+    assert!(
+        !generated.contains("crate::OutputFormat::Custom(data)"),
+        "a foreign cfg this crate cannot declare must drop the match arm entirely: {generated}"
+    );
+    assert!(generated.contains("_ => Ok(None),"), "{generated}");
+}
+
 #[test]
 fn gen_pyo3_data_enum_emits_default_when_core_derives_default() {
     // `#[default]` (`is_default = true`). The wrapper must keep its delegating `Default`.

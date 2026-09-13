@@ -713,6 +713,19 @@ pub(crate) fn write_pyo3_variant_accessors(out: &mut String, enum_def: &EnumDef,
             continue;
         }
 
+        // A single-field tuple variant marked `#[serde(untagged)]` on itself (not the whole
+        // enum) serializes as its bare field value with no discriminant anywhere -- not the
+        // `{"<tag>": payload}` / `{"<tag>": <variant>, ...}` shape the JSON-tag-match getter
+        // below assumes for every variant of the enum. That mismatch is why
+        // `OutputFormat::Custom(String)` always returned `None`: the getter looked for a
+        // `"custom"` key that serde never writes. Matching directly on `&self.inner`, like the
+        // typed `variant_accessor` path above, needs no tag at all and works for any field type,
+        // not only a `TypeRef::Named` payload. ~keep
+        if variant.serde_untagged && variant.fields.len() == 1 {
+            write_pyo3_untagged_variant_accessor(out, enum_def, variant, core_path, is_host_enum, &fn_name);
+            continue;
+        }
+
         out.push('\n');
         out.push_str("    #[getter]\n");
         out.push_str(&crate::codegen::template_env::render(
@@ -766,6 +779,59 @@ pub(crate) fn write_pyo3_variant_accessors(out: &mut String, enum_def: &EnumDef,
         out.push_str("        Ok(Some(value.unbind()))\n");
         out.push_str("    }\n");
     }
+}
+
+/// Getter body for a single-field tuple variant carrying its own `#[serde(untagged)]`: match the
+/// Rust variant directly (mirroring the typed `variant_accessor` arm) and serialize only that
+/// field, instead of parsing a tag out of the whole enum's JSON the way every other variant's
+/// getter does -- an untagged variant has no tag to find.
+fn write_pyo3_untagged_variant_accessor(
+    out: &mut String,
+    enum_def: &EnumDef,
+    variant: &EnumVariant,
+    core_path: &str,
+    is_host_enum: bool,
+    fn_name: &str,
+) {
+    out.push('\n');
+    out.push_str("    #[getter]\n");
+    out.push_str(&crate::codegen::template_env::render(
+        "generators/enums/py_dict_getter.jinja",
+        minijinja::context! { fn_name => fn_name },
+    ));
+    out.push_str("        match &self.inner {\n");
+    // Same foreign-cfg drop policy as the typed accessor arm above: a host-owned cfg re-emits
+    // verbatim, a foreign one this crate cannot declare as a Cargo feature drops the arm and
+    // falls through to the `_ => Ok(None)` catch-all. ~keep
+    let keep_arm = match variant.cfg.as_deref() {
+        None => true,
+        Some(_) if is_host_enum => true,
+        Some(cfg) => {
+            tracing::debug!(
+                enum_name = %enum_def.name,
+                enum_rust_path = %enum_def.rust_path,
+                variant_name = %variant.name,
+                cfg = cfg,
+                "dropping pyo3 untagged variant-accessor match arm for a foreign-crate variant \
+                 behind a #[cfg(...)] this crate cannot declare as a Cargo feature; the variant \
+                 is unreachable from this accessor"
+            );
+            false
+        }
+    };
+    if keep_arm {
+        out.push_str(&crate::codegen::template_env::render(
+            "generators/enums/untagged_variant_match.jinja",
+            minijinja::context! {
+                core_path => core_path,
+                variant_pascal => &variant.name,
+                cfg => variant.cfg.as_deref(),
+            },
+        ));
+    }
+    out.push_str("            _ => Ok(None),\n");
+    out.push_str("        }\n");
+    out.push_str("    }\n");
 }
 
 pub(crate) fn write_pyo3_serde_tag_getter(out: &mut String, tag_field: &str) {

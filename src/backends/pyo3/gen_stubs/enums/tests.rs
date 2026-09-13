@@ -521,10 +521,15 @@ fn should_emit_the_tag_alone_when_a_flattened_payload_type_is_not_on_the_surface
     assert!(!stub.contains("_0:"), "no fabricated positional key: {stub}");
 }
 
-/// External tagging keys a newtype payload on the variant name and untagged writes it bare, so
-/// neither is flattened and neither may lose the positional field the stub has always declared.
+/// External tagging keys a single-field tuple payload on the variant name itself and untagged
+/// writes it bare -- neither ever puts a `_0` key on the wire, so a TypedDict declaring one
+/// describes a shape the runtime constructor never accepts and nothing else in the stub
+/// references. Corrects an earlier version of this test (`git blame` predates this fix), which
+/// asserted the opposite and thereby enshrined the exact defect this suppresses: `_0: ExcelPayload`
+/// on `FormatMetadataExcelVariant` while the wrapper class already exposes the identical value,
+/// correctly typed, as `excel: ExcelPayload | None`.
 #[test]
-fn should_keep_declaring_the_positional_field_for_representations_serde_does_not_flatten() {
+fn should_not_declare_the_positional_field_for_representations_serde_does_not_flatten() {
     for (case, untagged) in [("external tagging", false), ("untagged", true)] {
         let def = EnumDef {
             serde_tag: None,
@@ -533,8 +538,8 @@ fn should_keep_declaring_the_positional_field_for_representations_serde_does_not
         };
         let stub = gen_enum_stub(&def, false, &no_dtos(), true, &excel_payload_type());
         assert!(
-            stub.contains("    _0: ExcelPayload"),
-            "{case} keeps a real key for the payload: {stub}"
+            !stub.contains("_0:"),
+            "{case} must not fabricate a positional key no wire form of this variant has: {stub}"
         );
     }
 }
@@ -611,4 +616,80 @@ fn should_keep_the_stub_property_for_a_foreign_cfg_gated_variant_even_when_unrea
         stub.contains("    docx: DocxMetadata | None"),
         "the getter method exists in every build; only its match arm is cfg-conditional: {stub}"
     );
+}
+
+/// An externally tagged data enum (`EntityCategory`, `PiiCategory`, `OutputFormat` -- no
+/// `#[serde(tag = "...")]` anywhere) has no `type` field anywhere on its wire form, and
+/// `write_pyo3_serde_tag_getter` (`codegen::generators::enums`) is only ever called when
+/// `enum_def.serde_tag` is `Some`, so the runtime pyclass exposes no `.type` attribute for this
+/// enum at all. Declaring one in the stub was `AttributeError` waiting to happen on first use.
+#[test]
+fn external_tagging_does_not_declare_a_type_attribute() {
+    let def = EnumDef {
+        serde_tag: None,
+        ..enum_def(
+            "EntityCategory",
+            vec![
+                variant("Person", vec![]),
+                EnumVariant {
+                    is_tuple: true,
+                    ..variant("Custom", vec![field("_0", TypeRef::String)])
+                },
+            ],
+        )
+    };
+
+    let stub = gen_enum_stub(&def, false, &no_dtos(), true, &[]);
+
+    assert!(!stub.contains("    type: str"), "{stub}");
+    assert!(
+        stub.contains("    def __init__(self, value: dict[str, Any] | str | None = None, **kwargs: Any) -> None: ..."),
+        "the `#[new]` constructor is genuinely unconditional (no sanitized fields), unlike `.type`: {stub}"
+    );
+}
+
+/// An internally or adjacently tagged enum (`serde_tag: Some(..)`) keeps its `type`-shaped
+/// attribute: `write_pyo3_serde_tag_getter` really does emit that getter for this repr.
+#[test]
+fn internal_tagging_keeps_the_tag_attribute() {
+    let stub = gen_enum_stub(&shape_enum(), false, &no_dtos(), true, &[]);
+
+    assert!(stub.contains("    type: str"), "{stub}");
+}
+
+/// `EntityCategory::Custom(String)` / `PiiCategory::Custom(String)` shaped fixture: a single-field
+/// tuple variant whose payload is a primitive, not a `TypeRef::Named` type, so it never qualifies
+/// for the typed accessor property either -- only the untyped dict-shaped runtime getter covers
+/// it. The synthetic `_0` TypedDict key still describes no real wire form (external tagging keys
+/// the payload on the variant name itself) and was referenced by nothing else in the stub.
+#[test]
+fn primitive_payload_single_tuple_variant_does_not_declare_a_positional_field() {
+    let def = EnumDef {
+        serde_tag: None,
+        ..enum_def(
+            "EntityCategory",
+            vec![
+                variant("Person", vec![]),
+                EnumVariant {
+                    is_tuple: true,
+                    ..variant("Custom", vec![field("_0", TypeRef::String)])
+                },
+            ],
+        )
+    };
+
+    let stub = gen_enum_stub(&def, false, &no_dtos(), true, &[]);
+
+    assert!(!stub.contains("_0:"), "{stub}");
+}
+
+/// A genuine multi-field tuple variant keeps its declared positional shape -- only the
+/// single-field case (which never has a `_0` key on any wire form) is suppressed.
+#[test]
+fn multi_field_tuple_variant_keeps_its_positional_fields() {
+    let stub = gen_enum_stub(&metadata_enum(), false, &no_dtos(), true, &[]);
+
+    assert!(stub.contains("class FormatMetadataPairVariant(TypedDict):"), "{stub}");
+    assert!(stub.contains("    _0: str"), "{stub}");
+    assert!(stub.contains("    _1: str"), "{stub}");
 }
