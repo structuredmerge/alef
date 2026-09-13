@@ -1,0 +1,5 @@
+{# Zero-arg static factory for a unit variant of an `is_labeled_string_enum` flat data enum. #}
+#[php(name = "{{ php_name }}")]
+pub fn {{ rust_fn_name }}() -> Self {
+    {{ core_path }}::{{ variant_name }}.into()
+}

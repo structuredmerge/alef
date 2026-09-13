@@ -3,8 +3,8 @@ use crate::backends::php::gen_bindings::php_types::{
     enum_aware_php_phpdoc_type, enum_aware_php_type, php_phpdoc_type_fq, php_property_phpdoc, php_type_fq,
 };
 use crate::backends::php::gen_bindings::types::{
-    enum_constant_entries, flat_field_name, is_php_prop_scalar, is_tagged_data_enum, is_untagged_data_enum,
-    php_field_can_be_constructor_param, ty_is_or_wraps_json, ty_references_untagged_data_enum,
+    enum_constant_entries, flat_field_name, is_labeled_string_enum, is_php_prop_scalar, is_tagged_data_enum,
+    is_untagged_data_enum, php_field_can_be_constructor_param, ty_is_or_wraps_json, ty_references_untagged_data_enum,
 };
 use crate::backends::php::naming::php_autoload_namespace;
 use crate::codegen::doc_emission::{DocTarget, sanitize_rust_idioms};
@@ -936,6 +936,39 @@ fn gen_data_enum_variant_constructor_stubs(
                 },
             );
             format!("{doc_block}{method}")
+        })
+        .collect()
+}
+
+/// Stub twin of `gen_labeled_string_enum_variant_constructors` (`gen_bindings/types/enums.rs`):
+/// a zero-arg factory stub per unit variant and a one-arg `string` factory stub per label variant
+/// of an [`is_labeled_string_enum`] flat class. Kept as a separate function rather than folded into
+/// [`gen_data_enum_variant_constructor_stubs`] because that function's skip rule is keyed on
+/// `collect_all_variant_constructors`, which this shape deliberately bypasses at the runtime side
+/// too — see that function's doc comment.
+fn gen_labeled_string_enum_variant_constructor_stubs(enum_def: &EnumDef, is_host_enum: bool) -> Vec<String> {
+    use crate::codegen::generators::variant_constructor_is_reachable;
+    use crate::codegen::naming::pascal_to_snake;
+
+    enum_def
+        .variants
+        .iter()
+        .filter(|v| !v.binding_excluded && variant_constructor_is_reachable(v, is_host_enum))
+        .map(|variant| {
+            let params = if variant.fields.is_empty() {
+                String::new()
+            } else {
+                format!("string ${}", to_php_name(&flat_field_name(variant, 0)))
+            };
+            crate::backends::php::template_env::render(
+                "php_static_method_stub.jinja",
+                context! {
+                    method_name => to_php_name(&pascal_to_snake(&variant.name)),
+                    params => &params,
+                    return_type => &enum_def.name,
+                    stub_body => "{ throw new \\RuntimeException('Not implemented — provided by the native extension.'); }",
+                },
+            )
         })
         .collect()
 }

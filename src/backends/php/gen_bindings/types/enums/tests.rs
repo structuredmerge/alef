@@ -747,3 +747,207 @@ mod enum_declaration_parity_tests {
         );
     }
 }
+
+/// Coverage for the `Custom(String)` label-loss fix: an externally-tagged enum whose only data
+/// variant is a single-field `String` tuple variant (`EntityCategory`/`PiiCategory`/`OutputFormat`
+/// in the xberg core crate) must round-trip the caller-supplied label through a flat PHP class
+/// instead of being flattened to a bare string constant that can only ever produce
+/// `Custom(Default::default())`. Before this fix, `is_tagged_data_enum` required
+/// `enum_def.serde_tag.is_some()`, so every assertion below that depends on the broadened
+/// predicate failed: `entity_category()` routed through `enum_constant_entries` /
+/// `gen_string_to_enum_expr` instead of `gen_flat_data_enum*`, and the generated binding→core
+/// conversion literally read `"custom" => xberg::EntityCategory::Custom(Default::default())`. ~keep
+#[cfg(test)]
+mod labeled_string_enum_tests {
+    use super::super::{
+        gen_flat_data_enum_from_impls, gen_flat_data_enum_methods, is_labeled_string_enum, is_tagged_data_enum,
+    };
+    use crate::backends::php::type_map::PhpMapper;
+    use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeRef};
+    use ahash::AHashSet;
+
+    fn unit(name: &str) -> EnumVariant {
+        EnumVariant {
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// A single-field tuple variant (`Custom(String)`): tuple-variant fields are always named
+    /// `_0`, `_1`, ... (see `codegen::conversions::is_tuple_variant`).
+    fn label_variant(name: &str) -> EnumVariant {
+        EnumVariant {
+            name: name.to_string(),
+            fields: vec![FieldDef {
+                name: "_0".to_string(),
+                ty: TypeRef::String,
+                ..Default::default()
+            }],
+            // Real tuple variants carry `is_tuple: true` from extraction (this is what
+            // `collect_all_variant_constructors` keys its "skip tuple variants" filter on --
+            // separate from, but expected to agree with, the field-naming heuristic
+            // `is_tuple_variant` derives from `_0`/`_1`/... names).
+            is_tuple: true,
+            ..Default::default()
+        }
+    }
+
+    /// Mirrors `EntityCategory`/`PiiCategory`/`OutputFormat`: `#[serde(rename_all = "snake_case")]`
+    /// (no `#[serde(tag = ...)]`, not `#[serde(untagged)]`), several unit variants, one `Custom(String)`.
+    fn entity_category() -> EnumDef {
+        EnumDef {
+            name: "EntityCategory".to_string(),
+            rust_path: "xberg::EntityCategory".to_string(),
+            variants: vec![unit("Person"), unit("Organization"), label_variant("Custom")],
+            serde_tag: None,
+            serde_untagged: false,
+            ..Default::default()
+        }
+    }
+
+    fn mapper_with(data_enum_names: &[&str]) -> PhpMapper {
+        PhpMapper {
+            enum_names: AHashSet::new(),
+            data_enum_names: data_enum_names.iter().map(|s| s.to_string()).collect(),
+            untagged_data_enum_names: AHashSet::new(),
+            json_string_enum_names: AHashSet::new(),
+        }
+    }
+
+    #[test]
+    fn recognises_the_caller_supplied_label_shape() {
+        assert!(
+            is_labeled_string_enum(&entity_category()),
+            "unit variants + one single-field String tuple variant, no serde tag, not untagged"
+        );
+    }
+
+    #[test]
+    fn rejects_an_internally_tagged_enum_already_handled_by_the_struct_variant_path() {
+        let mut def = entity_category();
+        def.serde_tag = Some("type".to_string());
+        assert!(
+            !is_labeled_string_enum(&def),
+            "serde_tag.is_some() must take the existing path"
+        );
+    }
+
+    #[test]
+    fn rejects_an_untagged_enum_already_handled_by_the_json_value_path() {
+        let mut def = entity_category();
+        def.serde_untagged = true;
+        assert!(
+            !is_labeled_string_enum(&def),
+            "serde_untagged must take the existing JSON-Value path"
+        );
+    }
+
+    #[test]
+    fn rejects_a_boxed_label_field() {
+        let mut def = entity_category();
+        def.variants[2].fields[0].is_boxed = true;
+        assert!(
+            !is_labeled_string_enum(&def),
+            "a boxed field is outside the narrow, known-to-compile shape"
+        );
+    }
+
+    #[test]
+    fn rejects_a_multi_field_tuple_variant() {
+        let mut def = entity_category();
+        def.variants[2].fields.push(FieldDef {
+            name: "_1".to_string(),
+            ty: TypeRef::String,
+            ..Default::default()
+        });
+        assert!(
+            !is_labeled_string_enum(&def),
+            "a multi-field tuple variant is outside the narrow shape"
+        );
+    }
+
+    #[test]
+    fn rejects_a_non_string_tuple_field() {
+        let mut def = entity_category();
+        def.variants[2].fields[0].ty = TypeRef::Primitive(crate::core::ir::PrimitiveType::I64);
+        assert!(
+            !is_labeled_string_enum(&def),
+            "only a bare String payload is in the narrow shape"
+        );
+    }
+
+    #[test]
+    fn rejects_a_struct_variant_with_no_label_variant() {
+        // No data variant at all -- nothing for this predicate to lower.
+        let def = EnumDef {
+            name: "UnitOnly".to_string(),
+            rust_path: "xberg::UnitOnly".to_string(),
+            variants: vec![unit("A"), unit("B")],
+            ..Default::default()
+        };
+        assert!(!is_labeled_string_enum(&def));
+    }
+
+    #[test]
+    fn is_tagged_data_enum_now_true_for_a_labeled_string_enum() {
+        assert!(
+            is_tagged_data_enum(&entity_category()),
+            "is_tagged_data_enum must fold in is_labeled_string_enum so every dispatch site \
+             (struct-field type mapping, PHPStan stub, constants-vs-flat-class routing) treats \
+             it as a flat class"
+        );
+    }
+
+    /// The core regression check: the generated `From<Binding> for Core` conversion must
+    /// construct `Custom(val.custom.unwrap_or_default())` (or equivalent), never
+    /// `Custom(Default::default())` -- the literal expression the pre-fix string-enum path always
+    /// produced regardless of what the PHP caller supplied.
+    #[test]
+    fn from_impls_never_default_the_label_away() {
+        let def = entity_category();
+        let generated = gen_flat_data_enum_from_impls(&def, "xberg", None);
+
+        assert!(
+            !generated.contains("Custom(Default::default())"),
+            "the label must never be discarded, got:\n{generated}"
+        );
+        assert!(
+            generated.contains("xberg::EntityCategory::Custom(") && generated.contains("val.custom"),
+            "binding→core must read the flat class's `custom` field into the tuple variant, got:\n{generated}"
+        );
+        assert!(
+            generated.contains("xberg::EntityCategory::Custom(_0) => Self {")
+                || generated.contains("xberg::EntityCategory::Custom(_0)=>Self{"),
+            "core→binding must bind the real tuple field to populate `custom`, got:\n{generated}"
+        );
+        assert!(
+            generated.contains("custom: Some(_0.into())") || generated.contains("custom: Some(_0)"),
+            "core→binding must carry the label into the flat class's `custom` field, got:\n{generated}"
+        );
+    }
+
+    /// The usability half of the fix: PHP callers need a way to construct a `Custom` value (there
+    /// is no wire tag to build one from besides `from_json`), and unit variants need the same
+    /// factories the class constants they replace used to provide directly as values.
+    #[test]
+    fn variant_constructors_cover_both_unit_and_label_variants() {
+        let def = entity_category();
+        let mapper = mapper_with(&["EntityCategory"]);
+        let empty = AHashSet::new();
+        let methods = gen_flat_data_enum_methods(&def, &mapper, &empty, &empty, &empty, "xberg", None);
+
+        assert!(
+            methods.contains("#[php(name = \"person\")]") && methods.contains("xberg::EntityCategory::Person.into()"),
+            "a unit-variant factory must be generated, got:\n{methods}"
+        );
+        assert!(
+            methods.contains("#[php(name = \"custom\")]")
+                && methods.contains("pub fn _factory_custom(custom: String) -> Self {"),
+            "the label-variant factory must accept the label as a plain String param, got:\n{methods}"
+        );
+        assert!(
+            methods.contains("xberg::EntityCategory::Custom(custom).into()"),
+            "the label-variant factory must forward the caller's value into the real core variant, got:\n{methods}"
+        );
+    }
+}

@@ -6,7 +6,8 @@
 
 use super::{
     DocTarget, enum_constant_entries, gen_data_enum_property_declarations, gen_data_enum_variant_constructor_stubs,
-    is_tagged_data_enum, sanitize_rust_idioms,
+    gen_labeled_string_enum_variant_constructor_stubs, is_labeled_string_enum, is_tagged_data_enum,
+    sanitize_rust_idioms,
 };
 use crate::core::ir::EnumDef;
 use ahash::AHashSet;
@@ -96,6 +97,11 @@ pub(super) fn gen_enum_stub(
 
     for ctor in gen_data_enum_variant_constructor_stubs(enum_def, enum_names, is_host_enum) {
         content.push_str(&ctor);
+    }
+    if is_labeled_string_enum(enum_def) {
+        for ctor in gen_labeled_string_enum_variant_constructor_stubs(enum_def, is_host_enum) {
+            content.push_str(&ctor);
+        }
     }
     content.push_str("}\n\n");
     content

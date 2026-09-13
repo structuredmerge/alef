@@ -1,0 +1,6 @@
+{# One-arg static factory for the caller-labeled variant of an `is_labeled_string_enum` flat data
+   enum (e.g. `EntityCategory::custom($label)`). #}
+#[php(name = "{{ php_name }}")]
+pub fn {{ rust_fn_name }}({{ param_name }}: String) -> Self {
+    {{ core_path }}::{{ variant_name }}({{ param_name }}).into()
+}

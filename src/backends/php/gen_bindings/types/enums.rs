@@ -174,10 +174,56 @@ fn escape_php_reserved_constant(name: &str) -> String {
     }
 }
 
-/// Return true if an enum is a "tagged data enum" — has a serde tag AND at least one variant
-/// with named fields. These are lowered to flat PHP classes rather than string constants.
+/// Return true if an enum is a "tagged data enum" — either has a serde tag AND at least one
+/// struct-field variant, OR is a [`is_labeled_string_enum`] (an externally-tagged enum whose only
+/// data is a caller-supplied `String` label). Both shapes are lowered to flat PHP classes rather
+/// than string constants.
+///
+/// Folding `is_labeled_string_enum` into this predicate is deliberate, not incidental: every call
+/// site below (struct-field type mapping, the PHPStan stub, the constants-vs-flat-class dispatch
+/// in `rust_bindings.rs`/`public_api.rs`/`type_stubs.rs`) already branches on this single function,
+/// so routing a labeled string enum through it is the only way to move a type from "string
+/// constants that silently discard a payload" to "flat class that keeps it" without re-deriving the
+/// same dispatch decision at every call site. ~keep
 pub(crate) fn is_tagged_data_enum(enum_def: &EnumDef) -> bool {
-    enum_def.serde_tag.is_some() && enum_def.variants.iter().any(|v| !v.fields.is_empty())
+    enum_def.variants.iter().any(|v| !v.fields.is_empty())
+        && (enum_def.serde_tag.is_some() || is_labeled_string_enum(enum_def))
+}
+
+/// Return true if `enum_def` is externally tagged (no `#[serde(tag = "...")]`, not
+/// `#[serde(untagged)]`) and every data-carrying variant is a single-field tuple variant whose
+/// field is a bare, non-boxed `String` — the caller-supplied-label shape (`Custom(String)`) used
+/// commonly used for category-style enums in a consumer crate.
+///
+/// This predicate is deliberately narrower than "any externally-tagged enum with a data variant".
+/// `gen_flat_data_enum_from_impls`'s per-variant match arms pattern-match the real core variant
+/// directly (`core_path::Custom(_0) => ..`), so tag style genuinely does not matter to correctness
+/// there — but `alef.toml`'s `[crates.php] exclude_types` records that this SAME flat-class
+/// machinery does not compile cleanly (`E0716`/`E0596`/`E0507`) for enums whose data variants carry
+/// richer payloads (`Vec`, boxed fields, multiple fields per variant: `NodeContent`,
+/// `OcrBoundingGeometry`, `ChunkSizing`, `EmbeddingModelType`). Restricting this predicate to the
+/// simplest possible payload — one field, plain `String`, never boxed — keeps this fix inside the
+/// shape that is known to work rather than gambling on the shape that is known not to. ~keep
+pub(crate) fn is_labeled_string_enum(enum_def: &EnumDef) -> bool {
+    if enum_def.serde_tag.is_some() || enum_def.serde_untagged {
+        return false;
+    }
+    let mut has_label_variant = false;
+    for variant in &enum_def.variants {
+        if variant.fields.is_empty() {
+            continue;
+        }
+        let is_single_string_tuple = variant.fields.len() == 1
+            && crate::codegen::conversions::is_tuple_variant(&variant.fields)
+            && matches!(variant.fields[0].ty, TypeRef::String)
+            && !variant.fields[0].is_boxed
+            && !variant.fields[0].optional;
+        if !is_single_string_tuple {
+            return false;
+        }
+        has_label_variant = true;
+    }
+    has_label_variant
 }
 
 /// Return true if an enum is an "untagged data enum" — has `#[serde(untagged)]` AND at
@@ -226,6 +272,62 @@ pub(crate) fn flat_field_name(variant: &EnumVariant, field_index: usize) -> Stri
     } else {
         variant.fields[field_index].name.clone()
     }
+}
+
+/// Generate `#[php]` static factory methods for an [`is_labeled_string_enum`] flat data enum: a
+/// zero-arg factory per unit variant (`EntityCategory::person()`) and a one-arg factory per
+/// single-field `String` tuple variant (`EntityCategory::custom($label)`).
+///
+/// Deliberately bypasses the shared `collect_all_variant_constructors`/`variant_field_init`
+/// machinery `gen_flat_data_enum_variant_constructors` uses for struct-variant enums: that
+/// machinery is built to convert an arbitrary field shape (opaque types, `Vec<NamedStruct>`,
+/// boxed fields) through the generic param/let-binding pipeline, and unconditionally filters out
+/// exactly the two variant shapes this predicate exists for (unit, tuple). Every param here is a
+/// plain `String`, so the trivial per-shape templates below are both correct and the whole reason
+/// this narrower shape avoids the `E0716`/`E0596`/`E0507` risk `is_labeled_string_enum`'s doc
+/// comment describes for the general machinery. ~keep
+fn gen_labeled_string_enum_variant_constructors(enum_def: &EnumDef, core_import: &str) -> Vec<String> {
+    use crate::codegen::generators::variant_constructor_is_reachable;
+    use crate::codegen::naming::{pascal_to_snake, to_php_name};
+
+    let core_path = crate::codegen::conversions::core_enum_path(enum_def, core_import);
+    let is_host_enum = crate::codegen::cfg::is_host_owned_rust_path(core_import, &enum_def.rust_path);
+
+    enum_def
+        .variants
+        .iter()
+        .filter(|variant| !variant.binding_excluded && variant_constructor_is_reachable(variant, is_host_enum))
+        .filter_map(|variant| {
+            let snake_name = pascal_to_snake(&variant.name);
+            let php_name = to_php_name(&snake_name);
+            let rust_fn_name = format!("_factory_{snake_name}");
+            if variant.fields.is_empty() {
+                Some(crate::backends::php::template_env::render(
+                    "php_flat_enum_unit_variant_constructor.jinja",
+                    minijinja::context! {
+                        php_name => php_name,
+                        rust_fn_name => rust_fn_name,
+                        core_path => &core_path,
+                        variant_name => &variant.name,
+                    },
+                ))
+            } else if variant.fields.len() == 1 && crate::codegen::conversions::is_tuple_variant(&variant.fields) {
+                let param_name = to_php_name(&flat_field_name(variant, 0));
+                Some(crate::backends::php::template_env::render(
+                    "php_flat_enum_label_variant_constructor.jinja",
+                    minijinja::context! {
+                        php_name => php_name,
+                        rust_fn_name => rust_fn_name,
+                        core_path => &core_path,
+                        variant_name => &variant.name,
+                        param_name => &param_name,
+                    },
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Generate a flat `#[php_class]` struct for a tagged data enum.
@@ -342,6 +444,19 @@ pub(crate) fn gen_flat_data_enum_methods(
         core_import,
     ) {
         impl_builder.add_method(&ctor);
+    }
+
+    // `collect_all_variant_constructors` (used above) skips BOTH unit and tuple variants -- it
+    // exists for internally-tagged struct-variant enums, where a bare unit value isn't a
+    // meaningful "constructor" the way a tagged data enum's named fields are. A labeled string
+    // enum needs the opposite: its unit variants are exactly the values PHP callers previously
+    // reached via the class constants `is_tagged_data_enum` now routes away from
+    // (`EntityCategory::PERSON` -> `EntityCategory::person()`), and its label variant is the
+    // whole point of this shape, so a dedicated generator handles both here instead. ~keep
+    if is_labeled_string_enum(enum_def) {
+        for ctor in gen_labeled_string_enum_variant_constructors(enum_def, core_import) {
+            impl_builder.add_method(&ctor);
+        }
     }
 
     let tag_getter =
