@@ -61,6 +61,16 @@ wire_request_type = "Request"
 wire_response_type = "Response"
 "#;
 
+/// Render a filesystem path for interpolation into a TOML *basic* (double-quoted) string.
+///
+/// A Windows temp path is `C:\\Users\\runneradmin\\AppData\\...`, and `\\U` / `\\A` are not valid
+/// TOML escape sequences -- interpolating one verbatim makes the fixture config unparseable, so
+/// the test panicked on Windows only, at its own `toml::from_str`, before reaching what it exists
+/// to check. ~keep
+fn toml_basic_string_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "\\\\")
+}
+
 fn write_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
     let directory = tempfile::tempdir().expect("create fixture directory");
     let source_path = directory.path().join("lib.rs");
@@ -73,8 +83,8 @@ fn write_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
     )
     .expect("write version manifest");
     let config = CONFIG_TEMPLATE
-        .replace("__SOURCE__", &source_path.to_string_lossy())
-        .replace("__VERSION__", &version_path.to_string_lossy());
+        .replace("__SOURCE__", &toml_basic_string_path(&source_path))
+        .replace("__VERSION__", &toml_basic_string_path(&version_path));
     std::fs::write(&config_path, &config).expect("write Alef config");
     (directory, config_path, config)
 }
@@ -111,4 +121,25 @@ fn service_variant_language_override_survives_parse_extraction_and_generation() 
         .expect("generated Python service module");
     assert!(service.content.contains("handler: Callable[..., Any] | None = None"));
     assert!(!service.content.contains("def get_decorator("));
+}
+
+/// Pins [`toml_basic_string_path`]'s escaping against a Windows-shaped path, so the fix is proven
+/// on every platform rather than only where the bug reproduces: the unescaped form is not valid
+/// TOML at all, and the escaped form must round-trip back to the original path.
+#[test]
+fn a_windows_path_interpolates_into_a_parseable_toml_basic_string() {
+    let windows_path = std::path::Path::new(r"C:\Users\runneradmin\AppData\Local\Temp\x\lib.rs");
+
+    let unescaped = format!("source = \"{}\"\n", windows_path.to_string_lossy());
+    assert!(
+        toml::from_str::<toml::Value>(&unescaped).is_err(),
+        "the unescaped form must be the failure this helper exists to prevent"
+    );
+
+    let escaped = format!("source = \"{}\"\n", toml_basic_string_path(windows_path));
+    let parsed: toml::Value = toml::from_str(&escaped).expect("escaped path must parse as TOML");
+    assert_eq!(
+        parsed["source"].as_str().expect("source is a string"),
+        windows_path.to_string_lossy()
+    );
 }
