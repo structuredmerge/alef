@@ -5,8 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
 ## [0.87.0] - 2026-09-13
 
 ### Changed
@@ -27,6 +25,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and wasm now agree on the wire, which they previously did not.
 
 ### Fixed
+
+- **BREAKING (wasm): the JSON surface for a fully-flattened internally tagged enum is camelCase,
+  matching napi.** The two JavaScript bindings previously disagreed with each other on the same
+  Rust type. The conversion and the `.d.ts` declaration move together and are pinned by a lockstep
+  test that fails if either side is reverted alone -- declaring a camelCase shape the runtime does
+  not produce is silent, because `serde_wasm_bindgen::from_value` falls through to
+  `unwrap_or_default()` on a key mismatch rather than erroring. Untagged enums are deliberately
+  NOT recased in either backend: napi's untagged path does not go through the wire types at all,
+  so recasing wasm alone would introduce a fresh disagreement in the opposite direction.
+
+- **BREAKING (magnus/Ruby): an externally tagged enum's single-payload variant now emits tuple
+  form, matching the core type's own serde wire.** `variant_emits_tuple_form` covered untagged and
+  adjacently tagged enums but omitted external tagging -- the serde default -- so a `Custom(String)`
+  variant was declared as a struct variant and serialized `{"custom":{"_0":"foo"}}` where the core
+  enum serializes `{"custom":"foo"}`. Internally tagged stays struct form deliberately: a newtype
+  payload flattens onto the tag object there, so no positional slot exists. All four
+  representations are now pinned by test, with internally tagged as the negative case.
+
+- **BREAKING (java): simple-enum constants are emitted in `SCREAMING_SNAKE_CASE`.** `gen_enum_class`
+  pushed the Rust variant name verbatim and never consulted any casing table, so generated Java read
+  `LinkStyle.Inline` rather than `LinkStyle.INLINE`. The wire value, computed separately, is
+  unchanged. The default-value reference site (`builders.rs`) moves in lockstep with the
+  declaration and is pinned by a test that fails if either side changes alone; tagged-union variant
+  names, which are Java *class* names, stay PascalCase.
+
+- **`CACHEDIR.TAG` files alef wrote were ignored by every tool that honours the tag.**
+  `SIGNATURE_LINE` was a per-tool string rather than the single fixed signature the spec mandates
+  (`Signature: 8a477f597d28d172789f06886806bc55`), so `tar --exclude-caching`, `rsync
+  --exclude-tag`, Borg and restic all descended into cache directories alef had tagged. Measured on
+  one developer machine: 68 of 130 tag files malformed. `ensure_tag` now also repairs its own past
+  output in place -- a file whose first line is the superseded signature is rewritten, since that
+  signature is proof alef wrote it -- while foreign content at the tag path is still left untouched.
+  Reported with measurements by the voom project.
+
+- **Python stubs declared members the runtime does not have, and one accessor never returned a
+  value.** The stub emitted `type: str` on every data enum while the runtime only exposes it for
+  enums carrying an explicit serde tag, so a type checker accepted `category.type` on externally
+  tagged enums where it raises `AttributeError`. Separately, `OutputFormat.custom` derived a
+  discriminator from the enum's JSON, which no untagged variant carries, and so always returned
+  `None`; it now matches the variant directly.
+
+- **`RDFa` was special-cased by name instead of being cased correctly.** `pascal_to_snake` split an
+  uppercase run followed by a single lowercase letter, turning `RDFa` into `rd_fa`, and a hardcoded
+  exception papered over it for two languages. A trailing run shorter than two letters is now
+  treated as part of the acronym, so `RDFa` yields `rdfa` while `IOError` and `XMLHttpRequest` are
+  unchanged, and the hardcode is gone for every language.
+
+- **Java keyword escaping missed the literals.** `JAVA_KEYWORDS` omitted `true`, `false` and `null`,
+  so a method or variant with one of those names generated Java that does not compile.
+
+- **BREAKING (php): an externally-tagged enum whose only data is a caller-supplied `String` label
+  (`Custom(String)`, e.g. `EntityCategory`/`PiiCategory`/`OutputFormat`) now round-trips that label
+  instead of silently discarding it.** `is_tagged_data_enum` required an enum-level
+  `#[serde(tag = "...")]`, so this shape fell through to the plain string-constants path, whose
+  binding→core conversion has no PHP-facing slot for the payload and always produced
+  `Custom(Default::default())` -- an empty label, unrecoverably, in both directions (struct fields
+  and method returns). Such enums now lower to the same flat `#[php_class]` internally-tagged data
+  enums already use, gaining a caller-facing static factory (`EntityCategory::custom($label)`), a
+  readonly `$custom` property, and factories for every unit variant (`EntityCategory::person()`)
+  replacing the class constants those enums previously exposed. Consumers assigning the old bare
+  string constant (`Xberg\EntityCategory::PERSON`) to a field or constructor param of this type must
+  switch to the new factory methods.
+
+- **Swift e2e generation could silently drift from the binding's own first-class/opaque
+  classification, then compile-break the generated test suite.** The binding emitter's fixed
+  point (`compute_first_class_dto_names`) promotes a type to a first-class `Codable` struct once
+  every field is representable as a stored property, including via `is_self_reference_through_indirection`
+  -- the bootstrap a `struct Node { children: Vec<Node> }` shape needs, since no ordinary field
+  can ever be "already known" before the type that contains it is. The e2e generator's own copy of
+  that fixed point (`e2e::codegen::swift::values::build_swift_first_class_map`) had no such
+  bootstrap, so a self-referential DTO -- and anything that reaches one only through an ordinary
+  `Vec<Named>`/`Option<Named>` field, which becomes classifiable only once the fixed point has
+  already promoted that member -- stayed opaque in generated e2e assertions even after the binding
+  promoted it to a stored property. `alef e2e generate` reported success and emitted byte-identical
+  output across the regen that changed the classification, because nothing compared the two fixed
+  points at all.
+
+  Separately, and independent of that classifier gap: a fixture's Swift accessor root type was
+  resolved only from an explicit cross-language `result_type` override
+  (`swift_call_result_type`), never from the call's actual declared Rust return type the way every
+  other per-call IR anchor in the same function already is. A call with no such override left the
+  resolver's root permanently unset, which was invisible while the return type stayed opaque
+  (an unset root and a resolved-but-opaque root both default to method-call syntax) and became a
+  real compile break the moment that return type was promoted to first-class.
+
+  Both are fixed: the e2e fixed point now calls the binding's own `pub(crate)`
+  `is_self_reference_through_indirection` directly rather than reimplementing any part of it, and
+  the accessor root now falls back to the call's IR-declared return type. A new structural parity
+  test (`first_class_classifier_parity_tests.rs`) runs both classifiers over several IR shapes --
+  including a `Vec<Self>` type, a `Map<String, Self>` type, a container that only reaches a
+  self-referential member through `Option<Named>`, a two-hop mutual self-reference, and a struct
+  whose only unusual field is a `Map<String, String>` -- and asserts full first-class-set equality,
+  so a future one-sided change to either classifier fails loudly instead of regenerating silently.
+
 
 - **`serde_flattens_newtype_payload` is now resolution-aware.** It claimed any single-tuple variant
   of an internally tagged enum, including one whose payload is a primitive or absent from the
