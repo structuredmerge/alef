@@ -29,6 +29,7 @@ pub mod ts_property_key;
 pub mod wire;
 
 pub use case::{pascal_to_screaming_snake, pascal_to_snake, to_class_name, to_constant_name, underscore_camel_case};
+pub(crate) use host::public_casing;
 pub use host::{public_field_name, public_host_identifier, qualified_type_path};
 pub use identifiers::{
     dart_tuple_field_identifier, dart_type_identifier, dart_value_identifier, escape_identifier, escape_identifier_for,
@@ -47,7 +48,8 @@ pub use symbols::{
     internal_rust_identifier, to_c_name,
 };
 pub use wire::{
-    apply_serde_rename_all, field_uses_duration_map_wire, serde_wire_name, wire_field_name, wire_variant_value,
+    apply_serde_rename_all, field_uses_duration_map_wire, serde_wire_name, wire_field_name, wire_field_name_camel,
+    wire_variant_value,
 };
 
 #[cfg(test)]

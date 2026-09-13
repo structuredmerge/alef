@@ -458,6 +458,18 @@ fn pascal_to_snake_rdfa() {
     assert_eq!(pascal_to_snake("Rdfa"), "rdfa");
 }
 
+/// The discriminating case for `pascal_to_snake`'s trailing-word-length heuristic: `RDF` is a 3-letter
+/// uppercase run followed by a single lowercase `a`, which must stay part of the same word
+/// (`rdfa`) rather than split into `rd_fa` the way a real two-letter trailing word would
+/// (`IOError` -> `io_error`, covered below). Before this threshold existed,
+/// `docs::naming::enum_variant_name` carried a hardcoded `if name == "RDFa"` table specifically
+/// because this function produced `rd_fa` for the real Rust variant name. ~keep
+#[test]
+fn pascal_to_snake_rdfa_all_caps_acronym_with_short_suffix() {
+    assert_eq!(pascal_to_snake("RDFa"), "rdfa");
+    assert_eq!(pascal_to_screaming_snake("RDFa"), "RDFA");
+}
+
 #[test]
 fn pascal_to_snake_html_parser() {
     assert_eq!(pascal_to_snake("HTMLParser"), "html_parser");

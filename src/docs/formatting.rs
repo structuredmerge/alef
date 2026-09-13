@@ -703,61 +703,15 @@ fn reserved_words(lang: Language) -> &'static [&'static str] {
             "return",
             "var",
         ],
-        Language::Java => &[
-            "abstract",
-            "assert",
-            "boolean",
-            "break",
-            "byte",
-            "case",
-            "catch",
-            "char",
-            "class",
-            "const",
-            "continue",
-            "default",
-            "do",
-            "double",
-            "else",
-            "enum",
-            "extends",
-            "final",
-            "finally",
-            "float",
-            "for",
-            "goto",
-            "if",
-            "implements",
-            "import",
-            "instanceof",
-            "int",
-            "interface",
-            "long",
-            "native",
-            "new",
-            "package",
-            "private",
-            "protected",
-            "public",
-            "return",
-            "short",
-            "static",
-            "strictfp",
-            "super",
-            "switch",
-            "synchronized",
-            "this",
-            "throw",
-            "throws",
-            "transient",
-            "try",
-            "void",
-            "volatile",
-            "while",
-            "true",
-            "false",
-            "null",
-        ],
+        // ~keep Delegates to `core::keywords::JAVA_KEYWORDS` rather than carrying a second copy
+        // of the same list: the two used to disagree (this table included the reserved
+        // *literals* `true`/`false`/`null`, `JAVA_KEYWORDS` did not), which is exactly the
+        // "identifier gate catches it, but the code that would trigger the gate never runs
+        // through the gate's own table" bug class this module's own docs warn about. Java has
+        // no contextual/soft keywords beyond the JLS's fixed reserved-word set, so unlike
+        // Kotlin/Swift/C#/Dart below, there is no broader position-aware superset this table
+        // needs that the escaping-side table doesn't also need.
+        Language::Java => crate::core::keywords::JAVA_KEYWORDS,
         Language::Csharp => &[
             "abstract",
             "as",
@@ -1976,12 +1930,14 @@ mod tests {
             format_field_default(&field, Language::Rust, &api, TEST_PREFIX),
             "`HeadingStyle::Atx`"
         );
-        // Java declares the enum constant as the raw, untransformed variant identifier
-        // (`backends/java/gen_bindings/types/enums.rs`'s `simple_enum_class.jinja` pushes
-        // `variant.name` verbatim) — never shouty-snake-case. ~keep
+        // Java declares the enum constant in SCREAMING_SNAKE, its own convention
+        // (`backends/java/gen_bindings/types/enums.rs::gen_enum_class`, which routes the constant
+        // through the same `public_casing` authority these docs do). This comment previously said
+        // the opposite and was accurate at the time: the generator pushed `variant.name` verbatim,
+        // so the docs were correctly describing a generator that was itself wrong. ~keep
         assert_eq!(
             format_field_default(&field, Language::Java, &api, TEST_PREFIX),
-            "`HeadingStyle.Atx`"
+            "`HeadingStyle.ATX`"
         );
         assert_eq!(
             format_field_default(&field, Language::Ruby, &api, TEST_PREFIX),

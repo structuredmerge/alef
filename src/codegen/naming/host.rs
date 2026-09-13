@@ -1,8 +1,13 @@
 //! The public host-language identifier surface: the names a consumer of a generated binding
 //! actually types.
 //!
-//! [`public_host_identifier`] is the single entry point; the per-kind helpers below are private
-//! to the `naming` module so no backend can reach past the escaping step. ~keep
+//! [`public_host_identifier`] is the single entry point for every codegen backend, and the
+//! per-kind helpers below stay private to the `naming` module so no backend can reach past its
+//! escaping step. [`public_casing`] is the one exception: it is `pub(crate)`, not private,
+//! because `crate::docs::naming` needs this module's casing decision without its escaping
+//! decision (see that function's doc comment for why) -- it is still unreachable from outside
+//! this crate, and still not a route any codegen backend should take instead of
+//! [`public_host_identifier`]. ~keep
 
 use super::case::{pascal_to_screaming_snake, pascal_to_snake};
 use super::identifiers::escape_identifier_for;
@@ -18,15 +23,35 @@ pub fn public_field_name(lang: Language, rust_field_name: &str, rename_fields_va
 }
 /// Resolve a public host-language identifier for a Rust name.
 pub fn public_host_identifier(lang: Language, kind: PublicIdentifierKind, rust_name: &str) -> String {
-    let converted = match kind {
+    let converted = public_casing(lang, kind, rust_name);
+    escape_identifier_for(lang, &converted, public_identifier_context(kind))
+}
+
+/// Resolve the per-language *casing* of a public host identifier, without the escaping step
+/// [`public_host_identifier`] applies on top.
+///
+/// This is the single per-language idiom decision every emitter in this crate must share --
+/// which case convention a member, type, enum variant or parameter takes, and which
+/// initialisms are spelled out in each. It is the authority [`crate::docs::naming`] consumes
+/// for exactly the same reason every codegen backend does: the alternative is two
+/// independently-hand-maintained copies of this table silently disagreeing about whether Go
+/// wants `BaseUrl` or `BaseURL`, or whether a Java enum constant is `Inline` or `INLINE`.
+///
+/// Exposed casing-only (not through [`public_host_identifier`]) because a caller that must
+/// apply its own position- or language-specific override *before* any keyword escaping --
+/// `crate::docs::naming::func_name`'s Java `new` -> `create` rename runs on the bare cased
+/// name, not on an already `new_`-escaped one -- needs the undecorated result. Every other
+/// caller should prefer [`public_host_identifier`], which is the one that also makes the
+/// result a legal identifier. ~keep
+pub(crate) fn public_casing(lang: Language, kind: PublicIdentifierKind, rust_name: &str) -> String {
+    match kind {
         PublicIdentifierKind::Type => public_type_name(lang, rust_name),
         PublicIdentifierKind::EnumVariant => public_enum_variant_name(lang, rust_name),
         PublicIdentifierKind::Function | PublicIdentifierKind::Method | PublicIdentifierKind::Field => {
             public_member_name(lang, rust_name)
         }
         PublicIdentifierKind::Parameter => public_parameter_name(lang, rust_name),
-    };
-    escape_identifier_for(lang, &converted, public_identifier_context(kind))
+    }
 }
 
 /// Qualify a type name with a dotted package/namespace, leaving an already-qualified name alone.
@@ -99,18 +124,33 @@ pub(super) fn public_type_name(lang: Language, name: &str) -> String {
 
 fn public_enum_variant_name(lang: Language, name: &str) -> String {
     match lang {
-        Language::Python | Language::Ffi | Language::C | Language::Rust => pascal_to_screaming_snake(name),
-        Language::Ruby | Language::Elixir | Language::R | Language::Gleam | Language::Zig => pascal_to_snake(name),
+        // ~keep Java enum constants are idiomatically SCREAMING_SNAKE (`INLINE`), the same
+        // convention Kotlin's own generator already applies to its enum entries -- this used to
+        // sit in the `to_pascal_case` arm below, which is why every simple Java enum this crate
+        // generates currently declares `Inline("inline")` instead of `INLINE("inline")`. See
+        // `crate::backends::java::gen_bindings::types::enums::gen_enum_class`, which now routes
+        // its constant declarations through this same authority.
+        Language::Python | Language::Ffi | Language::C | Language::Java => pascal_to_screaming_snake(name),
+        Language::Ruby | Language::Elixir | Language::R | Language::Zig => pascal_to_snake(name),
         Language::Go => go_type_name(&name.to_pascal_case()),
         Language::Csharp => csharp_type_name(&name.to_pascal_case()),
-        Language::Node
+        // ~keep Gleam custom-type constructors are PascalCase (`Circle`, `Square`), unlike
+        // Gleam's snake_case fields/functions in `public_member_name` below -- this used to sit
+        // in the snake_case arm above, which would have emitted a lowercase constructor Gleam's
+        // own parser rejects.
+        // ~keep Rust's own enum variants are PascalCase (`HeadingStyle::Atx`). This arm used to
+        // include Rust, which was invisible for as long as `docs::naming` kept a second, correct
+        // table of its own; unifying the two onto this authority surfaced it as
+        // `HeadingStyle::ATX` in generated docs. A Rust variant is never shouty-snake.
+        Language::Rust
+        | Language::Node
         | Language::Php
         | Language::Wasm
-        | Language::Java
         | Language::Kotlin
         | Language::KotlinAndroid
         | Language::Swift
         | Language::Dart
+        | Language::Gleam
         | Language::Jni => name.to_pascal_case(),
     }
 }

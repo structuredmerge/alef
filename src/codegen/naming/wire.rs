@@ -34,6 +34,23 @@ pub fn wire_field_name(field_name: &str, serde_rename: Option<&str>, rename_all:
     serde_wire_name(field_name, serde_rename, rename_all)
 }
 
+/// Resolve a wire field name for the napi/wasm JSON-passthrough emitters, where the product
+/// decision is that JavaScript-facing JSON is camelCase all the way down (including nested
+/// payloads), independent of whatever `rename_all` the Rust container declares for its own
+/// serde wire format. An explicit `#[serde(rename = "...")]` is author intent and still wins
+/// verbatim -- only a name derived mechanically from the Rust field identifier gets recased.
+///
+/// This is a deliberate opt-in, not a change to [`wire_field_name`]'s behaviour: that function
+/// is shared by every other backend's wire-name resolution and must keep producing serde's own
+/// (typically snake_case) names for them. Only the napi `WireTypes` emitter and the wasm
+/// `TsMapContext` emitter -- the two places that declare the `.d.ts` shape of a JSON-passthrough
+/// value for a JS/TS consumer -- may call this. ~keep
+pub fn wire_field_name_camel(field_name: &str, serde_rename: Option<&str>) -> String {
+    serde_rename
+        .map(str::to_string)
+        .unwrap_or_else(|| field_name.to_lower_camel_case())
+}
+
 /// Resolve a wire enum variant value from variant metadata.
 pub fn wire_variant_value(variant_name: &str, serde_rename: Option<&str>, rename_all: Option<&str>) -> String {
     serde_wire_name(variant_name, serde_rename, rename_all)

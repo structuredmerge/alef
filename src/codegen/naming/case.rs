@@ -89,21 +89,36 @@ pub fn to_constant_name(name: &str) -> String {
     name.to_shouty_snake_case()
 }
 
+/// A trailing lowercase run shorter than this, immediately after a 2+ letter uppercase run,
+/// is treated as a stylization suffix of that acronym rather than the start of a new word.
+///
+/// This is what tells `RDFa` (acronym `RDF` + a single stylized `a`, one word: `rdfa`) apart
+/// from `IOError` (acronym `IO` + the real word `Error`, two words: `io_error`) — both have an
+/// uppercase run immediately followed by lowercase letters, and the only structural difference
+/// is how many. One trailing letter is never an English word on its own; two or more plausibly
+/// is, so `2` is the threshold rather than `1` or `3`. ~keep
+const MIN_TRAILING_WORD_LEN: usize = 2;
+
 /// Convert a PascalCase or mixed-case name to snake_case with correct acronym handling.
 ///
 /// Use this instead of `heck::ToSnakeCase` when the input is a PascalCase Rust type or
 /// enum variant name — `heck` inserts an underscore before every uppercase letter, which
-/// incorrectly splits acronym-style names like `Rdfa` into `rd_fa`.
+/// incorrectly splits acronym-style names like `HTMLParser` into `h_t_m_l_parser`.
 ///
 /// Rules:
 /// - A run of consecutive uppercase letters is treated as a single acronym word.
-/// - If the run is followed by a lowercase letter, the last uppercase char begins the
-///   next word (e.g. `XMLHttp` → `xml_http`).
-/// - A single uppercase letter followed by lowercase is a normal word start.
+/// - If the run is followed by at least [`MIN_TRAILING_WORD_LEN`] lowercase letters, the last
+///   uppercase char begins the next word (e.g. `XMLHttp` → `xml_http`).
+/// - If the run is followed by fewer than [`MIN_TRAILING_WORD_LEN`] lowercase letters, the
+///   whole run plus that short suffix is kept as one word (e.g. `RDFa` → `rdfa`) — see
+///   [`MIN_TRAILING_WORD_LEN`] for why.
+/// - A single uppercase letter followed by lowercase is always a normal word start, regardless
+///   of the rule above (e.g. `MyType` → `my_type`, not one word).
 ///
 /// Examples:
 /// - `MyType`         → `my_type`
 /// - `Rdfa`           → `rdfa`
+/// - `RDFa`           → `rdfa`
 /// - `HTMLParser`     → `html_parser`
 /// - `XMLHttpRequest` → `xml_http_request`
 /// - `IOError`        → `io_error`
@@ -132,7 +147,8 @@ pub fn pascal_to_snake(name: &str) -> String {
                 }
                 out.extend(chars[run_start].to_lowercase());
             } else {
-                let split = if i < n && chars[i].is_ascii_lowercase() {
+                let trailing_lowercase_len = chars[i..].iter().take_while(|c| c.is_ascii_lowercase()).count();
+                let split = if trailing_lowercase_len >= MIN_TRAILING_WORD_LEN {
                     run_len - 1
                 } else {
                     run_len

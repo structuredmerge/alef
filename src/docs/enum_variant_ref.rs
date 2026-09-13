@@ -48,7 +48,16 @@ pub(crate) fn format_enum_variant_ref(
             crate::codegen::naming::go_type_name(enum_type_raw),
             crate::codegen::naming::to_go_name(variant_raw)
         ),
-        Language::Java => format!("{}.{variant_raw}", type_name(enum_type_raw, lang, ffi_prefix)),
+        // ~keep Java's constant is cased by the same authority the generator uses
+        // (`backends::java::gen_bindings::types::enums::gen_enum_class`), NOT rendered raw. This
+        // line used to interpolate `variant_raw`, which was correct only for as long as the
+        // generator itself pushed the Rust variant name verbatim; once that was fixed to
+        // SCREAMING_SNAKE these docs would have documented a constant that does not exist.
+        Language::Java => format!(
+            "{}.{}",
+            type_name(enum_type_raw, lang, ffi_prefix),
+            enum_variant_name(variant_raw, lang, ffi_prefix)
+        ),
         Language::Swift => format!(
             "{}.{}",
             type_name(enum_type_raw, lang, ffi_prefix),

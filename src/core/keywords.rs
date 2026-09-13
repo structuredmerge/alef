@@ -78,6 +78,14 @@ pub const PYTHON_STR_METHODS: &[&str] = &[
 ];
 
 /// Java reserved keywords (including all contextual/reserved identifiers).
+///
+/// Includes the three reserved *literals* (`true`, `false`, `null`) alongside the reserved
+/// *words* -- the JLS reserves both classes from ordinary identifier position, and a name
+/// generator has no reason to draw that distinction. Omitting them here let a member literally
+/// named `true`/`false`/`null` reach `escape_identifier_for`'s Java arm unescaped, so the
+/// backend emitted non-compiling Java (`public boolean true() { ... }`) that only the docs
+/// identifier gate's separate, wider table ever caught -- and only in documentation, not in the
+/// generated code itself. ~keep
 pub const JAVA_KEYWORDS: &[&str] = &[
     "abstract",
     "assert",
@@ -129,6 +137,9 @@ pub const JAVA_KEYWORDS: &[&str] = &[
     "void",
     "volatile",
     "while",
+    "true",
+    "false",
+    "null",
 ];
 
 /// C# reserved keywords.

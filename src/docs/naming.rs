@@ -1,5 +1,6 @@
+use crate::codegen::naming::{PublicIdentifierKind, public_casing};
 use crate::core::config::Language;
-use heck::{ToPascalCase, ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
+use heck::{ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
 
 pub(crate) fn lang_display_name(lang: Language) -> &'static str {
     match lang {
@@ -71,26 +72,16 @@ pub(crate) fn lang_code_fence(lang: Language) -> &'static str {
 }
 
 /// Convert a Rust type name to the idiomatic name for the target language.
+///
+/// Delegates casing to [`public_casing`] -- the same per-language authority every codegen
+/// backend's type declaration goes through via `public_host_identifier` -- so this can no
+/// longer independently decide that Go wants `BaseUrl` where the Go backend actually emits
+/// `BaseURL` (`crate::codegen::naming::to_go_name`/`go_type_name` apply initialism
+/// uppercasing; a bare `heck::to_pascal_case` does not). ~keep
 pub(crate) fn type_name(name: &str, lang: Language, ffi_prefix: &str) -> String {
     let short = name.rsplit("::").next().unwrap_or(name);
+    let cased = public_casing(lang, PublicIdentifierKind::Type, short);
     match lang {
-        Language::Python
-        | Language::Node
-        | Language::Wasm
-        | Language::Ruby
-        | Language::Go
-        | Language::Java
-        | Language::Csharp
-        | Language::Php
-        | Language::Elixir
-        | Language::R
-        | Language::Rust
-        | Language::Kotlin
-        | Language::KotlinAndroid
-        | Language::Swift
-        | Language::Dart
-        | Language::Gleam
-        | Language::Zig => short.to_pascal_case(),
         // cbindgen renames every exported type with `[export] prefix`. Callers hand this
         // function the PascalCase form of `[ffi] prefix` (docs::generate_docs), so a
         // case-restoring conversion is required to recover the header spelling: for a consumer
@@ -106,20 +97,23 @@ pub(crate) fn type_name(name: &str, lang: Language, ffi_prefix: &str) -> String 
         // `SAMPLE_CORE` here -- and instructed readers not to "fix" it. That divergence is
         // gone; the instruction would now reintroduce it. Matches the `enum_variant_name`
         // arm below. ~keep
-        Language::Ffi | Language::C | Language::Jni => {
-            format!("{}{}", ffi_prefix.to_shouty_snake_case(), short.to_pascal_case())
-        }
+        Language::Ffi | Language::C | Language::Jni => format!("{}{}", ffi_prefix.to_shouty_snake_case(), cased),
+        _ => cased,
     }
 }
 
 /// Convert a Rust function name to the idiomatic name for the target language.
+///
+/// The `base` casing below delegates to [`public_casing`] -- the same authority
+/// `public_host_identifier` applies for every codegen backend's function/method declaration --
+/// so this function cannot independently decide Go wants `ParseUrl` where the Go backend emits
+/// `ParseURL`, or Gleam wants `parseUrl` where Gleam's own snake_case idiom (matching
+/// `field_name` below) wants `parse_url`. The per-language override table that follows must
+/// still run on the *un-escaped* `base`, which is exactly what [`public_casing`] returns
+/// (unlike `public_host_identifier`, which would already have turned `new` into `new_` before
+/// the Java-specific `new` -> `create` arm below ever saw it). ~keep
 pub(crate) fn func_name(name: &str, lang: Language, ffi_prefix: &str) -> String {
     let base = match lang {
-        Language::Python | Language::Ruby | Language::Elixir | Language::R | Language::Rust | Language::Zig => {
-            name.to_snake_case()
-        }
-        Language::Node | Language::Wasm | Language::Java | Language::Php => to_camel_case(name),
-        Language::Csharp | Language::Go => name.to_pascal_case(),
         // `func_name` is fed Rust `fn` names, which arrive already snake_case, so routing
         // through `c_consumer::free_function_symbol` (which applies `pascal_to_snake` rather
         // than heck's `to_snake_case`) is a no-op rename here -- both conversions are the
@@ -129,9 +123,7 @@ pub(crate) fn func_name(name: &str, lang: Language, ffi_prefix: &str) -> String 
         Language::Ffi | Language::C | Language::Jni => {
             crate::codegen::c_consumer::free_function_symbol(&ffi_prefix.to_snake_case(), name)
         }
-        Language::Kotlin | Language::KotlinAndroid | Language::Swift | Language::Dart | Language::Gleam => {
-            to_camel_case(name)
-        }
+        _ => public_casing(lang, PublicIdentifierKind::Function, name),
     };
     // ~keep Java's keyword renames must match `safe_java_method_name`
     // (backends/java/gen_bindings/helpers.rs:207-215), which is what the Java backend applies
@@ -149,13 +141,14 @@ pub(crate) fn func_name(name: &str, lang: Language, ffi_prefix: &str) -> String 
     // inputs -- every entry in `JAVA_KEYWORDS` is a plain lowercase word, which both leave
     // unchanged, so the membership arm keys identically on both sides.
     //
-    // Known shared blind spot, deliberately mirrored rather than silently diverged from:
-    // `true`, `false`, and `null` are reserved *literals*, not keywords, so they are absent
-    // from `JAVA_KEYWORDS` and neither this table nor `safe_java_method_name` renames them.
-    // The backend would emit non-compiling Java for such a method and the docs gate
-    // (`reserved_words(Java)` in formatting.rs, which does list all three) would report a
-    // violation for it -- correctly, since the emitted Java really is broken. Fixing
-    // that belongs in `safe_java_method_name`; this table must follow it, not lead it.
+    // ~keep `true`, `false`, and `null` used to be a shared blind spot here: they are reserved
+    // *literals*, not keywords, and were absent from `JAVA_KEYWORDS` -- so neither this table's
+    // membership arm nor `safe_java_method_name` renamed a method literally named one of them,
+    // and the backend emitted non-compiling Java that only the docs gate's separate, wider
+    // `reserved_words(Java)` table (formatting.rs) ever caught. Closed at the source:
+    // `JAVA_KEYWORDS` (core/keywords.rs) now includes all three, so `safe_java_method_name`
+    // and this table's membership arm both escape them the same way they escape any other
+    // keyword, and `reserved_words(Java)` no longer needs its own copy of the three literals.
     // ~keep Dart's `new` is an ordinary reserved-word collision, not a declaration-shape
     // mismatch the way Swift's `init` is (see `is_swift_static_constructor` in signatures.rs):
     // the docs pipeline already renders a static factory method for a static `new` returning
@@ -246,55 +239,37 @@ pub(crate) fn csharp_async_member_name(name: &str, is_async: bool) -> String {
 }
 
 /// Convert a Rust field name to the idiomatic name for the target language.
+///
+/// Delegates to [`public_casing`], the same per-language authority the codegen backends use for
+/// a struct field's declaration. Previously hand-rolled its own table that put Gleam in the
+/// camelCase group; Gleam fields (and functions/parameters) are snake_case, matching Rust,
+/// Elixir and Erlang -- see the same fix in
+/// `crate::codegen::naming::host::public_enum_variant_name`'s doc comment for why enum variant
+/// casing stayed PascalCase for Gleam while member casing did not. ~keep
 pub(crate) fn field_name(name: &str, lang: Language) -> String {
-    match lang {
-        Language::Python
-        | Language::Ruby
-        | Language::Elixir
-        | Language::R
-        | Language::Ffi
-        | Language::Rust
-        | Language::C
-        | Language::Jni
-        | Language::Zig => name.to_snake_case(),
-        Language::Go | Language::Csharp => name.to_pascal_case(),
-        Language::Node | Language::Wasm | Language::Java | Language::Php => to_camel_case(name),
-        Language::Kotlin | Language::KotlinAndroid | Language::Swift | Language::Dart | Language::Gleam => {
-            to_camel_case(name)
-        }
-    }
+    public_casing(lang, PublicIdentifierKind::Field, name)
 }
 
 /// Convert a Rust enum variant name to the idiomatic name for the target language.
+///
+/// Delegates to [`public_casing`], which fixes three independent bugs this function used to
+/// carry on its own:
+/// - Java enum constants are SCREAMING_SNAKE (`INLINE`), not PascalCase (`Inline`).
+/// - Gleam constructors are PascalCase (`Circle`), not the snake_case this function previously
+///   gave every non-JVM/C#/Go language uniformly.
+/// - The acronym-run splitting `heck::to_snake_case`/`to_shouty_snake_case` get wrong for a
+///   name like the real Rust variant `RDFa` (three-letter acronym run + a one-letter suffix)
+///   is exactly what `crate::codegen::naming::case::pascal_to_snake` exists to get right; this
+///   function used to paper over the gap with a hardcoded `if name == "RDFa"` table instead of
+///   fixing the acronym-aware conversion (see that function's `MIN_TRAILING_WORD_LEN` doc
+///   comment for the fix). Deleting the hardcode also means every *other* current or future
+///   variant with the same acronym-run shape is now handled correctly too, not just this one
+///   literal name. ~keep
 pub(crate) fn enum_variant_name(name: &str, lang: Language, ffi_prefix: &str) -> String {
-    if name == "RDFa" {
-        return match lang {
-            Language::Python | Language::Java => "RDFA".to_string(),
-            Language::Ruby | Language::Elixir | Language::Zig => "rdfa".to_string(),
-            Language::R => "rdfa".to_string(),
-            Language::Ffi | Language::C | Language::Jni => format!("{}_{}", ffi_prefix.to_shouty_snake_case(), "RDFA"),
-            _ => "RDFa".to_string(),
-        };
-    }
+    let cased = public_casing(lang, PublicIdentifierKind::EnumVariant, name);
     match lang {
-        Language::Python => name.to_shouty_snake_case(),
-        Language::Java => name.to_shouty_snake_case(),
-        Language::Ruby | Language::Elixir | Language::Zig => name.to_snake_case(),
-        Language::Go
-        | Language::Node
-        | Language::Wasm
-        | Language::Csharp
-        | Language::Php
-        | Language::Kotlin
-        | Language::KotlinAndroid
-        | Language::Swift
-        | Language::Dart
-        | Language::Gleam => name.to_pascal_case(),
-        Language::R => name.to_snake_case(),
-        Language::Rust => name.to_pascal_case(),
-        Language::Ffi | Language::C | Language::Jni => {
-            format!("{}_{}", ffi_prefix.to_shouty_snake_case(), name.to_shouty_snake_case())
-        }
+        Language::Ffi | Language::C | Language::Jni => format!("{}_{}", ffi_prefix.to_shouty_snake_case(), cased),
+        _ => cased,
     }
 }
 
@@ -511,8 +486,11 @@ mod tests {
         );
     }
 
+    /// Regression pin for the deleted `if name == "RDFa"` hardcode: the acronym-run heuristic
+    /// in `crate::codegen::naming::case::pascal_to_snake` now gets this right generically, with
+    /// no per-name table.
     #[test]
-    fn test_enum_variant_name_zig_rdfa_special_case_uses_snake_case() {
+    fn test_enum_variant_name_zig_rdfa_uses_acronym_aware_snake_case() {
         assert_eq!(enum_variant_name("RDFa", Language::Zig, TEST_PREFIX), "rdfa");
     }
 
@@ -590,6 +568,116 @@ mod tests {
                 check_identifier(&rendered, Language::Java, IdentifierPosition::Member, "a naming test"),
                 Ok(()),
                 "`{name}` renders as `{rendered}`, which Java rejects as a member name"
+            );
+        }
+    }
+
+    /// Resolution for the "Java enum variants" disagreement: Java idiom is SCREAMING_SNAKE
+    /// (`INLINE`), matching Python/Ruby/Rust, not `to_pascal_case` (`Inline`). Picked docs'
+    /// pre-existing answer as correct; `host.rs` was the one that had it wrong (see
+    /// `crate::codegen::naming::host::public_enum_variant_name`).
+    #[test]
+    fn test_enum_variant_name_java_uses_screaming_snake_case_for_multi_word_names() {
+        assert_eq!(
+            enum_variant_name("SnakeCase", Language::Java, TEST_PREFIX),
+            "SNAKE_CASE"
+        );
+    }
+
+    /// Resolution for the "Go/C# fields, types, functions" disagreement: Go's own initialism
+    /// list (`crate::codegen::naming::languages::INITIALISMS`) uppercases `URL`; a bare
+    /// `heck::to_pascal_case` (the old `field_name`/`type_name`/`func_name` behavior) would
+    /// stop at `Url`. Picked `host.rs`'s answer (`to_go_name`/`go_type_name`) as correct across
+    /// all three surfaces, since that is what the real Go backend
+    /// (`crate::backends::go::gen_bindings::types::enums`, `type_map.rs`) actually emits.
+    #[test]
+    fn test_go_field_type_and_func_names_apply_initialisms() {
+        assert_eq!(field_name("base_url", Language::Go), "BaseURL");
+        assert_eq!(type_name("base_url", Language::Go, TEST_PREFIX), "BaseURL");
+        assert_eq!(func_name("base_url", Language::Go, TEST_PREFIX), "BaseURL");
+    }
+
+    /// Same disagreement, C# side: `GraphQL` is one of the two initialisms C# preserves in full
+    /// caps (`crate::codegen::naming::languages::CSHARP_INITIALISMS`) -- everything else in C#
+    /// deliberately stays `Url`/`Id`, never `URL`/`ID` (.NET framework design guidelines), which
+    /// is why this disagreement is *not* "make C# match Go": a bare `heck::to_pascal_case`
+    /// happens to already be correct for the common case and must stay that way.
+    #[test]
+    fn test_csharp_type_name_preserves_graphql_initialism_but_not_url() {
+        assert_eq!(
+            type_name("GraphQLRouteConfig", Language::Csharp, TEST_PREFIX),
+            "GraphQLRouteConfig"
+        );
+        assert_eq!(field_name("base_url", Language::Csharp), "BaseUrl");
+    }
+
+    /// Resolution for the "Gleam fields" disagreement: Gleam is snake_case throughout for
+    /// values (fields, functions, parameters), the same family as Rust/Elixir/Erlang -- unlike
+    /// Gleam *constructors* (enum variants), which are PascalCase (see the enum-variant test
+    /// below). Picked `host.rs`'s answer (snake_case) as correct; the old `field_name`/
+    /// `func_name` grouped Gleam with the camelCase languages instead.
+    #[test]
+    fn test_gleam_field_and_func_names_use_snake_case() {
+        assert_eq!(field_name("base_url", Language::Gleam), "base_url");
+        assert_eq!(func_name("base_url", Language::Gleam, TEST_PREFIX), "base_url");
+    }
+
+    /// Gleam's other half: custom-type constructors are PascalCase (`Circle`, `Square`), which
+    /// the old `enum_variant_name` got right (it grouped Gleam with the PascalCase languages)
+    /// while `host.rs` had it wrong (grouped with the snake_case languages) -- the inverse of
+    /// the fields disagreement above. Both were fixed to agree on: fields snake_case, variants
+    /// PascalCase.
+    #[test]
+    fn test_gleam_enum_variant_name_uses_pascal_case() {
+        assert_eq!(
+            enum_variant_name("SnakeCase", Language::Gleam, TEST_PREFIX),
+            "SnakeCase"
+        );
+    }
+
+    /// The regression guard the task asks for: `docs::naming` and
+    /// `crate::codegen::naming::public_host_identifier` must agree, for every `Language`
+    /// variant, on the casing of an ordinary (non-keyword, non-FFI-prefixed) field, type and
+    /// enum variant name. Both now route through the same `public_casing` authority, so this
+    /// currently holds by construction -- its job is to fail loudly the day a future change
+    /// gives either side its own special-cased table again, the way `docs::naming` and
+    /// `host.rs` independently drifted apart five separate times before this authority existed.
+    ///
+    /// FFI/C/Jni are excluded: `docs::naming` prefixes those with `[ffi] prefix` for the
+    /// cbindgen-header spelling (a docs-only concern `public_host_identifier` does not share,
+    /// since it has no `ffi_prefix` parameter), so a direct comparison does not apply there --
+    /// those three are covered separately by `type_name_ffi_matches_cbindgen_export_prefix` and
+    /// `test_enum_variant_name_ffi_uses_prefix`.
+    ///
+    /// The sample names are deliberately ordinary: not a keyword in any of the 20 languages'
+    /// tables, not a Dart core type, not digit-leading -- so `public_host_identifier`'s
+    /// escaping step is a no-op and the comparison isolates casing, not escaping policy (which
+    /// deliberately stays split: `host.rs` auto-escapes for real codegen, `docs::naming` relies
+    /// on `crate::docs::formatting::identifier_violation` to report a collision instead of
+    /// silently renaming it -- see this module's top-of-function docs for why that split is
+    /// intentional, not an oversight).
+    #[test]
+    fn test_field_type_and_enum_variant_casing_agrees_with_public_host_identifier() {
+        use crate::codegen::naming::public_host_identifier;
+
+        for lang in Language::ALL {
+            if matches!(lang, Language::Ffi | Language::C | Language::Jni) {
+                continue;
+            }
+            assert_eq!(
+                field_name("widget_count", lang),
+                public_host_identifier(lang, PublicIdentifierKind::Field, "widget_count"),
+                "{lang:?} field casing must agree with the shared authority"
+            );
+            assert_eq!(
+                type_name("WidgetSettings", lang, TEST_PREFIX),
+                public_host_identifier(lang, PublicIdentifierKind::Type, "WidgetSettings"),
+                "{lang:?} type casing must agree with the shared authority"
+            );
+            assert_eq!(
+                enum_variant_name("WidgetVariant", lang, TEST_PREFIX),
+                public_host_identifier(lang, PublicIdentifierKind::EnumVariant, "WidgetVariant"),
+                "{lang:?} enum variant casing must agree with the shared authority"
             );
         }
     }

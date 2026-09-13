@@ -6,8 +6,8 @@
 //! target language -- not a plausible-looking guess. Before this fix,
 //! `enum_variant_ref::format_enum_variant_ref` used one generic `{EnumType}.{Variant}` (or
 //! `{EnumType}::{Variant}`) shape for every language, which does not parse as valid Go (no
-//! separator between type and constant), does not name the real Java enum constant (Java never
-//! shouty-snake-cases), does not name the real Swift `case` or Dart member (both lowerCamelCase,
+//! separator between type and constant), does not name the real Java enum constant (Java declares
+//! its constants SCREAMING_SNAKE), does not name the real Swift `case` or Dart member (both lowerCamelCase,
 //! not PascalCase), and does not name the real PHP class constant (uppercased with no
 //! underscores inserted). See `enum_variant_ref::format_enum_variant_ref`'s doc comment for the
 //! exact backend call sites each arm below was verified against.
@@ -45,9 +45,11 @@ const REQUIRED_FIELD_DEFAULT_BY_LANGUAGE: &[(Language, &str)] = &[
     // Go concatenates type and variant with no separator
     // (`backends/go/gen_bindings/types/enums.rs::go_enum_constant_for_wire_value`).
     (Language::Go, "`RenderModePreferContent`"),
-    // Java keeps the raw, untransformed variant identifier -- never shouty-snake-case
-    // (`backends/java/gen_bindings/types/enums.rs`'s `simple_enum_class.jinja`).
-    (Language::Java, "`RenderMode.PreferContent`"),
+    // Java declares its enum constants SCREAMING_SNAKE, its own convention
+    // (`backends/java/gen_bindings/types/enums.rs::gen_enum_class`). This entry previously expected
+    // the raw identifier and was accurate then -- the generator pushed `variant.name` verbatim, so
+    // the docs faithfully described a generator that was itself non-idiomatic.
+    (Language::Java, "`RenderMode.PREFER_CONTENT`"),
     // Swift's `case` is lowerCamelCase (`backends/swift/gen_bindings/enums.rs`).
     (Language::Swift, "`RenderMode.preferContent`"),
     // Dart's member is lowerCamelCase (`backends/dart/gen_bindings/types.rs`).
@@ -100,7 +102,7 @@ fn explicit_qualified_enum_variant_default_uses_each_backends_real_syntax() {
 
     let expected_by_language: &[(Language, &str)] = &[
         (Language::Go, "`RenderModeContentOnly`"),
-        (Language::Java, "`RenderMode.ContentOnly`"),
+        (Language::Java, "`RenderMode.CONTENT_ONLY`"),
         (Language::Swift, "`RenderMode.contentOnly`"),
         (Language::Dart, "`RenderMode.contentOnly`"),
         (Language::Php, "`RenderMode::CONTENTONLY`"),
