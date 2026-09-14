@@ -49,8 +49,28 @@ pub fn raw_string_hashes(s: &str) -> usize {
     max_hashes + 1
 }
 
-/// Format a string as a Rust raw string literal (r#"..."#).
+/// Returns `true` if the string must use a Rust quoted literal rather than a raw one.
+///
+/// A raw literal reproduces its content byte for byte, real newlines included, so a value
+/// carrying whitespace immediately before a newline lands as *trailing whitespace on a physical
+/// source line*. Every Rust formatter strips that, silently rewriting the literal to a
+/// different value than the fixture asked for -- and a generated assertion then compares
+/// against something nobody wrote. A Markdown two-space hard break (`"a  \nb"`) is exactly
+/// this shape, so this is reachable from any fixture asserting one. Same class of problem as
+/// [`go_needs_quoted`], and handled the same way. ~keep
+fn rust_needs_quoted(s: &str) -> bool {
+    s.contains(" \n") || s.contains("\t\n")
+}
+
+/// Format a string as a Rust string literal.
+///
+/// Prefers a raw literal (`r#"..."#`) for readability, but falls back to a quoted,
+/// escaped literal when a raw one would not survive formatting -- see
+/// [`rust_needs_quoted`].
 pub fn rust_raw_string(s: &str) -> String {
+    if rust_needs_quoted(s) {
+        return format!("\"{}\"", escape_rust(s));
+    }
     let hashes = raw_string_hashes(s);
     let h: String = "#".repeat(hashes);
     format!("r{h}\"{s}\"{h}")
@@ -542,6 +562,23 @@ pub fn escape_zig(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn rust_raw_string_falls_back_to_quoted_when_whitespace_precedes_a_newline() {
+        // A Markdown two-space hard break: a raw literal would put the two spaces at the end
+        // of a physical source line, where the formatter strips them.
+        let out = rust_raw_string("X `A`  \n`B`\n");
+        assert_eq!(out, "\"X `A`  \\n`B`\\n\"");
+        assert!(!out.contains(" \n"), "no real trailing whitespace may survive: {out}");
+    }
+
+    #[test]
+    fn rust_raw_string_keeps_the_raw_form_when_no_whitespace_precedes_a_newline() {
+        assert_eq!(rust_raw_string("a\nb"), "r#\"a\nb\"#");
+        // Trailing whitespace at the very END of the value is safe -- nothing follows it on
+        // the source line, so the formatter has nothing to strip.
+        assert_eq!(rust_raw_string("abc "), "r#\"abc \"#");
+    }
     use super::*;
 
     #[test]

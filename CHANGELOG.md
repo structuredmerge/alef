@@ -44,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `H_T_M_L_PARSER` for `HTMLParser`; it now delegates to `pascal_to_screaming_snake`. This fixes
   every acronym-bearing Kotlin enum constant, not only the `RDFa` shape.
 
+- **(e2e/rust): a fixture whose expected value carried whitespace before a newline generated an
+  assertion against a different value than the fixture asked for.** `rust_raw_string` always
+  emitted a raw literal (`r#"..."#`), which reproduces its content byte for byte -- so such a
+  value landed as trailing whitespace on a physical source line, and the formatter stripped it.
+  A Markdown two-space hard break is exactly this shape, so any fixture asserting one silently
+  compared against the de-spaced string in the **Rust** suite only; every other language escapes
+  the value onto one line and was already correct. Rust now falls back to a quoted, escaped
+  literal for those values, mirroring the existing `go_needs_quoted` split.
+
 - **(swift): an adjacently tagged enum with an acronym-style variant generated Swift that does
   not compile.** `adjacent_codable.rs` computed the variant's `case_name` through its own raw
   `heck` call while the `case` declarations came from the fixed path, so the type declared
