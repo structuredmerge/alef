@@ -29,20 +29,26 @@ required=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dir)
-      [ $# -ge 2 ] || { echo "toolchain-census: --dir needs a value" >&2; exit 2; }
-      census_dir="$2"
-      shift 2
-      ;;
-    --require)
-      [ $# -ge 2 ] || { echo "toolchain-census: --require needs a value" >&2; exit 2; }
-      required="$required $2"
-      shift 2
-      ;;
-    *)
-      echo "toolchain-census: unknown argument '$1'" >&2
+  --dir)
+    [ $# -ge 2 ] || {
+      echo "toolchain-census: --dir needs a value" >&2
       exit 2
-      ;;
+    }
+    census_dir="$2"
+    shift 2
+    ;;
+  --require)
+    [ $# -ge 2 ] || {
+      echo "toolchain-census: --require needs a value" >&2
+      exit 2
+    }
+    required="$required $2"
+    shift 2
+    ;;
+  *)
+    echo "toolchain-census: unknown argument '$1'" >&2
+    exit 2
+    ;;
   esac
 done
 
