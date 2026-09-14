@@ -28,8 +28,7 @@ fn factory_param_type(ty: &TypeRef, coercible_dtos: &AHashSet<&str>) -> String {
 }
 
 fn to_python_enum_variant(name: &str) -> String {
-    use heck::ToShoutySnakeCase;
-    crate::core::keywords::python_str_enum_ident(&name.to_shouty_snake_case())
+    crate::core::keywords::python_str_enum_ident(&crate::codegen::naming::pascal_to_screaming_snake(name))
 }
 
 /// Generate a Python enum stub.

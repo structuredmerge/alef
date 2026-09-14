@@ -182,6 +182,56 @@ pub fn pascal_to_screaming_snake(name: &str) -> String {
     pascal_to_snake(name).to_ascii_uppercase()
 }
 
+/// Capitalize a single already-lowercase segment produced by [`pascal_to_snake`]'s
+/// underscore-split, leaving every character after the first untouched.
+fn capitalize_segment(segment: &str) -> String {
+    let mut chars = segment.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Convert a PascalCase or mixed-case name to PascalCase with correct acronym handling.
+///
+/// Segments the name exactly as [`pascal_to_snake`] does (so an acronym plus a short
+/// stylization suffix stays one word, per [`MIN_TRAILING_WORD_LEN`]), then capitalizes each
+/// segment. Use this instead of `heck::ToPascalCase` wherever the input is a PascalCase Rust
+/// type or enum variant name.
+///
+/// Examples:
+/// - `MyType`     → `MyType`
+/// - `RDFa`       → `Rdfa`
+/// - `IOError`    → `IoError`
+/// - `HTMLParser` → `HtmlParser`
+pub fn pascal_to_pascal(name: &str) -> String {
+    pascal_to_snake(name).split('_').map(capitalize_segment).collect()
+}
+
+/// Convert a PascalCase or mixed-case name to camelCase with correct acronym handling.
+///
+/// Same segmentation as [`pascal_to_pascal`], but the first segment is left lowercase instead
+/// of capitalized. Use this instead of `heck::ToLowerCamelCase` wherever the input is a
+/// PascalCase Rust type or enum variant name.
+///
+/// Examples:
+/// - `MyType`     → `myType`
+/// - `RDFa`       → `rdfa`
+/// - `IOError`    → `ioError`
+/// - `HTMLParser` → `htmlParser`
+pub fn pascal_to_camel(name: &str) -> String {
+    let snake = pascal_to_snake(name);
+    let mut segments = snake.split('_');
+    let mut out = String::with_capacity(snake.len());
+    if let Some(first) = segments.next() {
+        out.push_str(first);
+    }
+    for segment in segments {
+        out.push_str(&capitalize_segment(segment));
+    }
+    out
+}
+
 /// Join a name's `_`-separated segments by capitalizing the first character after each
 /// underscore, leaving every other character's case untouched.
 ///

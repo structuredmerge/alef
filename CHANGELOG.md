@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.88.0] - 2026-09-14
+
+### Fixed
+
+- **BREAKING: the acronym-aware variant casing added in 0.87.0 now reaches every backend, not
+  just the snake_case ones.** `pascal_to_snake` learned in 0.87.0 that `RDFa` is one word
+  (`rdfa`, per `MIN_TRAILING_WORD_LEN`), and the changelog claimed "the hardcode is gone for
+  every language" -- but only Elixir, Ruby, PHP and Java actually routed through it. Five
+  backends still called `heck` directly, which segments `RDFa` as `RD` + `Fa`, so one Rust enum
+  variant generated **seven different spellings** across a single consumer's bindings: `rdfa`
+  (elixir), `RDFA` (java), `rd_fa` (python dataclass), `RD_FA` (python stub), `RdFa` (csharp,
+  go), `rdFa` (dart, swift) and `R_D_FA` (kotlin-android). Python and Elixir are both snake_case
+  targets and disagreed with each other.
+
+  Two acronym-aware helpers are added -- `pascal_to_pascal` and `pascal_to_camel`, both built on
+  `pascal_to_snake`'s segmentation -- and each backend's `heck` call is replaced by the
+  acronym-aware equivalent **of the same casing**. An emitter's case convention is never
+  changed, only its segmentation: Python's dataclass enum stays snake (`rdfa`) while its stub
+  stays shouty (`RDFA`), because those are two different surfaces with two different
+  conventions. `public_enum_variant_name`'s Go, C# and shared PascalCase arms move with them.
+
+  Consumers must expect renamed enum members wherever a variant name contains a 2+ letter
+  uppercase run followed by exactly one lowercase letter. Names without that shape
+  (`IOError`, `HTMLParser`, `XMLHttpRequest`, `JSONLD`, `MyType`) are byte-identical under both
+  segmentations and do not move.
+
+- **(python): the generated `.pyi` stub declared an enum member the runtime does not have.**
+  The stub emitted `RD_FA` while the `#[pyclass]` it describes declares `#[pyo3(name = "RDFA")]`,
+  so a type checker accepted `StructuredDataType.RD_FA` -- which raises `AttributeError` -- and
+  rejected `RDFA`, which works. Both sides now derive from the same authority. The third copy of
+  the heuristic, a private `to_pyo3_screaming` in `codegen/generators/enums.rs`, is deleted in
+  favour of `pascal_to_screaming_snake`; its output was already correct, so this is de-duplication
+  rather than a behaviour change.
+
+- **(kotlin): `to_screaming_snake` inserted an underscore before every uppercase character.**
+  A hand-rolled loop turned `RDFa` into `R_D_FA` and would equally have produced
+  `H_T_M_L_PARSER` for `HTMLParser`; it now delegates to `pascal_to_screaming_snake`. This fixes
+  every acronym-bearing Kotlin enum constant, not only the `RDFa` shape.
+
+- **(swift): an adjacently tagged enum with an acronym-style variant generated Swift that does
+  not compile.** `adjacent_codable.rs` computed the variant's `case_name` through its own raw
+  `heck` call while the `case` declarations came from the fixed path, so the type declared
+  `case rdfa` and its `Codable` conformance referenced `.rdFa`. Both now share one helper.
+
+### Note
+
+Dart is deliberately unchanged and still spells this variant `rdFa`. For the
+flutter_rust_bridge path the enum is declared by frb, not by alef, so alef must reproduce frb's
+own spelling -- emitting `rdfa` against an enum that only declares `rdFa` would not compile
+(the same constraint already documented on `underscore_camel_case`). The live FFI path derives
+variant names from `public_member_name`, shared by every Dart field, method and parameter, so
+moving it is a wider surface change than this fix.
+
 ## [0.87.1] - 2026-09-14
 
 ### Fixed

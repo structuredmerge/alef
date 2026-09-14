@@ -196,7 +196,7 @@ fn gen_visit_result(
     host_crate_name: &str,
 ) -> anyhow::Result<String> {
     use crate::backends::csharp::template_env::render;
-    use crate::codegen::naming::{csharp_type_name, to_csharp_name, wire_variant_value};
+    use crate::codegen::naming::{csharp_type_name, csharp_variant_name, to_csharp_name, wire_variant_value};
     use minijinja::Value;
 
     let result_metadata = crate::codegen::visitor_result::visitor_result_metadata_from_enum_checked(
@@ -211,7 +211,7 @@ fn gen_visit_result(
         .filter(|variant| variant.fields.is_empty() && !variant.originally_had_data_fields)
         .map(|variant| {
             serde_json::json!({
-                "cs_name": to_csharp_name(&variant.name),
+                "cs_name": csharp_variant_name(&variant.name),
                 "wire_name": wire_variant_value(
                     &variant.name,
                     variant.serde_rename.as_deref(),
@@ -232,7 +232,7 @@ fn gen_visit_result(
                 to_csharp_name(field.name.trim_start_matches('_'))
             };
             serde_json::json!({
-                "cs_name": to_csharp_name(&variant.name),
+                "cs_name": csharp_variant_name(&variant.name),
                 "payload_property": payload_property,
                 "wire_name": wire_variant_value(
                     &variant.name,

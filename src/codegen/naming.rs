@@ -28,7 +28,10 @@ pub mod symbols;
 pub mod ts_property_key;
 pub mod wire;
 
-pub use case::{pascal_to_screaming_snake, pascal_to_snake, to_class_name, to_constant_name, underscore_camel_case};
+pub use case::{
+    pascal_to_camel, pascal_to_pascal, pascal_to_screaming_snake, pascal_to_snake, to_class_name, to_constant_name,
+    underscore_camel_case,
+};
 pub(crate) use host::public_casing;
 pub use host::{public_field_name, public_host_identifier, qualified_type_path};
 pub use identifiers::{
@@ -36,9 +39,10 @@ pub use identifiers::{
     is_valid_identifier, is_valid_identifier_for, validate_identifier,
 };
 pub use languages::{
-    csharp_type_name, csharp_wrapper_class_name, go_error_type_name, go_free_function_name,
-    go_package_name_from_module, go_param_name, go_type_name, kotlin_android_wrapper_object_name, node_type_name,
-    to_csharp_name, to_elixir_name, to_go_name, to_java_name, to_node_name, to_php_name, to_python_name, to_ruby_name,
+    csharp_type_name, csharp_variant_name, csharp_wrapper_class_name, go_error_type_name, go_free_function_name,
+    go_package_name_from_module, go_param_name, go_type_name, go_variant_name, kotlin_android_wrapper_object_name,
+    node_type_name, to_csharp_name, to_elixir_name, to_go_name, to_java_name, to_node_name, to_php_name,
+    to_python_name, to_ruby_name,
 };
 pub use surfaces::{
     IdentifierContext, NameCollision, NameError, NameSurface, PublicIdentifierKind, detect_name_collisions,

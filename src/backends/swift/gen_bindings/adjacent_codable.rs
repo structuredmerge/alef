@@ -7,7 +7,7 @@
 //! both attributes needs its own encoder and decoder — otherwise Rust rejects every value with
 //! `invalid type: ..., expected adjacently tagged enum ...`.
 
-use crate::backends::swift::gen_bindings::enums::swift_associated_label;
+use crate::backends::swift::gen_bindings::enums::{swift_associated_label, swift_variant_case};
 use crate::backends::swift::naming::swift_source_ident as swift_case_ident;
 use crate::backends::swift::type_map::SwiftMapper;
 use crate::codegen::type_mapper::TypeMapper;
@@ -34,7 +34,7 @@ pub(super) fn emit_serde_adjacent_codable(
             variant.serde_rename.as_deref(),
             en.serde_rename_all.as_deref(),
         );
-        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let case_name = swift_variant_case(&variant.name);
         emit_decode_case(
             variant,
             &variant_wire,

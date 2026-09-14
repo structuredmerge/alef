@@ -57,20 +57,11 @@ pub fn to_lower_camel_unescaped(name: &str) -> String {
     }
 }
 
-/// Convert a `PascalCase` name to `SCREAMING_SNAKE_CASE`.
+/// Convert a `PascalCase` name to `SCREAMING_SNAKE_CASE`, with correct acronym-style
+/// segmentation (e.g. `RDFa` -> `RDFA`, `HTMLParser` -> `HTML_PARSER`, not a `_` before every
+/// uppercase letter).
 pub fn to_screaming_snake(name: &str) -> String {
-    let mut out = String::new();
-    for (i, ch) in name.chars().enumerate() {
-        if ch.is_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.extend(ch.to_uppercase());
-        } else {
-            out.extend(ch.to_uppercase());
-        }
-    }
-    out
+    crate::codegen::naming::pascal_to_screaming_snake(name)
 }
 
 /// Kotlin reserved keywords that must be backtick-escaped when used as

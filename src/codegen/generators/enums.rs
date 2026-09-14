@@ -450,24 +450,6 @@ fn gen_pyo3_enum_variant_constructors_content(
     out.trim_end().to_string()
 }
 
-/// Convert a Rust PascalCase variant name to `UPPER_SNAKE_CASE` for PyO3 `#[pyo3(name = "...")]`.
-///
-/// Handles acronym-style names where 2+ leading uppercase characters are followed only by
-/// lowercase letters (e.g. `RDFa` → `RDFA` instead of `RD_FA`). For Python-keyword variants
-/// whose Rust identifier was appended with `_` (e.g. `None_`), the screaming form preserves
-/// the trailing underscore (`NONE_`) so `setattr`-based aliases in `options.py` continue to
-/// work correctly.
-fn to_pyo3_screaming(name: &str) -> String {
-    use heck::ToShoutySnakeCase;
-    let chars: Vec<char> = name.chars().collect();
-    let upper_prefix_len = chars.iter().take_while(|c| c.is_uppercase()).count();
-    if upper_prefix_len >= 2 && chars[upper_prefix_len..].iter().all(|c| c.is_lowercase() || *c == '_') {
-        name.to_ascii_uppercase()
-    } else {
-        name.to_shouty_snake_case()
-    }
-}
-
 /// Apply a serde `rename_all = "..."` rule to a Rust-style variant name. Returns the
 /// transformed wire identifier (`ElementBased` + `snake_case` → `element_based`). An empty
 /// rule (no enum-level rename_all attribute) returns the input unchanged so callers can
@@ -541,7 +523,7 @@ pub fn gen_enum(enum_def: &EnumDef, cfg: &RustBindingConfig, configured_features
             let idx = *idx;
             // In pyo3 context every variant gets #[pyo3(name = "UPPER_SNAKE_CASE")] so the
             let pyo3_name = if is_pyo3 {
-                to_pyo3_screaming(&v.name)
+                crate::codegen::naming::pascal_to_screaming_snake(&v.name)
             } else {
                 String::new()
             };

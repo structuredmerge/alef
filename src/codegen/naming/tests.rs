@@ -526,6 +526,86 @@ fn pascal_to_screaming_snake_my_type() {
 }
 
 #[test]
+fn pascal_to_pascal_rdfa() {
+    assert_eq!(pascal_to_pascal("RDFa"), "Rdfa");
+}
+
+#[test]
+fn pascal_to_pascal_io_error() {
+    assert_eq!(pascal_to_pascal("IOError"), "IoError");
+}
+
+#[test]
+fn pascal_to_pascal_html_parser() {
+    assert_eq!(pascal_to_pascal("HTMLParser"), "HtmlParser");
+}
+
+#[test]
+fn pascal_to_pascal_xml_http_request() {
+    assert_eq!(pascal_to_pascal("XMLHttpRequest"), "XmlHttpRequest");
+}
+
+#[test]
+fn pascal_to_pascal_jsonld_all_caps() {
+    assert_eq!(pascal_to_pascal("JSONLD"), "Jsonld");
+}
+
+#[test]
+fn pascal_to_pascal_my_type() {
+    assert_eq!(pascal_to_pascal("MyType"), "MyType");
+}
+
+#[test]
+fn pascal_to_pascal_camel_case_input() {
+    assert_eq!(pascal_to_pascal("myField"), "MyField");
+}
+
+#[test]
+fn pascal_to_pascal_empty() {
+    assert_eq!(pascal_to_pascal(""), "");
+}
+
+#[test]
+fn pascal_to_camel_rdfa() {
+    assert_eq!(pascal_to_camel("RDFa"), "rdfa");
+}
+
+#[test]
+fn pascal_to_camel_io_error() {
+    assert_eq!(pascal_to_camel("IOError"), "ioError");
+}
+
+#[test]
+fn pascal_to_camel_html_parser() {
+    assert_eq!(pascal_to_camel("HTMLParser"), "htmlParser");
+}
+
+#[test]
+fn pascal_to_camel_xml_http_request() {
+    assert_eq!(pascal_to_camel("XMLHttpRequest"), "xmlHttpRequest");
+}
+
+#[test]
+fn pascal_to_camel_jsonld_all_caps() {
+    assert_eq!(pascal_to_camel("JSONLD"), "jsonld");
+}
+
+#[test]
+fn pascal_to_camel_my_type() {
+    assert_eq!(pascal_to_camel("MyType"), "myType");
+}
+
+#[test]
+fn pascal_to_camel_already_camel() {
+    assert_eq!(pascal_to_camel("myField"), "myField");
+}
+
+#[test]
+fn pascal_to_camel_empty() {
+    assert_eq!(pascal_to_camel(""), "");
+}
+
+#[test]
 fn test_to_csharp_name_graphql_route_config() {
     assert_eq!(to_csharp_name("graphql_route_config"), "GraphQLRouteConfig");
 }

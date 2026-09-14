@@ -1,5 +1,5 @@
 use crate::backends::go::type_map::{go_optional_type, go_type};
-use crate::codegen::naming::{apply_serde_rename_all, go_type_name, to_go_name};
+use crate::codegen::naming::{apply_serde_rename_all, go_type_name, go_variant_name, to_go_name};
 use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeRef};
 use minijinja::context;
 
@@ -134,7 +134,7 @@ fn is_externally_tagged_named_union(enum_def: &EnumDef) -> bool {
 ///
 /// Mirrors the two generators that render `tagged_union_variant_field.jinja`
 /// ([`gen_tuple_tagged_union_type`] and [`gen_externally_tagged_union_type`]): both name the
-/// field `to_go_name(variant)`, and they differ only in the JSON key — the internally tagged
+/// field `go_variant_name(variant)`, and they differ only in the JSON key — the internally tagged
 /// generator snake-cases the variant name for a wire-invisible container field, while the
 /// externally tagged one must use serde's own variant wire name because that key *is* the
 /// wire form. A consumer that re-derived either spelling would fill a field the binding does
@@ -182,7 +182,7 @@ pub(crate) fn go_struct_enum_variant_fields(enum_def: &EnumDef) -> Vec<GoStructE
             };
             Some(GoStructEnumVariantField {
                 variant,
-                field_name: to_go_name(&variant.name),
+                field_name: go_variant_name(&variant.name),
                 json_key,
                 payload,
             })
@@ -208,14 +208,14 @@ pub(crate) fn go_struct_enum_tag_field(enum_def: &EnumDef) -> Option<(String, &s
 
 /// The constructor `adjacent_tagged_enum.jinja` declares for a variant, e.g. `NewShapeCircle`.
 pub(crate) fn go_adjacent_tagged_constructor(enum_def: &EnumDef, variant: &EnumVariant) -> String {
-    format!("New{}{}", go_type_name(&enum_def.name), to_go_name(&variant.name))
+    format!("New{}{}", go_type_name(&enum_def.name), go_variant_name(&variant.name))
 }
 
 /// The concrete Go struct [`gen_data_enum_type`] declares for a variant of a sealed-interface
 /// enum, e.g. `ResponseFormatJSONSchema`. An interface value cannot be constructed directly,
 /// so this name is the only way a snippet can produce one. ~keep
 pub(crate) fn go_data_enum_variant_struct(enum_def: &EnumDef, variant: &EnumVariant) -> String {
-    format!("{}{}", go_type_name(&enum_def.name), to_go_name(&variant.name))
+    format!("{}{}", go_type_name(&enum_def.name), go_variant_name(&variant.name))
 }
 
 /// The single positional field an untagged sealed-interface variant stores in its `Value`
@@ -331,7 +331,7 @@ pub(in crate::backends::go::gen_bindings) fn gen_enum_type(enum_def: &EnumDef, t
 /// The qualified Go constant the binding declares for a unit variant, e.g. `sample.ModeAuto`.
 ///
 /// Mirrors [`gen_unit_enum_type`]'s and [`gen_newtype_tuple_enum_type`]'s `const_name` —
-/// `go_type_name(enum) + to_go_name(variant)` — and their `wire_variant_value` lookup key,
+/// `go_type_name(enum) + go_variant_name(variant)` — and their `wire_variant_value` lookup key,
 /// which is the value the const is initialised to and therefore the value fixture JSON
 /// carries. Only variants with no fields get a constant, so tuple/struct variants of a
 /// `NewtypeTupleString` enum correctly find nothing here. ~keep
@@ -351,7 +351,7 @@ pub(crate) fn go_enum_constant_for_wire_value(enum_def: &EnumDef, wire_value: &s
                     enum_def.serde_rename_all.as_deref(),
                 ) == wire_value
         })
-        .map(|variant| format!("{go_enum_name}{}", to_go_name(&variant.name)))
+        .map(|variant| format!("{go_enum_name}{}", go_variant_name(&variant.name)))
 }
 
 fn gen_adjacent_tagged_enum_type(enum_def: &EnumDef) -> String {
@@ -377,7 +377,7 @@ fn gen_adjacent_tagged_enum_type(enum_def: &EnumDef) -> String {
                 variant.serde_rename.as_deref(),
                 enum_def.serde_rename_all.as_deref(),
             );
-            let constructor = format!("New{go_enum_name}{}", to_go_name(&variant.name));
+            let constructor = format!("New{go_enum_name}{}", go_variant_name(&variant.name));
             let payload_type = variant.fields.first().map(|field| go_type(&field.ty).into_owned());
             minijinja::context! {
                 wire_value,
@@ -507,7 +507,7 @@ pub(in crate::backends::go::gen_bindings) fn gen_newtype_tuple_enum_type(enum_de
         if !variant.fields.is_empty() {
             continue;
         }
-        let const_name = format!("{}{}", go_enum_name, to_go_name(&variant.name));
+        let const_name = format!("{}{}", go_enum_name, go_variant_name(&variant.name));
         let const_value = crate::codegen::naming::wire_variant_value(
             &variant.name,
             variant.serde_rename.as_deref(),
@@ -619,7 +619,7 @@ fn gen_tuple_tagged_union_type(enum_def: &EnumDef) -> String {
             && let TypeRef::Named(struct_type_name) = &field.ty
         {
             let go_struct_type = go_type_name(struct_type_name);
-            let field_name = to_go_name(&variant.name);
+            let field_name = go_variant_name(&variant.name);
             let json_field_name = apply_serde_rename_all(
                 &crate::codegen::naming::pascal_to_snake(&variant.name),
                 enum_def.serde_rename_all.as_deref(),
@@ -708,7 +708,7 @@ fn gen_externally_tagged_union_type(enum_def: &EnumDef) -> String {
             "tagged_union_variant_field.jinja",
             context! {
                 doc_lines => doc_lines,
-                field_name => to_go_name(&variant.name),
+                field_name => go_variant_name(&variant.name),
                 struct_type => go_type_name(struct_type_name),
                 json_field_name => crate::codegen::naming::wire_variant_value(
                     &variant.name,
@@ -745,7 +745,7 @@ fn emit_tagged_union_marshalers(out: &mut String, go_enum_name: &str, enum_def: 
         if let Some(field) = variant.fields.iter().find(|f| is_tuple_field(f))
             && let TypeRef::Named(_) = &field.ty
         {
-            let variant_go_name = to_go_name(&variant.name);
+            let variant_go_name = go_variant_name(&variant.name);
             let wire_value = crate::codegen::naming::wire_variant_value(
                 &variant.name,
                 variant.serde_rename.as_deref(),
@@ -788,7 +788,7 @@ fn emit_tagged_union_marshalers(out: &mut String, go_enum_name: &str, enum_def: 
             && let TypeRef::Named(struct_type_name) = &field.ty
         {
             let go_struct_type = go_type_name(struct_type_name);
-            let variant_go_name = to_go_name(&variant.name);
+            let variant_go_name = go_variant_name(&variant.name);
             let wire_value = crate::codegen::naming::wire_variant_value(
                 &variant.name,
                 variant.serde_rename.as_deref(),
@@ -827,7 +827,7 @@ fn emit_untagged_union_marshalers(out: &mut String, go_enum_name: &str, enum_def
             }
             v.fields.iter().find(|f| is_tuple_field(f)).and_then(|f| {
                 if let TypeRef::Named(struct_type_name) = &f.ty {
-                    Some((to_go_name(&v.name), go_type_name(struct_type_name)))
+                    Some((go_variant_name(&v.name), go_type_name(struct_type_name)))
                 } else {
                     None
                 }
@@ -862,7 +862,7 @@ pub(in crate::backends::go::gen_bindings) fn gen_unit_enum_type(enum_def: &EnumD
         .variants
         .iter()
         .map(|v| {
-            let const_name = format!("{}{}", go_enum_name, to_go_name(&v.name));
+            let const_name = format!("{}{}", go_enum_name, go_variant_name(&v.name));
             let const_value = crate::codegen::naming::wire_variant_value(
                 &v.name,
                 v.serde_rename.as_deref(),
@@ -947,12 +947,12 @@ pub(in crate::backends::go::gen_bindings) fn gen_data_enum_type(enum_def: &EnumD
             variants => variant_names.join(", "),
         },
     ));
-    // Every variant, cased with the same `to_go_name` initialism rule the concrete struct
+    // Every variant, cased with the same `go_variant_name` initialism rule the concrete struct
     // declarations use below (e.g. `ImageUrl` -> `ImageURL`), so the doc comment names the
     // real emitted identifiers instead of a raw-cased approximation. ~keep
     let all_variant_names: Vec<String> = variant_names
         .iter()
-        .map(|name| format!("{go_enum_name}{}", to_go_name(name)))
+        .map(|name| format!("{go_enum_name}{}", go_variant_name(name)))
         .collect();
     out.push_str(&crate::backends::go::template_env::render(
         "data_enum_interface.jinja",
@@ -963,7 +963,7 @@ pub(in crate::backends::go::gen_bindings) fn gen_data_enum_type(enum_def: &EnumD
     ));
 
     for variant in &enum_def.variants {
-        let variant_struct_name = format!("{go_enum_name}{}", to_go_name(&variant.name));
+        let variant_struct_name = format!("{go_enum_name}{}", go_variant_name(&variant.name));
 
         emit_type_doc(
             &mut out,
@@ -1155,7 +1155,7 @@ pub(in crate::backends::go::gen_bindings) fn gen_data_enum_type(enum_def: &EnumD
         ));
 
         for variant in &enum_def.variants {
-            let variant_struct_name = format!("{go_enum_name}{}", to_go_name(&variant.name));
+            let variant_struct_name = format!("{go_enum_name}{}", go_variant_name(&variant.name));
 
             let shape_check = go_data_enum_untagged_shape(variant).map(GoDataEnumShape::go_first_byte_check);
 
@@ -1193,7 +1193,7 @@ pub(in crate::backends::go::gen_bindings) fn gen_data_enum_type(enum_def: &EnumD
                 variant.serde_rename.as_deref(),
                 enum_def.serde_rename_all.as_deref(),
             );
-            let variant_struct_name = format!("{go_enum_name}{}", to_go_name(&variant.name));
+            let variant_struct_name = format!("{go_enum_name}{}", go_variant_name(&variant.name));
             out.push_str(&crate::backends::go::template_env::render(
                 "data_enum_unmarshal_wire_variant.jinja",
                 minijinja::context! {
@@ -1224,7 +1224,7 @@ pub(in crate::backends::go::gen_bindings) fn gen_data_enum_type(enum_def: &EnumD
                 variant.serde_rename.as_deref(),
                 enum_def.serde_rename_all.as_deref(),
             );
-            let variant_struct_name = format!("{go_enum_name}{}", to_go_name(&variant.name));
+            let variant_struct_name = format!("{go_enum_name}{}", go_variant_name(&variant.name));
             out.push_str(&crate::backends::go::template_env::render(
                 "data_enum_unmarshal_external_variant.jinja",
                 minijinja::context! {

@@ -854,8 +854,8 @@ fn result_variants_from_enum(enum_def: &EnumDef, result_type: &str) -> Vec<Resul
                 .to_string();
             ResultVariantMetadata {
                 code: code as i32,
-                helper_name: result_helper_name(result_type, &crate::codegen::naming::to_go_name(&variant.name)),
-                name: crate::codegen::naming::to_go_name(&variant.name),
+                helper_name: result_helper_name(result_type, &crate::codegen::naming::go_variant_name(&variant.name)),
+                name: crate::codegen::naming::go_variant_name(&variant.name),
                 wire_name: crate::codegen::naming::wire_variant_value(
                     &variant.name,
                     variant.serde_rename.as_deref(),

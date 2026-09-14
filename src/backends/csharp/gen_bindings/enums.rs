@@ -2,7 +2,9 @@
 
 use super::{csharp_file_header, is_tuple_field};
 use crate::backends::csharp::type_map::csharp_type;
-use crate::codegen::naming::{csharp_type_name, to_csharp_name, wire_field_name, wire_variant_value};
+use crate::codegen::naming::{
+    csharp_type_name, csharp_variant_name, to_csharp_name, wire_field_name, wire_variant_value,
+};
 use crate::codegen::serde_enum_repr::SerdeEnumRepr;
 use crate::core::ir::EnumDef;
 
@@ -34,7 +36,7 @@ pub(crate) fn variant_accessor_properties(enum_def: &EnumDef) -> Vec<(String, St
             } else {
                 csharp_type(&field.ty).to_string()
             };
-            (return_type != "void").then(|| (to_csharp_name(&variant.name), return_type))
+            (return_type != "void").then(|| (csharp_variant_name(&variant.name), return_type))
         })
         .collect()
 }
@@ -79,7 +81,7 @@ pub(super) fn gen_enum(enum_def: &EnumDef, namespace: &str, text_types: &[String
                 .serde_rename
                 .clone()
                 .unwrap_or_else(|| wire_variant_value(&v.name, None, enum_def.serde_rename_all.as_deref()));
-            let pascal_name = to_csharp_name(&v.name);
+            let pascal_name = csharp_variant_name(&v.name);
             (json_name, pascal_name)
         })
         .collect();
@@ -92,7 +94,7 @@ pub(super) fn gen_enum(enum_def: &EnumDef, namespace: &str, text_types: &[String
                 .serde_rename
                 .clone()
                 .unwrap_or_else(|| wire_variant_value(&v.name, None, enum_def.serde_rename_all.as_deref()));
-            let pascal_name = to_csharp_name(&v.name);
+            let pascal_name = csharp_variant_name(&v.name);
             let doc_lines = super::sanitize_doc_lines_for_csharp(&v.doc);
             let has_doc = !doc_lines.is_empty();
             Value::from_serialize(serde_json::json!({
@@ -158,13 +160,13 @@ fn gen_tagged_union(enum_def: &EnumDef, namespace: &str) -> String {
     out.push('\n');
 
     let variant_names: std::collections::HashSet<String> =
-        enum_def.variants.iter().map(|v| to_csharp_name(&v.name)).collect();
+        enum_def.variants.iter().map(|v| csharp_variant_name(&v.name)).collect();
 
     let _discriminators: Vec<(String, String)> = enum_def
         .variants
         .iter()
         .map(|v| {
-            let pascal = to_csharp_name(&v.name);
+            let pascal = csharp_variant_name(&v.name);
             let disc = v
                 .serde_rename
                 .clone()
@@ -196,7 +198,7 @@ fn gen_tagged_union(enum_def: &EnumDef, namespace: &str) -> String {
     out.push_str("{\n");
 
     for variant in enum_def.variants.iter().filter(|v| !v.binding_excluded) {
-        let pascal = to_csharp_name(&variant.name);
+        let pascal = csharp_variant_name(&variant.name);
 
         let variant_doc_lines = super::sanitize_doc_lines_for_csharp(&variant.doc);
         if !variant_doc_lines.is_empty() {
@@ -356,7 +358,7 @@ fn gen_sealed_union_converter(out: &mut String, _namespace: &str, enum_def: &Enu
         .variants
         .iter()
         .map(|v| {
-            let pascal = to_csharp_name(&v.name);
+            let pascal = csharp_variant_name(&v.name);
             let discriminator = v
                 .serde_rename
                 .clone()

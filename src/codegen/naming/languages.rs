@@ -79,6 +79,19 @@ pub fn to_go_name(name: &str) -> String {
     apply_go_acronyms(&name.to_pascal_case())
 }
 
+/// Convert a Rust PascalCase enum variant name to Go PascalCase convention, with correct
+/// acronym-style segmentation.
+///
+/// This is deliberately a separate function from [`to_go_name`] rather than a shared helper:
+/// `to_go_name` is also used for functions, methods and fields whose inputs are snake_case and
+/// go through `heck`'s `to_pascal_case` correctly. An enum variant's input is already PascalCase
+/// Rust, where `heck::ToPascalCase` re-segments acronym runs incorrectly (`RDFa` → `RdFa`);
+/// [`super::case::pascal_to_pascal`] segments it the way [`super::case::pascal_to_snake`] does
+/// instead (`RDFa` → `Rdfa`). ~keep
+pub fn go_variant_name(name: &str) -> String {
+    apply_go_acronyms(&super::case::pascal_to_pascal(name))
+}
+
 /// Convert a Rust free-function name to its Go wrapper identifier, disambiguating it from a
 /// generated Go type of the same name.
 ///
@@ -187,6 +200,19 @@ pub fn to_java_name(name: &str) -> String {
 /// `{Type}FromJson` helper declarations.
 pub fn to_csharp_name(name: &str) -> String {
     apply_initialisms(&name.to_pascal_case(), CSHARP_INITIALISMS)
+}
+
+/// Convert a Rust PascalCase enum variant name to C# PascalCase convention, with correct
+/// acronym-style segmentation.
+///
+/// This is deliberately a separate function from [`to_csharp_name`] rather than a shared
+/// helper: `to_csharp_name` is also used for methods and properties, whose inputs are
+/// snake_case and go through `heck`'s `to_pascal_case` correctly. An enum variant's input is
+/// already PascalCase Rust, where `heck::ToPascalCase` re-segments acronym runs incorrectly
+/// (`RDFa` → `RdFa`); [`super::case::pascal_to_pascal`] segments it the way
+/// [`super::case::pascal_to_snake`] does instead (`RDFa` → `Rdfa`). ~keep
+pub fn csharp_variant_name(name: &str) -> String {
+    apply_initialisms(&super::case::pascal_to_pascal(name), CSHARP_INITIALISMS)
 }
 
 /// Derive the C# wrapper class name emitted by [`crate::backends::csharp::CsharpBackend`].

@@ -6,6 +6,16 @@ use crate::codegen::type_mapper::TypeMapper;
 use crate::core::ir::{EnumDef, EnumVariant, TypeRef};
 use heck::{AsSnakeCase, ToLowerCamelCase};
 
+/// Convert a Rust PascalCase enum variant name to a Swift `case` identifier, with correct
+/// acronym-style segmentation and keyword escaping.
+///
+/// Use this instead of `heck::ToLowerCamelCase` for a variant name: heck re-segments
+/// acronym runs incorrectly (`RDFa` -> `rdFa`), while [`crate::codegen::naming::pascal_to_camel`]
+/// segments it the way `pascal_to_snake` does (`RDFa` -> `rdfa`). ~keep
+pub(super) fn swift_variant_case(name: &str) -> String {
+    swift_case_ident(&crate::codegen::naming::pascal_to_camel(name))
+}
+
 /// What [`emit_enum`] needs to ask `gen_rust_crate::enums::declared_variants` which variants the
 /// swift-bridge mirror enum actually declares for this build.
 ///
@@ -47,7 +57,7 @@ fn unit_enum_cases(en: &EnumDef, cfg: &EnumDeclarationCfg<'_>) -> String {
     let mut cases = String::new();
     for variant in declared {
         super::client::emit_doc_comment(&variant.doc, "    ", &mut cases);
-        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let case_name = swift_variant_case(&variant.name);
         let raw_value = unit_enum_wire_value(variant, en.serde_rename_all.as_deref());
         if raw_value == case_name.trim_matches('`') {
             cases.push_str(&crate::backends::swift::template_env::render(
@@ -120,7 +130,7 @@ pub(super) fn emit_serde_external_codable(en: &EnumDef, out: &mut String, mapper
     let mut untagged_attempts = String::new();
 
     for variant in &en.variants {
-        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let case_name = swift_variant_case(&variant.name);
         let tag = esc(&wire(variant));
 
         // serde honours `#[serde(untagged)]` on a SINGLE variant, not just on the whole enum
@@ -298,7 +308,7 @@ pub(super) fn emit_serde_tagged_codable(en: &EnumDef, out: &mut String, mapper: 
             en.serde_rename_all.as_deref(),
         );
 
-        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let case_name = swift_variant_case(&variant.name);
 
         if variant.fields.is_empty() {
             decode_cases.push_str(&crate::backends::swift::template_env::render(
@@ -352,7 +362,7 @@ pub(super) fn emit_serde_tagged_codable(en: &EnumDef, out: &mut String, mapper: 
             en.serde_rename_all.as_deref(),
         );
 
-        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let case_name = swift_variant_case(&variant.name);
 
         if variant.fields.is_empty() {
             encode_cases.push_str(&crate::backends::swift::template_env::render(
@@ -441,7 +451,7 @@ pub(super) fn emit_serde_untagged_codable(en: &EnumDef, out: &mut String, mapper
         if variant.fields.len() != 1 {
             continue;
         }
-        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let case_name = swift_variant_case(&variant.name);
         let payload_ty = mapper.map_type(&variant.fields[0].ty);
         let label = swift_associated_label(&variant.fields[0].name, 0);
         decode_attempts.push_str(&crate::backends::swift::template_env::render(
@@ -459,7 +469,7 @@ pub(super) fn emit_serde_untagged_codable(en: &EnumDef, out: &mut String, mapper
         if variant.fields.len() != 1 {
             continue;
         }
-        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let case_name = swift_variant_case(&variant.name);
         let label = swift_associated_label(&variant.fields[0].name, 0);
         encode_cases.push_str(&crate::backends::swift::template_env::render(
             "swift_untagged_encode_case.swift.jinja",
@@ -588,7 +598,7 @@ pub(super) fn emit_swift_wire_tag_accessor(en: &EnumDef, out: &mut String) {
     out.push_str("    public func toString() -> String {\n");
     out.push_str("        switch self {\n");
     for variant in &en.variants {
-        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let case_name = swift_variant_case(&variant.name);
         let wire = crate::codegen::naming::wire_variant_value(
             &variant.name,
             variant.serde_rename.as_deref(),
@@ -631,7 +641,7 @@ pub(super) fn emit_swift_text_accessor(en: &EnumDef, out: &mut String) {
     out.push_str("        switch self {\n");
 
     for variant in &en.variants {
-        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let case_name = swift_variant_case(&variant.name);
         if variant.fields.len() == 1 && is_tuple_variant_field(&variant.fields[0].name) {
             let label = swift_associated_label(&variant.fields[0].name, 0);
             match &variant.fields[0].ty {
@@ -822,7 +832,7 @@ pub(super) fn unit_enum_wire_value(variant: &crate::core::ir::EnumVariant, renam
 /// Emits a single enum case, with or without associated values.
 pub(super) fn emit_variant_with_data(variant: &EnumVariant, out: &mut String, mapper: &SwiftMapper) {
     super::client::emit_doc_comment(&variant.doc, "    ", out);
-    let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+    let case_name = swift_variant_case(&variant.name);
     if variant.fields.is_empty() {
         out.push_str(&crate::backends::swift::template_env::render(
             "enum_case_unit.jinja",

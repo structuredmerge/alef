@@ -14,8 +14,7 @@ use super::enums::{EmitContext, class_name_to_docstring, sanitize_python_doc};
 /// escaping any result that collides with a Python reserved keyword or `str` method name
 /// (e.g. `Del` → `del_`, `Title` → `title_`).
 fn to_python_enum_variant(name: &str) -> String {
-    use heck::ToSnakeCase;
-    crate::core::keywords::python_str_enum_ident(&name.to_snake_case())
+    crate::core::keywords::python_str_enum_ident(&crate::codegen::naming::pascal_to_snake(name))
 }
 
 /// Generate options.py — Python-side enums (StrEnum) and `@dataclass` config types.

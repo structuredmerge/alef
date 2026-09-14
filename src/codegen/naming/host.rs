@@ -9,9 +9,11 @@
 //! this crate, and still not a route any codegen backend should take instead of
 //! [`public_host_identifier`]. ~keep
 
-use super::case::{pascal_to_screaming_snake, pascal_to_snake};
+use super::case::{pascal_to_pascal, pascal_to_screaming_snake, pascal_to_snake};
 use super::identifiers::escape_identifier_for;
-use super::languages::{csharp_type_name, go_param_name, go_type_name, to_csharp_name, to_go_name};
+use super::languages::{
+    csharp_type_name, csharp_variant_name, go_param_name, go_type_name, go_variant_name, to_csharp_name, to_go_name,
+};
 use super::surfaces::{IdentifierContext, PublicIdentifierKind};
 use crate::core::config::Language;
 use heck::{ToLowerCamelCase, ToPascalCase, ToSnakeCase};
@@ -132,8 +134,8 @@ fn public_enum_variant_name(lang: Language, name: &str) -> String {
         // its constant declarations through this same authority.
         Language::Python | Language::Ffi | Language::C | Language::Java => pascal_to_screaming_snake(name),
         Language::Ruby | Language::Elixir | Language::R | Language::Zig => pascal_to_snake(name),
-        Language::Go => go_type_name(&name.to_pascal_case()),
-        Language::Csharp => csharp_type_name(&name.to_pascal_case()),
+        Language::Go => go_variant_name(name),
+        Language::Csharp => csharp_variant_name(name),
         // ~keep Gleam custom-type constructors are PascalCase (`Circle`, `Square`), unlike
         // Gleam's snake_case fields/functions in `public_member_name` below -- this used to sit
         // in the snake_case arm above, which would have emitted a lowercase constructor Gleam's
@@ -151,7 +153,7 @@ fn public_enum_variant_name(lang: Language, name: &str) -> String {
         | Language::Swift
         | Language::Dart
         | Language::Gleam
-        | Language::Jni => name.to_pascal_case(),
+        | Language::Jni => pascal_to_pascal(name),
     }
 }
 
