@@ -210,7 +210,7 @@ pub(super) fn emit_serde_external_codable(en: &EnumDef, out: &mut String, mapper
     // With an untagged fallback present an unrecognized string is NOT an error -- it is that
     // variant's payload -- so the unit-tag switch must fall through instead of throwing. ~keep
     let unknown_tag_arm = if untagged_attempts.is_empty() {
-        "                throw DecodingError.dataCorrupted(\n                    .init(codingPath: decoder.codingPath, debugDescription: \"unknown variant tag\"))".to_string()
+        "                throw DecodingError.dataCorrupted(\n                    .init(codingPath: decoder.codingPath, debugDescription: \"unknown variant tag \\(raw)\"))".to_string()
     } else {
         "                break".to_string()
     };
