@@ -45,6 +45,66 @@ public enum StreamEvent: Codable, Sendable, Hashable {
     case error(message: String?)
     /// Stream completed with item count.
     case done(count: UInt32)
+
+    fileprivate struct __AlefExternalTagKey: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(_ stringValue: String) { self.stringValue = stringValue }
+        init?(stringValue: String) { self.init(stringValue) }
+        init?(intValue: Int) { nil }
+    }
+
+    public init(from decoder: Decoder) throws {
+        if let single = try? decoder.singleValueContainer(), let raw = try? single.decode(String.self) {
+            switch raw {
+            default:
+                throw DecodingError.dataCorrupted(
+                    .init(codingPath: decoder.codingPath, debugDescription: "unknown variant tag \(raw)"))
+            }
+        }
+        let container = try decoder.container(keyedBy: __AlefExternalTagKey.self)
+        guard container.allKeys.count == 1, let key = container.allKeys.first else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "expected exactly one variant key"))
+        }
+        switch key.stringValue {
+        case "Data":
+            let nested = try container.nestedContainer(keyedBy: __AlefExternalTagKey.self, forKey: key)
+            self = .data(
+                chunk: try nested.decodeIfPresent(Chunk.self, forKey: __AlefExternalTagKey("chunk"))
+            )
+        case "Error":
+            let nested = try container.nestedContainer(keyedBy: __AlefExternalTagKey.self, forKey: key)
+            self = .error(
+                message: try nested.decodeIfPresent(String.self, forKey: __AlefExternalTagKey("message"))
+            )
+        case "Done":
+            let nested = try container.nestedContainer(keyedBy: __AlefExternalTagKey.self, forKey: key)
+            self = .done(
+                count: try nested.decode(UInt32.self, forKey: __AlefExternalTagKey("count"))
+            )
+        default:
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "unknown variant key \(key.stringValue)"))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .data(let chunk):
+            var container = encoder.container(keyedBy: __AlefExternalTagKey.self)
+            var nested = container.nestedContainer(keyedBy: __AlefExternalTagKey.self, forKey: __AlefExternalTagKey("Data"))
+            try nested.encodeIfPresent(chunk, forKey: __AlefExternalTagKey("chunk"))
+        case .error(let message):
+            var container = encoder.container(keyedBy: __AlefExternalTagKey.self)
+            var nested = container.nestedContainer(keyedBy: __AlefExternalTagKey.self, forKey: __AlefExternalTagKey("Error"))
+            try nested.encodeIfPresent(message, forKey: __AlefExternalTagKey("message"))
+        case .done(let count):
+            var container = encoder.container(keyedBy: __AlefExternalTagKey.self)
+            var nested = container.nestedContainer(keyedBy: __AlefExternalTagKey.self, forKey: __AlefExternalTagKey("Done"))
+            try nested.encode(count, forKey: __AlefExternalTagKey("count"))
+        }
+    }
 }
 extension StreamEvent {
     /// Returns the serde wire tag identifying this variant -- the same value

@@ -100,6 +100,10 @@ pub(super) static TEMPLATES: &[(&str, &str)] = &[
         include_str!("../templates/swift_untagged_codable.swift.jinja"),
     ),
     (
+        "swift_external_codable.swift.jinja",
+        include_str!("../templates/swift_external_codable.swift.jinja"),
+    ),
+    (
         "swift_tagged_coding_key_case.swift.jinja",
         include_str!("../templates/swift_tagged_coding_key_case.swift.jinja"),
     ),

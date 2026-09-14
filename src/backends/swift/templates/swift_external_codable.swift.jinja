@@ -1,0 +1,31 @@
+    fileprivate struct __AlefExternalTagKey: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(_ stringValue: String) { self.stringValue = stringValue }
+        init?(stringValue: String) { self.init(stringValue) }
+        init?(intValue: Int) { nil }
+    }
+
+    public init(from decoder: Decoder) throws {
+        if let single = try? decoder.singleValueContainer(), let raw = try? single.decode(String.self) {
+            switch raw {
+{{ unit_decode }}            default:
+{{ unknown_tag_arm }}
+            }
+        }
+{{ untagged_attempts }}        let container = try decoder.container(keyedBy: __AlefExternalTagKey.self)
+        guard container.allKeys.count == 1, let key = container.allKeys.first else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "expected exactly one variant key"))
+        }
+        switch key.stringValue {
+{{ keyed_decode }}        default:
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "unknown variant key \(key.stringValue)"))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+{{ encode_cases }}        }
+    }

@@ -85,9 +85,145 @@ fn serde_codable_body(en: &EnumDef, repr: &SerdeEnumRepr, mapper: &SwiftMapper) 
         SerdeEnumRepr::Untagged if has_untagged_single_payloads(en) => {
             emit_serde_untagged_codable(en, &mut body, mapper);
         }
-        SerdeEnumRepr::External | SerdeEnumRepr::Untagged => {}
+        SerdeEnumRepr::External => emit_serde_external_codable(en, &mut body, mapper),
+        SerdeEnumRepr::Untagged => {}
     }
     body
+}
+
+/// Emit `init(from:)`/`encode(to:)` for an EXTERNALLY tagged enum (serde's default) that carries
+/// data on at least one variant.
+///
+/// Without this the enum fell through to Swift's compiler-synthesized `Codable`, which uses a
+/// keyed container for EVERY variant -- `{"plain":{}}` for a unit variant and
+/// `{"custom":{"field0":"x"}}` for a newtype one. serde writes neither: a unit variant is a bare
+/// string `"plain"`, and a newtype variant is a single-keyed object whose value IS the payload,
+/// `{"custom":"x"}`. Decoding real wire data therefore threw `typeMismatch` on every value of such
+/// a type, and the compiler could not see it. Confirmed against a real binding: every
+/// bridge-constructed value carrying one of these enums failed to decode.
+///
+/// An all-unit externally tagged enum never reaches here -- it is emitted as a `String`-backed
+/// `RawRepresentable` by the `swift_enum_raw_decl` branch, whose raw values already match serde. ~keep
+pub(super) fn emit_serde_external_codable(en: &EnumDef, out: &mut String, mapper: &SwiftMapper) {
+    let wire = |variant: &EnumVariant| {
+        crate::codegen::naming::wire_variant_value(
+            &variant.name,
+            variant.serde_rename.as_deref(),
+            en.serde_rename_all.as_deref(),
+        )
+    };
+    let esc = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
+
+    let mut unit_decode = String::new();
+    let mut keyed_decode = String::new();
+    let mut encode_cases = String::new();
+    let mut untagged_attempts = String::new();
+
+    for variant in &en.variants {
+        let case_name = swift_case_ident(&variant.name.to_lower_camel_case());
+        let tag = esc(&wire(variant));
+
+        // serde honours `#[serde(untagged)]` on a SINGLE variant, not just on the whole enum
+        // (`EnumVariant::serde_untagged`), and `serde_enum_repr` only reads the enum-level flag --
+        // so an otherwise externally tagged enum can still carry one variant whose payload is
+        // written bare, with no tag wrapper at all. `OutputFormat::Custom(String)` is exactly
+        // that: `Custom("latex")` serializes as `"latex"`, NOT `{"custom":"latex"}`. Emitting the
+        // keyed form for it would produce a Codable that cannot read its own wire. ~keep
+        if variant.serde_untagged && variant.fields.len() == 1 {
+            let payload_ty = mapper.map_type(&variant.fields[0].ty);
+            let label = swift_associated_label(&variant.fields[0].name, 0);
+            untagged_attempts.push_str(&format!(
+                "        if let single = try? decoder.singleValueContainer(), let value = try? single.decode({payload_ty}.self) {{\n            self = .{case_name}({label}: value)\n            return\n        }}\n"
+            ));
+            encode_cases.push_str(&format!(
+                "        case .{case_name}(let value):\n            var single = encoder.singleValueContainer()\n            try single.encode(value)\n"
+            ));
+            continue;
+        }
+
+        if variant.fields.is_empty() {
+            unit_decode.push_str(&format!(
+                "            case \"{tag}\":\n                self = .{case_name}\n                return\n"
+            ));
+            encode_cases.push_str(&format!(
+                "        case .{case_name}:\n            var single = encoder.singleValueContainer()\n            try single.encode(\"{tag}\")\n"
+            ));
+            continue;
+        }
+
+        if variant.is_tuple && variant.fields.len() == 1 {
+            let label = swift_associated_label(&variant.fields[0].name, 0);
+            let (decode_fn, encode_fn, payload_ty) = match &variant.fields[0].ty {
+                TypeRef::Optional(inner) => ("decodeIfPresent", "encodeIfPresent", mapper.map_type(inner)),
+                other if variant.fields[0].optional => ("decodeIfPresent", "encodeIfPresent", mapper.map_type(other)),
+                other => ("decode", "encode", mapper.map_type(other)),
+            };
+            keyed_decode.push_str(&format!(
+                "        case \"{tag}\":\n            self = .{case_name}({label}: try container.{decode_fn}({payload_ty}.self, forKey: key))\n"
+            ));
+            encode_cases.push_str(&format!(
+                "        case .{case_name}(let value):\n            var container = encoder.container(keyedBy: __AlefExternalTagKey.self)\n            try container.{encode_fn}(value, forKey: __AlefExternalTagKey(\"{tag}\"))\n"
+            ));
+            continue;
+        }
+
+        let mut binds = Vec::new();
+        let mut reads = String::new();
+        let mut writes = String::new();
+        for (index, field) in variant.fields.iter().enumerate() {
+            let label = swift_associated_label(&field.name, index);
+            let field_ty = mapper.map_type(&field.ty);
+            let field_wire = esc(&crate::codegen::naming::wire_field_name(
+                &field.name,
+                field.serde_rename.as_deref(),
+                None,
+            ));
+            binds.push(format!("let {label}"));
+            // serde omits a `None` field entirely (`skip_serializing_if`), so a non-present key is
+            // absence, not corruption -- `decode` throws `keyNotFound` on it. ~keep
+            // Must use the SAME optionality predicate `emit_variant_with_data` used to DECLARE
+            // this associated value (`f.optional || TypeRef::Optional`) -- a declaration that says
+            // `String?` decoded with `decode(String.self)` throws `keyNotFound` on the absent key
+            // serde writes for `None`, and the two drifting apart is invisible to the compiler. ~keep
+            let (decode_fn, encode_fn, decoded_ty) = match &field.ty {
+                TypeRef::Optional(inner) => ("decodeIfPresent", "encodeIfPresent", mapper.map_type(inner)),
+                other if field.optional => ("decodeIfPresent", "encodeIfPresent", mapper.map_type(other)),
+                _ => ("decode", "encode", field_ty.clone()),
+            };
+            reads.push_str(&format!(
+                "                {label}: try nested.{decode_fn}({decoded_ty}.self, forKey: __AlefExternalTagKey(\"{field_wire}\")),\n"
+            ));
+            writes.push_str(&format!(
+                "            try nested.{encode_fn}({label}, forKey: __AlefExternalTagKey(\"{field_wire}\"))\n"
+            ));
+        }
+        let reads = reads.trim_end().trim_end_matches(',').to_string();
+        keyed_decode.push_str(&format!(
+            "        case \"{tag}\":\n            let nested = try container.nestedContainer(keyedBy: __AlefExternalTagKey.self, forKey: key)\n            self = .{case_name}(\n{reads}\n            )\n"
+        ));
+        encode_cases.push_str(&format!(
+            "        case .{case_name}({}):\n            var container = encoder.container(keyedBy: __AlefExternalTagKey.self)\n            var nested = container.nestedContainer(keyedBy: __AlefExternalTagKey.self, forKey: __AlefExternalTagKey(\"{tag}\"))\n{writes}",
+            binds.join(", ")
+        ));
+    }
+
+    // With an untagged fallback present an unrecognized string is NOT an error -- it is that
+    // variant's payload -- so the unit-tag switch must fall through instead of throwing. ~keep
+    let unknown_tag_arm = if untagged_attempts.is_empty() {
+        "                throw DecodingError.dataCorrupted(\n                    .init(codingPath: decoder.codingPath, debugDescription: \"unknown variant tag\"))".to_string()
+    } else {
+        "                break".to_string()
+    };
+    out.push_str(&crate::backends::swift::template_env::render(
+        "swift_external_codable.swift.jinja",
+        minijinja::context! {
+            unit_decode => unit_decode,
+            keyed_decode => keyed_decode,
+            encode_cases => encode_cases,
+            untagged_attempts => untagged_attempts,
+            unknown_tag_arm => unknown_tag_arm,
+        },
+    ));
 }
 
 /// `emit_serde_untagged_codable` decodes each variant through a single-value container, which
@@ -987,5 +1123,94 @@ mod wire_tag_accessor_tests {
         // switch stays exhaustive against the real declaration.
         assert!(out.contains("case pdf(field0: String)"), "got:\n{out}");
         assert!(out.contains("case excel(field0: String)"), "got:\n{out}");
+    }
+}
+
+/// Pins the externally tagged (serde default) Codable body against the three wire shapes serde
+/// actually writes. Before `emit_serde_external_codable` existed these enums fell through to
+/// Swift's synthesized `Codable`, which keys EVERY variant -- `{"plain":{}}` for a unit variant,
+/// `{"custom":{"field0":"x"}}` for a newtype one -- so no real wire value decoded. Verified against
+/// a built binding with `swiftc`: `"plain"` and `{"custom":"foo"}` both round-trip now and both
+/// threw `typeMismatch` before. ~keep
+#[cfg(test)]
+mod external_codable_tests {
+    use super::*;
+    use crate::core::ir::FieldDef;
+    use std::collections::HashSet;
+
+    fn external_enum() -> EnumDef {
+        EnumDef {
+            name: "OutputFormat".to_string(),
+            has_serde: true,
+            serde_rename_all: Some("snake_case".to_string()),
+            variants: vec![
+                EnumVariant {
+                    name: "Plain".to_string(),
+                    ..EnumVariant::default()
+                },
+                EnumVariant {
+                    name: "Custom".to_string(),
+                    fields: vec![FieldDef {
+                        name: "_0".to_string(),
+                        ty: TypeRef::String,
+                        ..FieldDef::default()
+                    }],
+                    is_tuple: true,
+                    ..EnumVariant::default()
+                },
+            ],
+            ..EnumDef::default()
+        }
+    }
+
+    fn render(en: &EnumDef) -> String {
+        let mut out = String::new();
+        emit_enum(
+            en,
+            &mut out,
+            &SwiftMapper,
+            &HashSet::new(),
+            &[],
+            &EnumDeclarationCfg::new("sample", &[]),
+        );
+        out
+    }
+
+    #[test]
+    fn externally_tagged_enum_declares_a_custom_codable_body() {
+        let out = render(&external_enum());
+        assert!(
+            out.contains("public init(from decoder: Decoder) throws {"),
+            "got:\n{out}"
+        );
+        assert!(out.contains("struct __AlefExternalTagKey: CodingKey"), "got:\n{out}");
+    }
+
+    #[test]
+    fn a_unit_variant_decodes_from_a_bare_string_not_a_keyed_object() {
+        let out = render(&external_enum());
+        // serde writes a fieldless variant as a bare string; the synthesized Codable this
+        // replaces expected `{"plain":{}}` and threw typeMismatch on the real value.
+        assert!(out.contains("try? single.decode(String.self)"), "got:\n{out}");
+        assert!(out.contains("case \"plain\":"), "got:\n{out}");
+        assert!(out.contains("try single.encode(\"plain\")"), "got:\n{out}");
+    }
+
+    #[test]
+    fn a_newtype_variant_decodes_the_payload_directly_under_its_tag_key() {
+        let out = render(&external_enum());
+        // `{"custom":"foo"}` -- the value under the tag IS the payload, with no `field0` wrapper.
+        assert!(
+            out.contains("self = .custom(field0: try container.decode(String.self, forKey: key))"),
+            "got:\n{out}"
+        );
+        assert!(
+            out.contains("try container.encode(value, forKey: __AlefExternalTagKey(\"custom\"))"),
+            "got:\n{out}"
+        );
+        assert!(
+            !out.contains("\"field0\""),
+            "payload must not be wrapped in a field0 key:\n{out}"
+        );
     }
 }

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.87.1] - 2026-09-14
+
+### Fixed
+
+- **(swift): an externally tagged enum carrying data on any variant now decodes serde's wire.**
+  serde's default representation writes a fieldless variant as a bare string (`"plain"`) and a
+  newtype variant as a single-keyed object whose value IS the payload (`{"custom":"foo"}`).
+  `serde_codable_body` emitted a custom `Codable` for the internally tagged, adjacently tagged and
+  untagged representations but fell through for the external one, leaving Swift's synthesized
+  conformance, which keys every variant: `{"plain":{}}` and `{"custom":{"field0":"foo"}}`. No real
+  wire value decoded, and the compiler could not see it -- every bridge-constructed value carrying
+  such an enum threw `DecodingError.typeMismatch` at runtime. Unit, newtype and struct variants are
+  all handled, and an all-unit enum is unaffected (it is still emitted as a `String`-backed
+  `RawRepresentable`, whose raw values already matched serde). Reported against a consumer's Swift
+  package and confirmed against a second binding's generated types.
+
 ## [0.87.0] - 2026-09-13
 
 ### Added
