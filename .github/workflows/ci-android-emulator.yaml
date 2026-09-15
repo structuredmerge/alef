@@ -37,8 +37,14 @@ jobs:
           java-version: "17"
           distribution: "temurin"
 
+      # Google removed the legacy `tools` SDK package, but setup-android's `packages` input
+      # still defaults to `tools platform-tools`, so a bare invocation now dies on
+      # `Warning: Failed to find package 'tools'` -> sdkmanager exit 1. platform-tools is
+      # what android-emulator-runner needs from this step (adb). ~keep
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
       - name: Generate e2e Android test sources
         run: cargo run -p alef -- generate --lang kotlin_android 2>/dev/null || echo "codegen step skipped"
