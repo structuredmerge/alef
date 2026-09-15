@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.89.0] - 2026-09-15
+
+### Fixed
+
+- **BREAKING: (php) an externally tagged enum now reads and writes the wire serde emits.** The flat
+  `#[php_class]` these enums lower to carried `#[derive(serde::Serialize, serde::Deserialize)]`, so
+  it read and wrote its own storage shape — `{"type":"markdown"}`. serde writes neither: an
+  externally tagged unit variant is a bare string, a data variant is a single-keyed object whose
+  value IS the payload, and a variant carrying `#[serde(untagged)]` is its bare payload with no
+  wrapper at all. No real wire value deserialized. In xberg's PHP binding every `outputFormat` call
+  raised `invalid type: string "markdown", expected struct OutputFormat`; 5 of 98 e2e tests errored
+  and the defect shipped in three releases. Hand-written impls replace the derive; `visit_map` still
+  accepts the flat object form, so JSON these classes previously emitted keeps deserializing.
+
+- **BREAKING: (wasm) a JSON-passthrough field now reaches JavaScript as a plain object, not a
+  `Map`.** `serde_wasm_bindgen`'s default `Serializer` renders every serde *map* as a JS `Map`, and
+  both `serde_json::Value::Object` and serde's internally tagged enum representation serialize
+  through the map interface. So a tagged-data-enum field arrived as a `Map`, on which property
+  access returns `undefined`, while the generated `.d.ts` declared a plain object. xberg's wasm e2e
+  read `metadata.format.sheetCount` as `NaN` and `metadata.format.title` as `''`. These sites now
+  bridge through `JSON.parse`, already this module's idiom for `Map<String, String>` fields.
+
 ## [0.88.0] - 2026-09-14
 
 ### Fixed
