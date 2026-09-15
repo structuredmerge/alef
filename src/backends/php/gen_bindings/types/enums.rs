@@ -437,6 +437,33 @@ pub(crate) fn gen_external_enum_serde_impls(enum_def: &EnumDef) -> String {
     let mut seen_flat_fields: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut variant_list: Vec<String> = Vec::new();
 
+    // Every flat field the struct declares, in declaration order, so each constructed value can
+    // list all of them. `..Default::default()` would be shorter but trips `clippy::needless_update`
+    // on a two-field enum where the arm already sets both -- and the generated crate is compiled
+    // under `-D warnings`. ~keep
+    let flat_fields: Vec<String> = {
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        enum_def
+            .variants
+            .iter()
+            .flat_map(|variant| (0..variant.fields.len()).map(move |index| flat_field_name(variant, index)))
+            .filter(|flat_name| seen.insert(flat_name.clone()))
+            .collect()
+    };
+    // `{tag_field}_tag: <tag>` plus every flat field, the named one carrying `value` and the rest
+    // `None`.
+    let literal = |tag: &str, set_field: Option<&str>, value_expr: &str| {
+        let mut parts = vec![format!("{tag_field}_tag: {tag:?}.to_string()")];
+        for flat in &flat_fields {
+            if Some(flat.as_str()) == set_field {
+                parts.push(format!("{flat}: {value_expr}"));
+            } else {
+                parts.push(format!("{flat}: None"));
+            }
+        }
+        format!("{enum_name} {{ {} }}", parts.join(", "))
+    };
+
     for variant in &enum_def.variants {
         let tag = variant_tag_value(variant, enum_def);
         variant_list.push(format!("{tag:?}"));
@@ -444,7 +471,8 @@ pub(crate) fn gen_external_enum_serde_impls(enum_def: &EnumDef) -> String {
         if variant.fields.is_empty() {
             serialize_arms.push_str(&format!("            {tag:?} => serializer.serialize_str({tag:?}),\n"));
             visit_str_arms.push_str(&format!(
-                "                    {tag:?} => Ok({enum_name} {{ {tag_field}_tag: {tag:?}.to_string(), ..Default::default() }}),\n"
+                "                    {tag:?} => Ok({}),\n",
+                literal(&tag, None, "")
             ));
             continue;
         }
@@ -461,7 +489,8 @@ pub(crate) fn gen_external_enum_serde_impls(enum_def: &EnumDef) -> String {
                 "            {tag:?} => serializer.serialize_str(self.{label}.as_deref().unwrap_or_default()),\n"
             ));
             untagged_fallback = Some(format!(
-                "                    value => Ok({enum_name} {{ {tag_field}_tag: {tag:?}.to_string(), {label}: Some(value.to_string()), ..Default::default() }}),\n"
+                "                    value => Ok({}),\n",
+                literal(&tag, Some(&label), "Some(value.to_string())")
             ));
             continue;
         }
@@ -470,7 +499,8 @@ pub(crate) fn gen_external_enum_serde_impls(enum_def: &EnumDef) -> String {
             "            {tag:?} => {{\n                use serde::ser::SerializeMap;\n                let mut map = serializer.serialize_map(Some(1))?;\n                map.serialize_entry({tag:?}, self.{label}.as_deref().unwrap_or_default())?;\n                map.end()\n            }}\n"
         ));
         visit_map_arms.push_str(&format!(
-            "                    Some((key, entry)) if key == {tag:?} => Ok({enum_name} {{ {tag_field}_tag: {tag:?}.to_string(), {label}: entry.as_str().map(str::to_string), ..Default::default() }}),\n"
+            "                    Some((key, entry)) if key == {tag:?} => Ok({}),\n",
+            literal(&tag, Some(&label), "entry.as_str().map(str::to_string)")
         ));
     }
 

@@ -1091,6 +1091,20 @@ mod external_enum_serde_tests {
     }
 
     #[test]
+    fn constructed_values_list_every_field_rather_than_using_update_syntax() {
+        let generated = gen_external_enum_serde_impls(&output_format());
+        assert!(
+            !generated.contains("..Default::default()"),
+            "`..Default::default()` on an arm that already sets every field trips \
+             clippy::needless_update, and the generated crate compiles under -D warnings; got:\n{generated}"
+        );
+        assert!(
+            generated.contains(r#""markdown" => Ok(OutputFormat { type_tag: "markdown".to_string(), custom: None })"#),
+            "a unit variant must still null the label field explicitly; got:\n{generated}"
+        );
+    }
+
+    #[test]
     fn map_form_still_reads_the_classes_own_flat_shape() {
         let generated = gen_external_enum_serde_impls(&output_format());
         assert!(
