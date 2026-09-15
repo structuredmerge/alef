@@ -19,13 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the defect shipped in three releases. Hand-written impls replace the derive; `visit_map` still
   accepts the flat object form, so JSON these classes previously emitted keeps deserializing.
 
-- **BREAKING: (wasm) a JSON-passthrough field now reaches JavaScript as a plain object, not a
-  `Map`.** `serde_wasm_bindgen`'s default `Serializer` renders every serde *map* as a JS `Map`, and
-  both `serde_json::Value::Object` and serde's internally tagged enum representation serialize
-  through the map interface. So a tagged-data-enum field arrived as a `Map`, on which property
-  access returns `undefined`, while the generated `.d.ts` declared a plain object. xberg's wasm e2e
-  read `metadata.format.sheetCount` as `NaN` and `metadata.format.title` as `''`. These sites now
-  bridge through `JSON.parse`, already this module's idiom for `Map<String, String>` fields.
+- **BREAKING: (wasm) a camelCase-recased tagged enum field now reaches JavaScript as a plain
+  object, not a `Map`.** `serde_wasm_bindgen`'s default `Serializer` renders every serde *map* as a
+  JS `Map`, and the recasing pipeline hands it a `serde_json::Value::Object`. So the field arrived
+  as a `Map`, on which property access returns `undefined`, while the `.d.ts` `ts_union` emits for
+  it declared a plain object with camelCase keys. xberg's wasm e2e read `metadata.format.sheetCount`
+  as `NaN` and `metadata.format.title` as `''`. These sites now bridge through `JSON.parse`, already
+  this module's idiom for `Map<String, String>` fields. The raw (non-recased)
+  `tagged_data_enum_names` passthrough deliberately keeps `serde_wasm_bindgen`: it also carries
+  UNTAGGED data enums, whose declared TypeScript union `ts_union` derives *from* what
+  `serde_wasm_bindgen` produces, and whose shapes (a bare string, an array) are not maps and never
+  had the defect.
 
 ## [0.88.0] - 2026-09-14
 
