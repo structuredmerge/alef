@@ -239,6 +239,22 @@ static TEMPLATES: &[(&str, &str)] = &[
         include_str!("templates/php_facade_function_doc_return.jinja"),
     ),
     (
+        "php_external_enum_struct_start.jinja",
+        include_str!("templates/php_external_enum_struct_start.jinja"),
+    ),
+    (
+        "php_external_enum_tag_field.jinja",
+        include_str!("templates/php_external_enum_tag_field.jinja"),
+    ),
+    (
+        "php_external_enum_option_field.jinja",
+        include_str!("templates/php_external_enum_option_field.jinja"),
+    ),
+    (
+        "php_external_enum_serde.jinja",
+        include_str!("templates/php_external_enum_serde.jinja"),
+    ),
+    (
         "php_flat_enum_struct_start.jinja",
         include_str!("templates/php_flat_enum_struct_start.jinja"),
     ),

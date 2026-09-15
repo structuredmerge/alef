@@ -951,3 +951,151 @@ mod labeled_string_enum_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod external_enum_serde_tests {
+    use super::super::{gen_external_enum_serde_impls, gen_flat_data_enum};
+    use crate::backends::php::type_map::PhpMapper;
+    use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeRef};
+    use ahash::AHashSet;
+
+    fn mapper() -> PhpMapper {
+        PhpMapper {
+            enum_names: AHashSet::new(),
+            data_enum_names: AHashSet::from_iter(["OutputFormat".to_string()]),
+            untagged_data_enum_names: AHashSet::new(),
+            json_string_enum_names: AHashSet::new(),
+        }
+    }
+
+    /// `xberg::OutputFormat`: externally tagged, `rename_all = "lowercase"`, unit variants plus one
+    /// `#[serde(untagged)] Custom(String)`.
+    fn output_format() -> EnumDef {
+        EnumDef {
+            name: "OutputFormat".to_string(),
+            rust_path: "crate::OutputFormat".to_string(),
+            serde_rename_all: Some("lowercase".to_string()),
+            variants: vec![
+                EnumVariant {
+                    name: "Plain".to_string(),
+                    is_default: true,
+                    ..Default::default()
+                },
+                EnumVariant {
+                    name: "Markdown".to_string(),
+                    ..Default::default()
+                },
+                EnumVariant {
+                    name: "Custom".to_string(),
+                    is_tuple: true,
+                    serde_untagged: true,
+                    fields: vec![FieldDef {
+                        name: "_0".to_string(),
+                        ty: TypeRef::String,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// Same shape without the `#[serde(untagged)]` marker: serde writes the data variant as a
+    /// single-keyed object whose value IS the payload, and an unknown bare string is an error.
+    fn keyed_label_enum() -> EnumDef {
+        let mut def = output_format();
+        def.name = "EntityCategory".to_string();
+        def.rust_path = "crate::EntityCategory".to_string();
+        def.variants[2].serde_untagged = false;
+        def
+    }
+
+    #[test]
+    fn labeled_string_enum_struct_drops_the_derived_serde_impls() {
+        let generated = gen_flat_data_enum(&output_format(), &mapper(), None);
+        assert!(
+            generated.contains("#[derive(Clone, Default)]") && !generated.contains("#[derive(Clone, Default, serde::"),
+            "the derived impl writes {{\"type\":\"markdown\"}}, which is not serde's external wire; got:\n{generated}"
+        );
+        assert!(
+            !generated.contains("#[serde("),
+            "field-level serde attributes do not compile without a serde derive on the struct; got:\n{generated}"
+        );
+        assert!(
+            generated.contains("type_tag: String"),
+            "the tag field itself stays, generated conversions read it; got:\n{generated}"
+        );
+    }
+
+    #[test]
+    fn unit_variant_round_trips_as_a_bare_string() {
+        let generated = gen_external_enum_serde_impls(&output_format());
+        assert!(
+            generated.contains(r#""markdown" => serializer.serialize_str("markdown")"#),
+            "{generated}"
+        );
+        assert!(
+            generated.contains(r#""markdown" => Ok(OutputFormat {"#),
+            "visit_str must accept the bare tag serde writes; got:\n{generated}"
+        );
+    }
+
+    #[test]
+    fn untagged_variant_round_trips_as_its_bare_payload() {
+        let generated = gen_external_enum_serde_impls(&output_format());
+        assert!(
+            generated.contains(r#""custom" => serializer.serialize_str(self.custom.as_deref().unwrap_or_default())"#),
+            "an untagged variant writes its payload with no tag wrapper; got:\n{generated}"
+        );
+        assert!(
+            generated.contains("custom: Some(value.to_string())"),
+            "an unrecognised bare string IS the untagged variant's payload, not an error; got:\n{generated}"
+        );
+        assert!(
+            generated.contains("value => Ok(OutputFormat {"),
+            "with an untagged fallback the catch-all constructs it rather than erroring; got:\n{generated}"
+        );
+    }
+
+    #[test]
+    fn keyed_label_variant_round_trips_as_a_single_keyed_object() {
+        let generated = gen_external_enum_serde_impls(&keyed_label_enum());
+        assert!(
+            generated.contains(r#"map.serialize_entry("custom", self.custom.as_deref().unwrap_or_default())"#),
+            "a tagged newtype variant writes {{\"custom\": payload}}; got:\n{generated}"
+        );
+        assert!(
+            generated.contains(
+                r#"value => Err(serde::de::Error::unknown_variant(value, &["plain", "markdown", "custom"]))"#
+            ),
+            "without an untagged fallback an unrecognised bare string is an error; got:\n{generated}"
+        );
+    }
+
+    #[test]
+    fn the_empty_default_tag_round_trips_rather_than_becoming_the_untagged_payload() {
+        let generated = gen_external_enum_serde_impls(&output_format());
+        let empty_arm = generated
+            .find(r#""" => Ok(OutputFormat::default())"#)
+            .unwrap_or_else(|| panic!("no empty-tag arm; got:\n{generated}"));
+        let untagged_arm = generated
+            .find("value => Ok(OutputFormat {")
+            .unwrap_or_else(|| panic!("no untagged catch-all; got:\n{generated}"));
+        assert!(
+            empty_arm < untagged_arm,
+            "`Default::default()` leaves the tag empty and serializes as a bare `\"\"`; the \
+             untagged catch-all would otherwise read it back as Custom(\"\") and break the \
+             round trip; got:\n{generated}"
+        );
+    }
+
+    #[test]
+    fn map_form_still_reads_the_classes_own_flat_shape() {
+        let generated = gen_external_enum_serde_impls(&output_format());
+        assert!(
+            generated.contains(r#"entries.iter().any(|(key, _)| key == "type")"#),
+            "the flat {{\"type\":..}} form this class used to emit must keep deserialising; got:\n{generated}"
+        );
+    }
+}

@@ -346,16 +346,36 @@ pub(crate) fn gen_flat_data_enum(enum_def: &EnumDef, mapper: &PhpMapper, php_nam
         "#[php_class]".to_string()
     };
 
+    // An externally tagged enum's class cannot carry `#[derive(serde::Serialize, Deserialize)]`:
+    // the derived impls read and write this class's own flat `{"type": ..}` object, while serde
+    // writes a bare string for a unit variant and a single-keyed object for a data one. It gets
+    // hand-written impls from `gen_external_enum_serde_impls` instead, which also means the
+    // field-level `#[serde(..)]` attributes must go -- they do not compile without a derive. ~keep
+    let external = is_labeled_string_enum(enum_def);
+    let (start_template, tag_template, field_template) = if external {
+        (
+            "php_external_enum_struct_start.jinja",
+            "php_external_enum_tag_field.jinja",
+            "php_external_enum_option_field.jinja",
+        )
+    } else {
+        (
+            "php_flat_enum_struct_start.jinja",
+            "php_flat_enum_tag_field.jinja",
+            "php_flat_enum_option_field.jinja",
+        )
+    };
+
     let mut out = String::new();
     out.push_str(&crate::backends::php::template_env::render(
-        "php_flat_enum_struct_start.jinja",
+        start_template,
         minijinja::context! {
             php_attrs => &php_attrs,
             enum_name => &enum_def.name,
         },
     ));
     out.push_str(&crate::backends::php::template_env::render(
-        "php_flat_enum_tag_field.jinja",
+        tag_template,
         minijinja::context! {
             tag_field => tag_field,
         },
@@ -369,7 +389,7 @@ pub(crate) fn gen_flat_data_enum(enum_def: &EnumDef, mapper: &PhpMapper, php_nam
                 let mapped = mapper.map_type(&field.ty).to_string();
                 let field_ty = format!("Option<{mapped}>");
                 out.push_str(&crate::backends::php::template_env::render(
-                    "php_flat_enum_option_field.jinja",
+                    field_template,
                     minijinja::context! {
                         flat_name => &flat_name,
                         field_ty => &field_ty,
@@ -382,7 +402,102 @@ pub(crate) fn gen_flat_data_enum(enum_def: &EnumDef, mapper: &PhpMapper, php_nam
         "php_flat_enum_struct_end.jinja",
         minijinja::Value::default(),
     ));
+    if external {
+        out.push_str(&gen_external_enum_serde_impls(enum_def));
+    }
     out
+}
+
+/// Hand-written `Serialize`/`Deserialize` for an [`is_labeled_string_enum`] flat class, matching
+/// the wire serde produces for an EXTERNALLY tagged enum.
+///
+/// serde writes a unit variant as a bare string (`"markdown"`) and a data variant as a
+/// single-keyed object whose value IS the payload (`{"custom":"latex"}`) -- and a variant carrying
+/// `#[serde(untagged)]` as its bare payload with no wrapper at all. The derived impl this replaces
+/// read and wrote the class's own flat `{"type":"markdown"}` object instead, so no real wire value
+/// ever deserialized: xberg's PHP binding raised
+/// `invalid type: string "markdown", expected struct OutputFormat` on every `outputFormat` call.
+///
+/// `#[serde(untagged)]` is honoured per VARIANT, not just per enum (`EnumVariant::serde_untagged`);
+/// `serde_enum_repr` models only the enum-level flag, so an otherwise externally tagged enum can
+/// still carry one variant written bare. Emitting the keyed form for such a variant would produce
+/// impls that cannot read their own wire.
+///
+/// `visit_map` still accepts the flat object form so JSON this class previously emitted keeps
+/// deserializing; the tag key disambiguates it from serde's single-keyed form. ~keep
+pub(crate) fn gen_external_enum_serde_impls(enum_def: &EnumDef) -> String {
+    let tag_field = crate::codegen::serde_enum_repr::tagged_object_tag_key(enum_def);
+    let enum_name = &enum_def.name;
+
+    let mut serialize_arms = String::new();
+    let mut visit_str_arms = String::new();
+    let mut visit_map_arms = String::new();
+    let mut flat_field_arms = String::new();
+    let mut untagged_fallback: Option<String> = None;
+    let mut seen_flat_fields: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut variant_list: Vec<String> = Vec::new();
+
+    for variant in &enum_def.variants {
+        let tag = variant_tag_value(variant, enum_def);
+        variant_list.push(format!("{tag:?}"));
+
+        if variant.fields.is_empty() {
+            serialize_arms.push_str(&format!("            {tag:?} => serializer.serialize_str({tag:?}),\n"));
+            visit_str_arms.push_str(&format!(
+                "                    {tag:?} => Ok({enum_name} {{ {tag_field}_tag: {tag:?}.to_string(), ..Default::default() }}),\n"
+            ));
+            continue;
+        }
+
+        let label = flat_field_name(variant, 0);
+        if seen_flat_fields.insert(label.clone()) {
+            flat_field_arms.push_str(&format!(
+                "                            {label:?} => value.{label} = entry.as_str().map(str::to_string),\n"
+            ));
+        }
+
+        if variant.serde_untagged {
+            serialize_arms.push_str(&format!(
+                "            {tag:?} => serializer.serialize_str(self.{label}.as_deref().unwrap_or_default()),\n"
+            ));
+            untagged_fallback = Some(format!(
+                "                    value => Ok({enum_name} {{ {tag_field}_tag: {tag:?}.to_string(), {label}: Some(value.to_string()), ..Default::default() }}),\n"
+            ));
+            continue;
+        }
+
+        serialize_arms.push_str(&format!(
+            "            {tag:?} => {{\n                use serde::ser::SerializeMap;\n                let mut map = serializer.serialize_map(Some(1))?;\n                map.serialize_entry({tag:?}, self.{label}.as_deref().unwrap_or_default())?;\n                map.end()\n            }}\n"
+        ));
+        visit_map_arms.push_str(&format!(
+            "                    Some((key, entry)) if key == {tag:?} => Ok({enum_name} {{ {tag_field}_tag: {tag:?}.to_string(), {label}: entry.as_str().map(str::to_string), ..Default::default() }}),\n"
+        ));
+    }
+
+    // `Default::default()` leaves the tag empty -- the state a container with `#[serde(default)]`
+    // lands in when the field is absent -- and `Serialize` then writes a bare `""`. Without this
+    // arm an untagged fallback would claim it and turn the default back into `Custom("")` on the
+    // next parse, so a construct-default / serialize / parse round trip would not be stable. ~keep
+    visit_str_arms.push_str(&format!("                    \"\" => Ok({enum_name}::default()),\n"));
+
+    let variant_list = variant_list.join(", ");
+    let visit_str_fallback = untagged_fallback.unwrap_or_else(|| {
+        format!("                    value => Err(serde::de::Error::unknown_variant(value, &[{variant_list}])),\n")
+    });
+
+    crate::backends::php::template_env::render(
+        "php_external_enum_serde.jinja",
+        minijinja::context! {
+            enum_name => enum_name,
+            tag_field => tag_field,
+            serialize_arms => &serialize_arms,
+            visit_str_arms => &visit_str_arms,
+            visit_str_fallback => &visit_str_fallback,
+            visit_map_arms => &visit_map_arms,
+            flat_field_arms => &flat_field_arms,
+            variant_list => &variant_list,
+        },
+    )
 }
 
 /// Generate `#[php_impl]` accessor methods, a `from_json` constructor, and per-variant constructors
