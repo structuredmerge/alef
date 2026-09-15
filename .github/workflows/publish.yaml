@@ -432,12 +432,19 @@ jobs:
   publish-homebrew-bottles:
     name: Merge Homebrew bottle DSL
     needs: [prepare, publish-homebrew-formula, homebrew-bottles]
+    # A matrix job reports `failure` when ANY leg fails (fail-fast is off here), so gating the
+    # merge on `== 'success'` skipped it whenever one platform's bottle broke -- and skipping
+    # the merge leaves the PREVIOUS version's whole `bottle do` block in the tap, root_url
+    # included, so every platform's bottle 404s rather than just the one that failed to build.
+    # Merge whatever bottles did upload; the merge script itself errors when there are zero
+    # manifests, so a total failure is still loud. ~keep
     if: |
       always() &&
       needs.prepare.outputs.release_homebrew == 'true' &&
       needs.prepare.outputs.dry_run != 'true' &&
       needs.publish-homebrew-formula.result == 'success' &&
-      needs.homebrew-bottles.result == 'success'
+      needs.homebrew-bottles.result != 'skipped' &&
+      needs.homebrew-bottles.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/create-github-app-token@v3
