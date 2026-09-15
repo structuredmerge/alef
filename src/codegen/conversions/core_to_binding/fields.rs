@@ -18,24 +18,23 @@ fn camel_json_value(core_expr: &str, rec: &WasmCamelRecasedEnum) -> String {
     )
 }
 
-/// Bridge a Rust value to `JsValue` as a PLAIN JavaScript object, falling back to `JsValue::NULL`.
+/// Bridge a `serde_json::Value` to `JsValue` as a PLAIN JavaScript object, falling back to
+/// `JsValue::NULL`.
 ///
 /// `serde_wasm_bindgen`'s default `Serializer` renders every serde *map* as a JS `Map`, not an
-/// object -- and both `serde_json::Value::Object` and serde's INTERNALLY TAGGED enum
-/// representation serialize through the map interface. So a JSON-passthrough field arrived in JS
-/// as a `Map`, on which property access returns `undefined`, while the generated `.d.ts` declared
-/// a plain object: xberg's wasm e2e read `metadata.format.sheetCount` as `NaN` and
-/// `metadata.format.title` as `''`. `JSON.parse` of the serialized text always yields plain
-/// objects, and is already this module's idiom for `Map<String, String>` fields. ~keep
+/// object, and a recased enum's pipeline hands it a `serde_json::Value::Object`. The field
+/// therefore arrived in JavaScript as a `Map`, on which property access returns `undefined`,
+/// while the `.d.ts` `ts_union` emits for it declares a plain object with camelCase keys:
+/// xberg's wasm e2e read `metadata.format.sheetCount` as `NaN` and `metadata.format.title` as
+/// `''`. `JSON.parse` of the serialized text always yields plain objects, and is already this
+/// module's idiom for `Map<String, String>` fields.
+///
+/// Deliberately NOT applied to the raw (non-recased) `tagged_data_enum_names` passthrough: for an
+/// UNTAGGED data enum `ts_union` derives the declared union FROM what `serde_wasm_bindgen`
+/// produces, so moving the bridge without moving the declaration would put the two out of step --
+/// and those shapes (a bare string, an array) are not maps, so they never had the defect. ~keep
 fn json_object_jsvalue(value_expr: &str) -> String {
     format!("js_sys::JSON::parse(&serde_json::to_string(&{value_expr}).unwrap_or_default()).unwrap_or(JsValue::NULL)")
-}
-
-/// [`json_object_jsvalue`] for a site whose surrounding expression yields `Option<JsValue>`.
-fn json_object_jsvalue_opt(field: &str) -> String {
-    format!(
-        "val.{field}.as_ref().and_then(|v| serde_json::to_string(v).ok()).and_then(|s| js_sys::JSON::parse(&s).ok())"
-    )
 }
 
 /// Same as `camel_json_value` but wraps the result for wasm's `JsValue` field boundary, falling
@@ -337,9 +336,9 @@ pub fn field_conversion_from_core_cfg(
                 && matches!(inner.as_ref(), TypeRef::Json)
             {
                 if optional {
-                    return format!("{name}: {}", json_object_jsvalue_opt(name));
+                    return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
                 }
-                return format!("{name}: {}", json_object_jsvalue(&format!("val.{name}")));
+                return format!("{name}: serde_wasm_bindgen::to_value(&val.{name}).unwrap_or(JsValue::NULL)");
             }
             if let TypeRef::Vec(outer_inner) = ty
                 && let TypeRef::Vec(inner) = outer_inner.as_ref()
@@ -381,15 +380,15 @@ pub fn field_conversion_from_core_cfg(
                     };
                 }
                 if optional {
-                    return format!("{name}: {}", json_object_jsvalue_opt(name));
+                    return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
                 }
-                return format!("{name}: {}", json_object_jsvalue(&format!("val.{name}")));
+                return format!("{name}: serde_wasm_bindgen::to_value(&val.{name}).unwrap_or(JsValue::NULL)");
             }
             Some(TaggedShape::Optional(n)) => {
                 if let Some(rec) = recased(n) {
                     return format!("{name}: val.{name}.as_ref().map(|v| {})", camel_jsvalue("v", rec));
                 }
-                return format!("{name}: {}", json_object_jsvalue_opt(name));
+                return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
             }
             Some(TaggedShape::Vec(n)) => {
                 if let Some(rec) = recased(n) {
@@ -400,15 +399,15 @@ pub fn field_conversion_from_core_cfg(
                     };
                 }
                 if optional {
-                    return format!("{name}: {}", json_object_jsvalue_opt(name));
+                    return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
                 }
-                return format!("{name}: {}", json_object_jsvalue(&format!("val.{name}")));
+                return format!("{name}: serde_wasm_bindgen::to_value(&val.{name}).unwrap_or(JsValue::NULL)");
             }
             Some(TaggedShape::OptionalVec(n)) => {
                 if let Some(rec) = recased(n) {
                     return format!("{name}: val.{name}.as_ref().map(|v| {})", camel_jsvalue_vec("v", rec));
                 }
-                return format!("{name}: {}", json_object_jsvalue_opt(name));
+                return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
             }
             None => {}
         }
@@ -926,8 +925,7 @@ mod wasm_camel_recase_tests {
             &cfg,
         );
         assert_eq!(
-            out,
-            "format: js_sys::JSON::parse(&serde_json::to_string(&val.format).unwrap_or_default()).unwrap_or(JsValue::NULL)",
+            out, "format: serde_wasm_bindgen::to_value(&val.format).unwrap_or(JsValue::NULL)",
             "unexpected output: {out}"
         );
     }
@@ -953,8 +951,7 @@ mod wasm_camel_recase_tests {
             &cfg,
         );
         assert_eq!(
-            out,
-            "role: js_sys::JSON::parse(&serde_json::to_string(&val.role).unwrap_or_default()).unwrap_or(JsValue::NULL)",
+            out, "role: serde_wasm_bindgen::to_value(&val.role).unwrap_or(JsValue::NULL)",
             "unexpected output: {out}"
         );
     }
