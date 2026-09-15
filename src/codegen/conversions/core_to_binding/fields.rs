@@ -18,24 +18,41 @@ fn camel_json_value(core_expr: &str, rec: &WasmCamelRecasedEnum) -> String {
     )
 }
 
+/// Bridge a Rust value to `JsValue` as a PLAIN JavaScript object, falling back to `JsValue::NULL`.
+///
+/// `serde_wasm_bindgen`'s default `Serializer` renders every serde *map* as a JS `Map`, not an
+/// object -- and both `serde_json::Value::Object` and serde's INTERNALLY TAGGED enum
+/// representation serialize through the map interface. So a JSON-passthrough field arrived in JS
+/// as a `Map`, on which property access returns `undefined`, while the generated `.d.ts` declared
+/// a plain object: xberg's wasm e2e read `metadata.format.sheetCount` as `NaN` and
+/// `metadata.format.title` as `''`. `JSON.parse` of the serialized text always yields plain
+/// objects, and is already this module's idiom for `Map<String, String>` fields. ~keep
+fn json_object_jsvalue(value_expr: &str) -> String {
+    format!("js_sys::JSON::parse(&serde_json::to_string(&{value_expr}).unwrap_or_default()).unwrap_or(JsValue::NULL)")
+}
+
+/// [`json_object_jsvalue`] for a site whose surrounding expression yields `Option<JsValue>`.
+fn json_object_jsvalue_opt(field: &str) -> String {
+    format!(
+        "val.{field}.as_ref().and_then(|v| serde_json::to_string(v).ok()).and_then(|s| js_sys::JSON::parse(&s).ok())"
+    )
+}
+
 /// Same as `camel_json_value` but wraps the result for wasm's `JsValue` field boundary, falling
 /// back to `JsValue::NULL` exactly like the raw (non-recased) `tagged_data_enum_names` path's own
 /// `.unwrap_or(JsValue::NULL)`.
 fn camel_jsvalue(core_expr: &str, rec: &WasmCamelRecasedEnum) -> String {
-    format!(
-        "serde_wasm_bindgen::to_value(&{}).unwrap_or(JsValue::NULL)",
-        camel_json_value(core_expr, rec)
-    )
+    json_object_jsvalue(&camel_json_value(core_expr, rec))
 }
 
 /// Same as `camel_jsvalue` but for a `Vec<CoreEnum>`: `items_expr` must evaluate to something
 /// whose `.iter()` yields items borrowable as the core enum (e.g. `&Vec<CoreEnum>` or
 /// `Vec<CoreEnum>`).
 fn camel_jsvalue_vec(items_expr: &str, rec: &WasmCamelRecasedEnum) -> String {
-    format!(
-        "serde_wasm_bindgen::to_value(&{items_expr}.iter().map(|item| {}).collect::<Vec<serde_json::Value>>()).unwrap_or(JsValue::NULL)",
+    json_object_jsvalue(&format!(
+        "{items_expr}.iter().map(|item| {}).collect::<Vec<serde_json::Value>>()",
         camel_json_value("item", rec)
-    )
+    ))
 }
 
 /// Looks up `name` in `tagged_names` under each of the four shapes the raw `tagged_data_enum_names`
@@ -320,9 +337,9 @@ pub fn field_conversion_from_core_cfg(
                 && matches!(inner.as_ref(), TypeRef::Json)
             {
                 if optional {
-                    return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
+                    return format!("{name}: {}", json_object_jsvalue_opt(name));
                 }
-                return format!("{name}: serde_wasm_bindgen::to_value(&val.{name}).unwrap_or(JsValue::NULL)");
+                return format!("{name}: {}", json_object_jsvalue(&format!("val.{name}")));
             }
             if let TypeRef::Vec(outer_inner) = ty
                 && let TypeRef::Vec(inner) = outer_inner.as_ref()
@@ -364,15 +381,15 @@ pub fn field_conversion_from_core_cfg(
                     };
                 }
                 if optional {
-                    return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
+                    return format!("{name}: {}", json_object_jsvalue_opt(name));
                 }
-                return format!("{name}: serde_wasm_bindgen::to_value(&val.{name}).unwrap_or(JsValue::NULL)");
+                return format!("{name}: {}", json_object_jsvalue(&format!("val.{name}")));
             }
             Some(TaggedShape::Optional(n)) => {
                 if let Some(rec) = recased(n) {
                     return format!("{name}: val.{name}.as_ref().map(|v| {})", camel_jsvalue("v", rec));
                 }
-                return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
+                return format!("{name}: {}", json_object_jsvalue_opt(name));
             }
             Some(TaggedShape::Vec(n)) => {
                 if let Some(rec) = recased(n) {
@@ -383,15 +400,15 @@ pub fn field_conversion_from_core_cfg(
                     };
                 }
                 if optional {
-                    return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
+                    return format!("{name}: {}", json_object_jsvalue_opt(name));
                 }
-                return format!("{name}: serde_wasm_bindgen::to_value(&val.{name}).unwrap_or(JsValue::NULL)");
+                return format!("{name}: {}", json_object_jsvalue(&format!("val.{name}")));
             }
             Some(TaggedShape::OptionalVec(n)) => {
                 if let Some(rec) = recased(n) {
                     return format!("{name}: val.{name}.as_ref().map(|v| {})", camel_jsvalue_vec("v", rec));
                 }
-                return format!("{name}: val.{name}.as_ref().and_then(|v| serde_wasm_bindgen::to_value(v).ok())");
+                return format!("{name}: {}", json_object_jsvalue_opt(name));
             }
             None => {}
         }
@@ -909,7 +926,8 @@ mod wasm_camel_recase_tests {
             &cfg,
         );
         assert_eq!(
-            out, "format: serde_wasm_bindgen::to_value(&val.format).unwrap_or(JsValue::NULL)",
+            out,
+            "format: js_sys::JSON::parse(&serde_json::to_string(&val.format).unwrap_or_default()).unwrap_or(JsValue::NULL)",
             "unexpected output: {out}"
         );
     }
@@ -935,7 +953,8 @@ mod wasm_camel_recase_tests {
             &cfg,
         );
         assert_eq!(
-            out, "role: serde_wasm_bindgen::to_value(&val.role).unwrap_or(JsValue::NULL)",
+            out,
+            "role: js_sys::JSON::parse(&serde_json::to_string(&val.role).unwrap_or_default()).unwrap_or(JsValue::NULL)",
             "unexpected output: {out}"
         );
     }
@@ -957,10 +976,10 @@ mod wasm_camel_recase_tests {
         );
         assert_eq!(
             out,
-            "format: serde_wasm_bindgen::to_value(&__alef_wire_retag_Wasm(serde_json::to_value(&val.format).ok()\
+            "format: js_sys::JSON::parse(&serde_json::to_string(&__alef_wire_retag_Wasm(serde_json::to_value(&val.format).ok()\
              .and_then(|raw| serde_json::from_value::<__AlefWireOutWasmFormatMetadata>(raw).ok())\
              .and_then(|wire| serde_json::to_value(wire).ok())\
-             .unwrap_or_default(), \"format_type\", \"formatType\")).unwrap_or(JsValue::NULL)",
+             .unwrap_or_default(), \"format_type\", \"formatType\")).unwrap_or_default()).unwrap_or(JsValue::NULL)",
             "unexpected output: {out}"
         );
     }
@@ -981,10 +1000,10 @@ mod wasm_camel_recase_tests {
         );
         assert_eq!(
             out,
-            "format: val.format.as_ref().map(|v| serde_wasm_bindgen::to_value(&__alef_wire_retag_Wasm(serde_json::to_value(&v).ok()\
+            "format: val.format.as_ref().map(|v| js_sys::JSON::parse(&serde_json::to_string(&__alef_wire_retag_Wasm(serde_json::to_value(&v).ok()\
              .and_then(|raw| serde_json::from_value::<__AlefWireOutWasmFormatMetadata>(raw).ok())\
              .and_then(|wire| serde_json::to_value(wire).ok())\
-             .unwrap_or_default(), \"format_type\", \"formatType\")).unwrap_or(JsValue::NULL))",
+             .unwrap_or_default(), \"format_type\", \"formatType\")).unwrap_or_default()).unwrap_or(JsValue::NULL))",
             "unexpected output: {out}"
         );
     }
@@ -1004,7 +1023,7 @@ mod wasm_camel_recase_tests {
             &cfg,
         );
         assert!(
-            out.starts_with("formats: serde_wasm_bindgen::to_value(&val.formats.iter().map(|item| "),
+            out.starts_with("formats: js_sys::JSON::parse(&serde_json::to_string(&val.formats.iter().map(|item| "),
             "unexpected output: {out}"
         );
         assert!(
@@ -1012,7 +1031,7 @@ mod wasm_camel_recase_tests {
             "must decode each element through the wire type, got: {out}"
         );
         assert!(
-            out.ends_with(").collect::<Vec<serde_json::Value>>()).unwrap_or(JsValue::NULL)"),
+            out.ends_with(").collect::<Vec<serde_json::Value>>()).unwrap_or_default()).unwrap_or(JsValue::NULL)"),
             "unexpected output: {out}"
         );
     }

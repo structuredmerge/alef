@@ -129,11 +129,16 @@ fn recased_enum_field_conversion_and_declaration_move_together() {
     // the camel wire-type pipeline, not a bare `serde_wasm_bindgen::to_value`/`from_value` on the
     // raw core enum. `__alef_wire_retag_wasm` only appears when the pipeline is actually used --
     // see `codegen::conversions::core_to_binding::fields::camel_jsvalue` /
-    // `codegen::conversions::binding_to_core::fields::camel_core_value`.
+    // `codegen::conversions::binding_to_core::fields::camel_core_value`. The `JSON.parse` bridge
+    // is part of the assertion: `serde_wasm_bindgen` would hand JavaScript a `Map`, on which the
+    // camelCase keys the declaration half checks below are unreachable.
     assert!(
-        source.contains("serde_wasm_bindgen::to_value(&__alef_wire_retag_wasm(serde_json::to_value(&val.format)"),
-        "core->binding conversion for `format` must route through the retag+wire-type pipeline, \
-         not a bare serde_wasm_bindgen::to_value on the raw core enum; actual source:\n{source}"
+        source.contains(
+            "js_sys::JSON::parse(&serde_json::to_string(&__alef_wire_retag_wasm(serde_json::to_value(&val.format)"
+        ),
+        "core->binding conversion for `format` must route through the retag+wire-type pipeline and \
+         reach JS as a plain object, not a bare serde_wasm_bindgen::to_value on the raw core enum; \
+         actual source:\n{source}"
     );
     assert!(
         source.contains("serde_json::from_value::<__AlefWireInWasmFormatMetadata>("),
