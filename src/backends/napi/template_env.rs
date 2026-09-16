@@ -1,4 +1,4 @@
-use minijinja::Environment;
+use minijinja::{Environment, UndefinedBehavior};
 
 static TEMPLATES: &[(&str, &str)] = &[
     (
@@ -297,6 +297,12 @@ pub(crate) fn make_env() -> Environment<'static> {
     env.set_trim_blocks(true);
     env.set_lstrip_blocks(true);
     env.set_keep_trailing_newline(true);
+    // Strict: referencing a context key that was never passed is a render-time error
+    // instead of minijinja's default Lenient behavior of silently treating it as falsy/empty.
+    // Lenient mode let `{% if missing_key %}` branches take the `else` arm unnoticed — see
+    // xberg#1636, where the async trait-bridge templates branched on `wrapper`/`has_error`/
+    // `has_default_impl` keys the generator never passed.
+    env.set_undefined_behavior(UndefinedBehavior::Strict);
     for (name, src) in TEMPLATES {
         env.add_template(name, src).expect("built-in template is valid");
     }
