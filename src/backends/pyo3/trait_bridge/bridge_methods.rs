@@ -23,6 +23,7 @@ pub fn gen_bridge_function(
     let param_name = &func.params[bridge_param_idx].name;
     let bridge_param = &func.params[bridge_param_idx];
     let is_optional = bridge_param.optional || matches!(&bridge_param.ty, TypeRef::Optional(_));
+    let arc_trait = bridge_param.core_wrapper == crate::core::ir::CoreWrapper::Arc;
 
     let mut sig_parts = Vec::new();
     let func_needs_py = func.is_async && cfg.async_pattern == AsyncPattern::Pyo3FutureIntoPy;
@@ -50,7 +51,7 @@ pub fn gen_bridge_function(
 
     let params_str = sig_parts.join(", ");
     let return_type = mapper.map_type(&func.return_type);
-    let ret = mapper.wrap_return(&return_type, func.error_type.is_some());
+    let ret = mapper.wrap_return(&return_type, func.error_type.is_some() || arc_trait);
     let ret = if func_needs_py {
         "PyResult<Bound<'py, PyAny>>".to_string()
     } else {
@@ -58,7 +59,21 @@ pub fn gen_bridge_function(
     };
     let lifetime = if func_needs_py { "<'py>" } else { "" };
 
-    let bridge_wrap = if is_optional {
+    let bridge_wrap = if arc_trait && is_optional {
+        format!(
+            "let {param_name} = {param_name}.map(|v| {{\n        \
+             let bridge = {struct_name}::new(v)?;\n        \
+             Ok::<_, pyo3::PyErr>(std::sync::Arc::new(bridge) as std::sync::Arc<dyn {handle_path}>)\n    \
+             }}).transpose()?;"
+        )
+    } else if arc_trait {
+        format!(
+            "let {param_name} = {{\n        \
+             let bridge = {struct_name}::new({param_name})?;\n        \
+             std::sync::Arc::new(bridge) as std::sync::Arc<dyn {handle_path}>\n    \
+             }};"
+        )
+    } else if is_optional {
         format!(
             "let {param_name} = {param_name}.map(|v| {{\n        \
              let bridge = {struct_name}::new(v);\n        \
@@ -210,13 +225,20 @@ pub fn gen_bridge_function(
                 }
                 s
             };
-            format!(".map_err({snake_error}_to_py_err)")
+            let converter = format!("{snake_error}_to_py_err");
+            if error_converters.contains(&converter) {
+                format!(".map_err({converter})")
+            } else {
+                ".map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))".to_string()
+            }
         };
         if return_wrap == "val" {
             format!("{bridge_wrap}\n    {serde_bindings}{core_call}{core_err_conv}")
         } else {
             format!("{bridge_wrap}\n    {serde_bindings}{core_call}.map(|val| {return_wrap}){core_err_conv}")
         }
+    } else if arc_trait {
+        format!("{bridge_wrap}\n    {serde_bindings}let val = {core_call};\n    Ok({return_wrap})")
     } else {
         format!("{bridge_wrap}\n    {serde_bindings}{core_call}")
     };

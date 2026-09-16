@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value wrote `"value": null` back. A present value now deserializes as-is, including `null`, and
   an absent one stays absent on round-trip. (#406)
 
+- **PyO3 trait bridges now support fallible `Arc<dyn Trait>` parameters.** Callback-only DTOs seed reverse-conversion discovery, and generated optional or required bridges construct the host with `PyResult`-safe error handling without introducing an unnecessary mutex.
+
 ## [0.93.1] - 2026-09-19
 
 ### Fixed

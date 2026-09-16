@@ -22,7 +22,9 @@ pub fn input_type_names(surface: &ApiSurface) -> AHashSet<String> {
             collect_named_types(&param.ty, &mut names);
         }
     }
-    for typ in surface.types.iter().filter(|typ| !typ.is_trait) {
+    // Host callbacks also send owned DTOs into and back out of core. Their
+    // signatures must seed the same transitive conversion closure as functions.
+    for typ in &surface.types {
         for method in &typ.methods {
             for param in &method.params {
                 collect_named_types(&param.ty, &mut names);
@@ -32,7 +34,7 @@ pub fn input_type_names(surface: &ApiSurface) -> AHashSet<String> {
     for func in &surface.functions {
         collect_named_types(&func.return_type, &mut names);
     }
-    for typ in surface.types.iter().filter(|typ| !typ.is_trait) {
+    for typ in &surface.types {
         for method in &typ.methods {
             collect_named_types(&method.return_type, &mut names);
         }
@@ -138,6 +140,40 @@ pub fn field_references_excluded_type(ty: &TypeRef, exclude_types: &[String]) ->
 mod tests {
     use super::*;
     use crate::core::ir::{EnumDef, EnumVariant, FieldDef};
+
+    #[test]
+    fn callback_only_dtos_and_their_nested_fields_need_reverse_conversions() {
+        use crate::core::ir::{MethodDef, ParamDef, TypeDef};
+        let surface = ApiSurface {
+            types: vec![
+                TypeDef {
+                    name: "ParserHost".into(),
+                    is_trait: true,
+                    methods: vec![MethodDef {
+                        name: "parse_batch".into(),
+                        params: vec![ParamDef {
+                            name: "request".into(),
+                            ty: TypeRef::Named("Request".into()),
+                            ..Default::default()
+                        }],
+                        return_type: TypeRef::Named("Reply".into()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                TypeDef {
+                    name: "Reply".into(),
+                    fields: vec![field("items", TypeRef::Vec(Box::new(TypeRef::Named("Node".into()))))],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let names = input_type_names(&surface);
+        for name in ["Request", "Reply", "Node"] {
+            assert!(names.contains(name), "{names:?}");
+        }
+    }
 
     fn field(name: &str, ty: TypeRef) -> FieldDef {
         FieldDef {
