@@ -171,6 +171,42 @@ pub use foreign_core::Swatch;
 pub fn recolor(swatch: foreign_core::Swatch) -> foreign_core::Swatch {
     swatch
 }
+
+/// A napi-only trait bridge (`[[crates.trait_bridges]]` below restricts it to `node` via
+/// `exclude_languages` -- every other GATE_LANGUAGES backend has its own trait-bridge generator,
+/// untouched by xberg#1636's fix, and is out of scope here). Covers the six method shapes the
+/// rewritten napi generator (`NapiBridgeGenerator`) distinguishes:
+/// - `transform`: async, a `Bytes` param, a native-struct (`Report`) return.
+/// - `describe`: async, a `Path` param, Rust-defaulted (forwardable).
+/// - `refine`: async, `Unit` return, a single `&mut` native-struct param -- the
+///   `PostProcessor::process` write-back shape.
+/// - `cost`: sync, infallible, required -- the `TokenizerBackend::count_tokens` shape.
+/// - `label`: sync, fallible, Rust-defaulted.
+/// - `preferred_mode`: sync, an enum return.
+#[async_trait::async_trait]
+pub trait DocumentProcessor: Send + Sync {
+    async fn transform(&self, content: Vec<u8>) -> Result<Report, String>;
+
+    async fn describe(&self, path: std::path::PathBuf) -> String {
+        let _ = path;
+        "unchanged".to_string()
+    }
+
+    async fn refine(&self, report: &mut Report) -> Result<(), String>;
+
+    fn cost(&self, text: &str) -> u64 {
+        text.len() as u64
+    }
+
+    fn label(&self, mode: Mode) -> Result<String, String> {
+        let _ = mode;
+        Ok("default".to_string())
+    }
+
+    fn preferred_mode(&self) -> Mode {
+        Mode::Fast
+    }
+}
 "#;
 
 // A FOREIGN crate (a `[[crates.source_crates]].roots` merge target, not a file the `toolkit`
@@ -229,7 +265,8 @@ pub enum Swatch {
 // binding crate that pulls `toolkit` in as a path dependency happens to sit. ~keep
 pub(crate) const FIXTURE_CARGO_TOML: &str = "[package]\nname = \"toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
                                               [features]\nchunking-tokenizers = []\n\n\
-                                              [dependencies]\nforeign_core = { path = \"__FOREIGN_CORE_DEP_PATH__\" }\n\
+                                              [dependencies]\nasync-trait = \"0.1\"\n\
+                                              foreign_core = { path = \"__FOREIGN_CORE_DEP_PATH__\" }\n\
                                               serde = { version = \"1\", features = [\"derive\"] }\n\n\
                                               [lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(alef)'] }\n";
 
@@ -266,4 +303,14 @@ foreign_core = { path = "__FOREIGN_CORE_DEP_PATH__" }
 name = "foreign_core"
 sources = ["__FOREIGN_CORE_SOURCE_PATH__"]
 roots = ["Swatch"]
+
+# napi-only: every other GATE_LANGUAGES backend has its own trait-bridge generator, untouched
+# by this fixture's reason for existing (the napi async/sync trait-bridge rewrite), and
+# exercising them here is out of scope. See `DocumentProcessor`'s doc in `FIXTURE_SOURCE`.
+[[crates.trait_bridges]]
+trait_name = "DocumentProcessor"
+exclude_languages = [
+    "ffi", "python", "wasm", "jni", "kotlin_android", "java",
+    "ruby", "php", "elixir", "swift", "go", "csharp",
+]
 "#;
