@@ -2123,8 +2123,15 @@ fn test_napi_sync_method_body_uses_get_named_property() {
     );
 }
 
+/// Regression coverage for xberg#1636 defects #1/#2: the async body must dispatch through the
+/// method's own `ThreadsafeFunction` (built once in `new()`, on the JS thread) rather than
+/// calling `self.env()`/`self.obj()` synchronously from whatever thread polls the async trait
+/// method — and it must actually `.await` both the threadsafe call and the settled reply, not
+/// silently drop the `Promise` a JS `async` implementation returns. The prior version of this
+/// test asserted only `code.contains("get_named_property(\"run\")")`, which the broken body
+/// (synchronous call, no `.await` at all) also satisfied — it caught neither defect.
 #[test]
-fn test_napi_async_method_body_uses_box_pin() {
+fn test_napi_async_method_body_dispatches_through_threadsafe_function_and_awaits() {
     use alef::backends::napi::trait_bridge::gen_trait_bridge;
 
     let trait_def = make_trait_def_napi("Processor", vec![make_async_method_napi("run", TypeRef::Unit)]);
@@ -2134,9 +2141,51 @@ fn test_napi_async_method_body_uses_box_pin() {
     let code = gen_trait_bridge(&trait_def, &bridge_cfg, "my_lib", "Error", "Error::from({msg})", &api)
         .expect("trait bridge generation should succeed");
 
+    // The TSFN itself is built in `new()` from the live JS object.
     assert!(
         code.code.contains("get_named_property(\"run\")"),
-        "NAPI async method body must retrieve JS method via get_named_property"
+        "the run_tsfn field must be built from the JS object's 'run' method:\n{}",
+        code.code
+    );
+    assert!(
+        code.code.contains("run_tsfn"),
+        "the bridge struct/constructor must have a dedicated threadsafe function field for 'run':\n{}",
+        code.code
+    );
+    // The trait-impl method body must call through it and await BOTH steps: the enqueue/JS-call
+    // round trip, and settling a Promise the host may have returned.
+    assert!(
+        code.code.contains("call_async_catch(__payload).await"),
+        "async method body must call_async_catch (never call_async, whose JS-throw path kills \
+         the process) and await it:\n{}",
+        code.code
+    );
+    assert!(
+        code.code.contains(".settle().await"),
+        "async method body must await AlefJsReply::settle() -- the fix for the historic \
+         'no .await at all' defect:\n{}",
+        code.code
+    );
+    // Scoped to the `run` method's own body: the bridge ALSO carries the `Plugin` super-trait's
+    // synchronous `version`/`initialize`/`shutdown` methods (via `make_plugin_bridge_cfg`'s
+    // `super_trait`), whose fast path legitimately calls `self.env()` on the JS thread -- a
+    // blanket "self.env() appears nowhere in the file" assertion would fail on THAT, not on the
+    // async defect this test targets.
+    let run_method_start = code
+        .code
+        .find("async fn run(&self)")
+        .expect("generated code must declare the async run(&self) trait method");
+    let run_method_body = &code.code[run_method_start..];
+    let run_method_end = run_method_body
+        .find("\n    }\n")
+        .map(|i| i + 1)
+        .unwrap_or(run_method_body.len());
+    let run_method_body = &run_method_body[..run_method_end];
+    assert!(
+        !run_method_body.contains("self.env()"),
+        "the async run() method body must never call self.env()/self.obj() synchronously off \
+         the JS thread -- the HandleScope-less-call defect this whole rewrite fixes:\n{}",
+        run_method_body
     );
 }
 

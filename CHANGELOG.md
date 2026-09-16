@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **napi trait bridges (plugin/OcrBackend-style, `[[crates.trait_bridges]]`) were structurally
+  broken for every JS implementation.** Async bridge methods called `self.env()`/`self.obj()`
+  synchronously from whatever thread ran the future — with no `HandleScope` — which aborts the
+  Node process ("Cannot create a handle without a HandleScope"); the async templates also never
+  `.await`ed the call, so a JS `async` implementation's `Promise` was silently dropped. Bridged
+  methods now dispatch through a per-method `ThreadsafeFunction`, built eagerly (on the JS thread)
+  in the bridge's `new()`; argument marshalling and return decoding happen inside the
+  threadsafe-function trampoline, which is the only place a `Promise` can safely be constructed
+  from a raw JS value. A new `AlefJsReply<T>` runtime type (emitted per crate alongside the
+  existing `JsBytes` support code) carries either an already-settled value or a `Promise` to
+  await later. Synchronous bridge methods (e.g. a JS `TokenizerBackend`/`Renderer`) get a
+  fast/slow split: a direct call when already on the JS thread (the common case — this covers a
+  registration-time probe that calls the bridged method inline), and a bounded, `Promise`-safe
+  wait on the same threadsafe function otherwise. Also fixes: `Bytes`/`Path`/numeric/`Char`
+  arguments and `Map`/`Json`/`Duration`/enum/`Optional<non-String>` arguments no longer
+  Debug-string-encode (`format!("{:?}", x)`) — a parameter shape with no native or JSON-safe
+  encoding is now a generation-time error instead of a silent runtime corruption; a
+  `PostProcessor`-shaped `Unit` method with a single `&mut` native-struct parameter now applies
+  the host's returned value instead of discarding it; error messages preserve the underlying
+  cause instead of `map_err(|_| ..)`-erasing it. No `tokio-util` dependency is emitted for trait
+  bridges anymore (its only consumer, an unused `CancellationToken` field, is removed).
+
 ## [0.90.0] - 2026-09-16
 
 ### Added

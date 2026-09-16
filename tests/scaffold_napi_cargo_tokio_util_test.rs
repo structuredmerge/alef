@@ -32,8 +32,13 @@ fn make_type(name: &str, is_trait: bool) -> TypeDef {
     }
 }
 
+/// `tokio-util` had exactly one consumer in generated Node output: the trait-bridge wrapper's
+/// `cancellation_token` field, which was written and cancelled but never read (see #1636's drop-
+/// hazard cleanup, which removed the field entirely). No trait-bridge shape needs `tokio-util`
+/// today, present or absent, so the dependency and its cargo-machete ignore entry must never be
+/// emitted — this test replaces a same-named test that asserted the opposite (its presence).
 #[test]
-fn scaffold_napi_cargo_includes_tokio_util_with_rt_feature_when_trait_bridges_present() {
+fn scaffold_napi_cargo_never_includes_tokio_util() {
     let api = ApiSurface {
         crate_name: "demo".into(),
         version: "0.1.0".into(),
@@ -69,22 +74,17 @@ fn scaffold_napi_cargo_includes_tokio_util_with_rt_feature_when_trait_bridges_pr
     let content = &cargo_file.content;
 
     assert!(
-        content.contains("tokio-util"),
-        "Cargo.toml must include tokio-util when trait bridges are present"
+        !content.contains("tokio-util"),
+        "Cargo.toml must not include tokio-util: it has no remaining consumer;\nactual:\n{content}"
     );
-    assert!(
-        content.contains(r#"tokio-util = { version = "0.7", features = ["rt"] }"#),
-        "tokio-util must include the 'rt' feature"
-    );
-
-    assert!(
-        content.contains("tokio-util") && content.contains("[package.metadata.cargo-machete]"),
-        "tokio-util should be in the cargo-machete ignored list"
-    );
-
     assert!(
         content.contains("async-trait = \"0.1\""),
         "async-trait must still be present for trait bridges"
+    );
+    assert!(
+        content.contains("serde-json"),
+        "napi 'serde-json' feature must be present for trait bridges: AlefJsReply's fallback \
+         decode path needs ToNapiValue/FromNapiValue for serde_json::Value;\nactual:\n{content}"
     );
 }
 
