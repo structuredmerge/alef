@@ -581,6 +581,16 @@ fn gen_enum_stub(
             })
             .collect();
         lines.push(format!("    type value = {}", symbol_variants.join(" | ")));
+    } else if crate::backends::magnus::gen_bindings::is_native_record_enum(enum_def) {
+        for variant in &enum_def.variants {
+            let name = crate::codegen::naming::pascal_to_snake(&variant.name);
+            let payload = rbs_type(&variant.fields[0].ty);
+            lines.push(format!(
+                "    def self.from_{name}: ({payload} value) -> {}",
+                enum_def.name
+            ));
+            lines.push(format!("    def {name}: () -> {payload}?"));
+        }
     } else if enum_def.serde_tag.is_none() {
         gen_data_enum_variant_constructor_stubs(&mut lines, enum_def, is_host_enum, configured_features);
     }

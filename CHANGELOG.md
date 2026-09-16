@@ -328,6 +328,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Accept generated Ruby tagged newtype variants with native DTO payloads directly in Magnus conversion, without stringifying the Data object.
 
+- Read generated Ruby Data variant fields from stored members instead of calling a nonexistent superclass accessor.
+
+- Preserve eligible untagged Ruby record enums as native objects with typed variant factories and readers; reject implicit hash variant guessing and default allocation.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed

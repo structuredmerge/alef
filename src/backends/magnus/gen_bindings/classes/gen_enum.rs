@@ -5,6 +5,23 @@ use crate::codegen::conversions::{VariantDeclaration, enum_variant_declaration};
 use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeRef};
 use std::collections::HashSet;
 
+/// Preserve untagged record identity as a native enum instead of guessing from a Hash.
+pub(crate) fn is_native_record_enum(def: &EnumDef) -> bool {
+    def.serde_untagged
+        && def.serde_tag.is_none()
+        && def.cfg.is_none()
+        && !def.variants.is_empty()
+        && def.variants.iter().all(|v| {
+            v.cfg.is_none()
+                && !v.binding_excluded
+                && v.is_tuple
+                && v.fields.len() == 1
+                && !v.fields[0].sanitized
+                && !v.fields[0].binding_excluded
+                && matches!(v.fields[0].ty, TypeRef::Named(_))
+        })
+}
+
 /// The variants `enum_def`'s own Magnus wrapper `enum` (rendered by [`gen_enum`] below) actually
 /// declares, per the [`enum_variant_declaration`] authority. Shared by `gen_enum` and the two
 /// per-variant-constructor generators below: a factory built here emits `Self::<Variant> { .. }`
@@ -157,6 +174,7 @@ pub fn gen_enum_with_module(
         minijinja::context! {
             enum_name => &enum_def.name,
             module_name => module_name,
+            native_record => is_native_record_enum(enum_def),
             has_data => has_data,
             serde_tag => &enum_def.serde_tag,
             serde_content => &enum_def.serde_content,

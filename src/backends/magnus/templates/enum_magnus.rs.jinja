@@ -1,6 +1,8 @@
 {# Data enum definition with IntoValue/TryConvert via JSON #}
 {% if has_data %}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+{% if native_record %}#[magnus::wrap(class = "{{ module_name }}::{{ enum_name }}")]
+{% endif %}
 {% if serde_tag %}#[serde(tag = "{{ serde_tag }}"{% if serde_content %}, content = "{{ serde_content }}"{% endif %})]
 {% endif %}{% if serde_untagged %}#[serde(untagged)]
 {% endif %}{% if serde_rename_all %}#[serde(rename_all = "{{ serde_rename_all }}")]
@@ -18,7 +20,7 @@ impl Default for {{ enum_name }} {
     fn default() -> Self { Self::{{ default_variant }}{{ first_variant_default }} }
 }
 
-impl magnus::IntoValue for {{ enum_name }} {
+{% if not native_record %}impl magnus::IntoValue for {{ enum_name }} {
     fn into_value_with(self, handle: &Ruby) -> magnus::Value {
         match serde_json::to_value(&self) {
             Ok(v) => json_to_ruby(handle, v),
@@ -26,9 +28,13 @@ impl magnus::IntoValue for {{ enum_name }} {
         }
     }
 }
+{% endif %}
 
 impl magnus::TryConvert for {{ enum_name }} {
     fn try_convert(val: magnus::Value) -> Result<Self, magnus::Error> {
+{% if native_record %}
+        <&Self as magnus::TryConvert>::try_convert(val).cloned()
+{% else %}
 {%- if serde_tag %}
         // Generated Data variants carry native DTOs, not JSON-compatible display strings.
         let class_name: Option<String> = val.class().funcall("name", ())?;
@@ -68,11 +74,28 @@ impl magnus::TryConvert for {{ enum_name }} {
                 }
             })
             .map_err(|e| magnus::Error::new(unsafe { Ruby::get_unchecked() }.exception_type_error(), e.to_string()))
+{% endif %}
     }
 }
 
 unsafe impl IntoValueFromNative for {{ enum_name }} {}
 unsafe impl TryConvertOwned for {{ enum_name }} {}
+
+{% if native_record %}
+impl {{ enum_name }} {
+{% for variant in variants %}
+    pub fn from_{{ variant.snake_name }}(value: {{ variant.fields[0].field_type }}) -> Self {
+        Self::{{ variant.name }}(value)
+    }
+    pub fn {{ variant.snake_name }}(&self) -> Option<{{ variant.fields[0].field_type }}> {
+        match self {
+            Self::{{ variant.name }}(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+{% endfor %}
+}
+{% endif %}
 
 {%- if has_data %}
 {# Variant accessor methods for internally-tagged data enums #}

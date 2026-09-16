@@ -2,6 +2,50 @@ use super::*;
 use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeDef, TypeRef};
 
 #[test]
+fn untagged_record_enum_retains_native_identity_and_typed_factories() {
+    let def = EnumDef {
+        name: "Record".into(),
+        serde_untagged: true,
+        variants: vec![
+            EnumVariant {
+                name: "Canonical".into(),
+                is_tuple: true,
+                fields: vec![FieldDef {
+                    name: "_0".into(),
+                    ty: TypeRef::Named("Payload".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            EnumVariant {
+                name: "Migration".into(),
+                is_tuple: true,
+                fields: vec![FieldDef {
+                    name: "_0".into(),
+                    ty: TypeRef::Named("Legacy".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let code = gen_enum_with_module(&def, "core", None, &[], "Example");
+    assert!(code.contains("#[magnus::wrap(class = \"Example::Record\")]"), "{code}");
+    assert!(code.contains("pub fn from_canonical(value: Payload) -> Self"), "{code}");
+    assert!(code.contains("pub fn migration(&self) -> Option<Legacy>"), "{code}");
+    assert!(
+        !code.contains("json_to_ruby"),
+        "records must not degrade into hashes: {code}"
+    );
+    assert!(
+        !code.contains("serde_json::from_str"),
+        "records must not guess a variant from a hash: {code}"
+    );
+    syn::parse_file(&code).expect("native enum Rust must parse");
+}
+
+#[test]
 fn typed_tagged_newtypes_extract_native_payloads_before_json_fallback() {
     let def = EnumDef {
         name: "Policy".into(),
