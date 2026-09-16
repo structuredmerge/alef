@@ -19,27 +19,40 @@ use workflow_job_block_support::workflow_job_block;
 /// unpinned Homebrew tap.
 const GATE_JOB: &str = "generated-output-gate";
 
-/// The commit SHA `Goldziher/poly@v0` resolved to when this pin was written -- tag `v0.24.0`.
-/// A mutable major-version tag (`@v0`) is not itself a supply-chain pin, so the `uses:` line
-/// must name this SHA directly, not the tag. ~keep
-const PINNED_POLY_SHA: &str = "2303580a69638d6887db17d2f4e9bbffe7c4218b";
+/// Length of a full git commit SHA, the only `uses:` ref shape that is immutable.
+///
+/// The property under test is *that* the action is pinned to a commit, not *which* commit:
+/// naming one SHA here made the gate fail on every routine `Goldziher/poly` bump, and it did --
+/// twice, masked both times because `cargo test` aborts after the first failing test target and
+/// an unrelated failure in an earlier binary ran first. A gate that cries wolf on green changes
+/// gets its constant bumped on reflex, which is not review. The poly release that actually runs
+/// is pinned separately and exactly by [`PINNED_POLY_VERSION`]. ~keep
+const COMMIT_SHA_LENGTH: usize = 40;
 
 /// The `version:` value the action's `with:` block, and the "Verify downstream tooling"
 /// step's own runtime check, must both agree on.
 const PINNED_POLY_VERSION: &str = "v0.24.0";
 
-/// Whether `block` has an actual `uses:` step line pinning `Goldziher/poly` to `sha`.
+/// Whether `block` has an actual `uses:` step line pinning `Goldziher/poly` to a commit SHA.
 ///
 /// Deliberately line-scoped rather than a whole-block substring search: the surrounding
-/// comments and the version-mismatch error message both mention `Goldziher/poly@v0` and the
-/// SHA in prose, so a bare `block.contains(sha)` would pass even if the `uses:` line itself
-/// were deleted or reverted to the tag. Only a line whose trimmed text starts with
-/// `uses: Goldziher/poly@` and contains `sha` counts. ~keep
-fn uses_line_pins_poly_at_sha(block: &str, sha: &str) -> bool {
+/// comments and the version-mismatch error message both mention `Goldziher/poly` refs in prose,
+/// so a whole-block search would pass even if the `uses:` line itself were deleted or reverted
+/// to the tag. Only a line whose trimmed text starts with `uses: Goldziher/poly@` counts, and
+/// the ref that follows must be a full lowercase hex commit SHA -- `@v0` and `@v0.27.0` are
+/// mutable and can be repointed, so they are not supply-chain pins. ~keep
+fn uses_line_pins_poly_at_a_commit(block: &str) -> bool {
     const USES_PREFIX: &str = "uses: Goldziher/poly@";
-    block
-        .lines()
-        .any(|line| line.trim_start().starts_with(USES_PREFIX) && line.contains(sha))
+    block.lines().any(|line| {
+        let Some(rest) = line.trim_start().strip_prefix(USES_PREFIX) else {
+            return false;
+        };
+        let git_ref = rest.split_whitespace().next().unwrap_or_default();
+        git_ref.len() == COMMIT_SHA_LENGTH
+            && git_ref
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    })
 }
 
 /// Whether `block` has an actual `with:` mapping line setting `version:` to `version`.
@@ -81,10 +94,10 @@ fn ci_workflow_pins_poly_in_the_generated_output_gate() {
         .unwrap_or_else(|| panic!("{} has no `{GATE_JOB}` job", workflow_path.display()));
 
     assert!(
-        uses_line_pins_poly_at_sha(&block, PINNED_POLY_SHA),
-        "the `{GATE_JOB}` job in {} must have a `uses: Goldziher/poly@{PINNED_POLY_SHA}` step \
-         (the commit `{PINNED_POLY_VERSION}` resolved to), not just prose mentioning the tag or \
-         SHA -- a mutable `@v0` tag pin, or a step deleted outright, would not satisfy this:\n\
+        uses_line_pins_poly_at_a_commit(&block),
+        "the `{GATE_JOB}` job in {} must have a `uses: Goldziher/poly@<commit sha>` step, not \
+         just prose mentioning a ref -- a mutable `@v0`/`@v0.27.0` tag pin, or a step deleted \
+         outright, would not satisfy this:\n\
          --- job block as parsed ---\n{block}",
         workflow_path.display()
     );
@@ -109,35 +122,43 @@ fn ci_workflow_pins_poly_in_the_generated_output_gate() {
     );
 }
 
-/// [`uses_line_pins_poly_at_sha`] must actually discriminate: it should fail when the real
-/// `uses:` line is missing, reverted to the tag, or only described in a comment. Without this, a
+/// [`uses_line_pins_poly_at_a_commit`] must actually discriminate: it should fail when the real
+/// `uses:` line is missing, reverted to a tag, or only described in a comment. Without this, a
 /// future edit could reintroduce the exact vacuity this file exists to close, with nothing here
 /// to catch it. ~keep
 #[test]
-fn uses_line_pins_poly_at_sha_rejects_comment_only_and_reverted_pins() {
-    let sha = "fed55c3355480f0d1c23cb6084395e66bbb1cdc8";
-
+fn uses_line_pins_poly_at_a_commit_rejects_comment_only_and_reverted_pins() {
     let pinned_uses =
         "      - name: Install poly\n        uses: Goldziher/poly@fed55c3355480f0d1c23cb6084395e66bbb1cdc8 # v0.22.0\n";
     assert!(
-        uses_line_pins_poly_at_sha(pinned_uses, sha),
-        "a real `uses:` line pinning the SHA must be accepted"
+        uses_line_pins_poly_at_a_commit(pinned_uses),
+        "a real `uses:` line pinning a commit SHA must be accepted"
     );
     let uses_comment_only =
         "      # Goldziher/poly@v0 currently resolves to fed55c3355480f0d1c23cb6084395e66bbb1cdc8\n";
     assert!(
-        !uses_line_pins_poly_at_sha(uses_comment_only, sha),
+        !uses_line_pins_poly_at_a_commit(uses_comment_only),
         "prose mentioning the tag and SHA, with no `uses:` line, must not satisfy the check"
     );
     let uses_tag_pin = "      - name: Install poly\n        uses: Goldziher/poly@v0\n";
     assert!(
-        !uses_line_pins_poly_at_sha(uses_tag_pin, sha),
-        "reverting to the mutable `@v0` tag must not satisfy the SHA-pin check"
+        !uses_line_pins_poly_at_a_commit(uses_tag_pin),
+        "reverting to the mutable `@v0` tag must not satisfy the commit-pin check"
+    );
+    let uses_release_tag_pin = "      - name: Install poly\n        uses: Goldziher/poly@v0.27.0\n";
+    assert!(
+        !uses_line_pins_poly_at_a_commit(uses_release_tag_pin),
+        "an exact-looking but still mutable release tag must not satisfy the commit-pin check"
+    );
+    let uses_abbreviated_sha = "      - name: Install poly\n        uses: Goldziher/poly@fed55c3\n";
+    assert!(
+        !uses_line_pins_poly_at_a_commit(uses_abbreviated_sha),
+        "an abbreviated SHA is ambiguous and must not satisfy the commit-pin check"
     );
     let uses_deleted = "      - name: Some other step\n        run: echo hi\n";
     assert!(
-        !uses_line_pins_poly_at_sha(uses_deleted, sha),
-        "deleting the `uses:` step outright must not satisfy the SHA-pin check"
+        !uses_line_pins_poly_at_a_commit(uses_deleted),
+        "deleting the `uses:` step outright must not satisfy the commit-pin check"
     );
 }
 

@@ -213,12 +213,14 @@ jobs:
       # `install.sh`, so this is a true, verified pin, not a presence check. See
       # https://github.com/Goldziher/poly#github-actions. ~keep
       - name: Install poly
-        # Goldziher/poly@v0 resolved to tag v0.24.0 (commit
-        # 2303580a69638d6887db17d2f4e9bbffe7c4218b) when this pin was written -- pinned to that
-        # commit SHA below because a major-version tag like `v0` is mutable and can be
-        # repointed, so the SHA is the real supply-chain pin; `version: v0.24.0` in `with:` is
-        # kept as the human-readable/functional pin the action itself resolves against. To bump
-        # poly, update both the SHA below and `version:` together. ~keep
+        # Two independent pins live here, and they move independently on purpose. The `uses:`
+        # SHA pins the *action code*: a tag like `v0` or `v0.27.0` is mutable and can be
+        # repointed, so only a full commit SHA is a supply-chain pin -- renovate bumps this one
+        # routinely. `version:` pins the *poly release the action installs*, which the step
+        # below re-checks at runtime; bumping it is a deliberate call, because this repo's lint
+        # output is version-sensitive and has differed between poly patch releases. Do not
+        # assume the trailing `# vX.Y.Z` comment on the `uses:` line and `version:` agree.
+        # `tests/ci_poly_pin_gate.rs` enforces the SHA *shape*, not a specific commit. ~keep
         uses: Goldziher/poly@3f7297b5f2de8faa4e0f661c9a72ec245dd98e26 # v0.27.0
         with:
           version: v0.24.0
