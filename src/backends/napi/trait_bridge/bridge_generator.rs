@@ -750,32 +750,152 @@ impl NapiBridgeGenerator {
                 },
             )
         } else {
-            let error_coercion = spec.make_error(&format!(
-                "format!(\"Failed to extract return value from method '{}': {{}}\", e)",
-                method.name
-            ));
-            let error_parse = spec.make_error(&format!(
-                "format!(\"Plugin '{{}}' failed to parse return value for method '{}'\", self.cached_name)",
-                method.name
-            ));
-            crate::backends::napi::template_env::render(
-                "sync_method_non_unit_return.jinja",
-                minijinja::context! {
-                    wrapper => spec.wrapper_name(),
-                    method_name => &js_method_name,
-                    snake_case_method_name => &snake_method_name,
-                    args_tuple_ty => args_tuple_ty,
-                    has_error => has_error,
-                    has_default_impl => has_default_impl,
-                    empty_args => empty_args,
-                    tuple_args => tuple_args,
-                    error_lookup => error_lookup,
-                    error_call => error_call,
-                    error_coercion => error_coercion,
-                    error_parse => error_parse,
-                },
+            self.gen_sync_on_js_thread_non_unit_body(
+                method,
+                spec,
+                &js_method_name,
+                &snake_method_name,
+                has_error,
+                has_default_impl,
+                &args_tuple_ty,
+                empty_args,
+                &tuple_args,
+                &error_lookup,
+                &error_call,
             )
         }
+    }
+
+    /// Non-`Unit`-return half of [`Self::gen_sync_on_js_thread_body`]. Decodes the JS method's
+    /// return value through the same `AlefJsReply<T>` + [`Self::plan_return_decode`] machinery
+    /// the async and off-thread slow paths use, instead of the string-coercion +
+    /// `serde_json::from_str::<T>` the `sync_method_non_unit_return.jinja` template used to
+    /// render: coercing a bare JS string return (e.g. `Renderer::render_result`'s `String`) to
+    /// its own JSON text and re-parsing it as JSON fails on every call, because an unquoted
+    /// string is not valid JSON — only numeric-ish returns happened to survive by coincidence.
+    /// Declaring the JS `Function`'s return type as `AlefJsReply<{reply_ty}>` lets napi decode
+    /// it natively (a `Promise` return is a protocol error for a declared-synchronous method,
+    /// reported by [`AlefJsReply::settle_sync`] rather than silently polled once).
+    #[allow(clippy::too_many_arguments)]
+    fn gen_sync_on_js_thread_non_unit_body(
+        &self,
+        method: &MethodDef,
+        spec: &TraitBridgeSpec,
+        js_method_name: &str,
+        snake_method_name: &str,
+        has_error: bool,
+        has_default_impl: bool,
+        args_tuple_ty: &str,
+        empty_args: bool,
+        tuple_args: &str,
+        error_lookup: &str,
+        error_call: &str,
+    ) -> String {
+        let decode = self.plan_return_decode(&method.return_type);
+        let reply_ty = decode.reply_ty().to_string();
+        let is_identity = matches!(decode, ReturnDecode::Native { .. });
+
+        let error_settle = spec.make_error(&format!(
+            "format!(\"Plugin '{{}}' method '{}' rejected: {{}}\", self.cached_name, e)",
+            method.name
+        ));
+        let error_parse = spec.make_error(&format!(
+            "format!(\"Plugin '{{}}' failed to parse return value for method '{}': {{}}\", self.cached_name, e)",
+            method.name
+        ));
+
+        // Mirrors `sync_method_unit_return.jinja`'s missing-object/missing-property arms: a
+        // default-method bridge treats either as a no-op (substitute the default), a required
+        // fallible method propagates, a required infallible method logs and substitutes.
+        let missing_arm = |infallible_warn_step: &str| -> String {
+            if has_default_impl {
+                let default_expr = if has_error {
+                    "Ok(Default::default())"
+                } else {
+                    "Default::default()"
+                };
+                format!("Err(_) => return {default_expr},")
+            } else if has_error {
+                format!("Err(e) => return Err({error_lookup}),")
+            } else {
+                format!(
+                    "Err(e) => {{\n    \
+                     tracing::warn!(wrapper = \"{}\", method = \"{}\", error = %e, \"{infallible_warn_step}; returning default\");\n    \
+                     return Default::default();\n\
+                     }}",
+                    spec.wrapper_name(),
+                    method.name,
+                )
+            }
+        };
+        let obj_missing_arm = missing_arm("bridge object unavailable");
+        let prop_missing_arm = missing_arm("method not found on bridge object");
+
+        let call_expr = if empty_args {
+            "func.call(())".to_string()
+        } else {
+            format!("func.call(napi::bindgen_prelude::FnArgs::from({tuple_args}))")
+        };
+
+        let convert_fail_stmt = if has_error {
+            format!("return Err({error_parse});")
+        } else {
+            format!(
+                "tracing::warn!(wrapper = \"{}\", method = \"{}\", error = %e, \"host returned an unparseable value; returning default\");\n    return Default::default();",
+                spec.wrapper_name(),
+                method.name,
+            )
+        };
+        let convert = if is_identity {
+            String::new()
+        } else {
+            decode.convert_stmt(&convert_fail_stmt)
+        };
+        let result_var = if is_identity { "__decoded" } else { "__result" };
+        let tail = if has_error {
+            format!("Ok({result_var})")
+        } else {
+            result_var.to_string()
+        };
+
+        let call_err_arm = if has_error {
+            format!("Err(e) => return Err({error_call}),")
+        } else {
+            format!(
+                "Err(e) => {{\n    \
+                 tracing::warn!(wrapper = \"{wrapper}\", method = \"{method_name}\", error = %e, \"host callback threw; returning default\");\n    \
+                 return Default::default();\n\
+                 }}",
+                wrapper = spec.wrapper_name(),
+                method_name = method.name,
+            )
+        };
+        let settle_err_arm = if has_error {
+            format!("Err(e) => return Err({error_settle}),")
+        } else {
+            format!(
+                "Err(e) => {{\n    \
+                 tracing::warn!(wrapper = \"{wrapper}\", method = \"{method_name}\", error = %e, \"host callback rejected; returning default\");\n    \
+                 return Default::default();\n\
+                 }}",
+                wrapper = spec.wrapper_name(),
+                method_name = method.name,
+            )
+        };
+
+        format!(
+            "let __env = self.env();\n\
+             let __obj = match self.obj(&__env) {{\n    Ok(o) => o,\n    {obj_missing_arm}\n}};\n\
+             let func: napi::bindgen_prelude::Function<{args_tuple_ty}, AlefJsReply<{reply_ty}>> = \
+             match __obj.get_named_property(\"{js_method_name}\").or_else(|_| __obj.get_named_property(\"{snake_method_name}\")) {{\n    \
+             Ok(f) => f,\n    {prop_missing_arm}\n}};\n\
+             let __reply: AlefJsReply<{reply_ty}> = match {call_expr} {{\n    Ok(v) => v,\n    {call_err_arm}\n}};\n\
+             let __decoded: {reply_ty} = match __reply.settle_sync(&self.cached_name, \"{method_name}\") {{\n    \
+             Ok(v) => v,\n    {settle_err_arm}\n}};\n\
+             {convert}\n\
+             {tail}",
+            method_name = method.name,
+        )
     }
 
     /// Body of the trait-impl method's off-JS-thread slow path: block synchronously on the

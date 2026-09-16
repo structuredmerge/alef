@@ -2121,6 +2121,27 @@ fn test_napi_sync_method_body_uses_get_named_property() {
         code.code.contains("get_named_property"),
         "NAPI sync method body must use get_named_property to retrieve JS methods"
     );
+
+    // Regression coverage: the sync fast path (the on-JS-thread body reached by "the
+    // overwhelming common case", per its own doc comment) must decode the JS return value
+    // through the same native `AlefJsReply<T>` machinery the async and off-thread slow paths
+    // use, not `coerce_to_string()` + `serde_json::from_str::<String>(..)`. A bare JS string
+    // return (e.g. `"# Rendered"`) is not valid JSON, so the coercion+reparse path takes the
+    // parse-error arm on every real invocation even when the JS side is correct — this
+    // assertion fails against that code and passes only once the fast path is rewired.
+    assert!(
+        code.code.contains("AlefJsReply<String>"),
+        "sync fast path must declare the JS function's return type as AlefJsReply<T> to decode \
+         it natively instead of round-tripping through JSON text; content:\n{}",
+        code.code
+    );
+    assert!(
+        !code.code.contains("coerce_to_string"),
+        "sync fast path must not decode a String return via coerce_to_string() + JSON \
+         re-parsing (an unquoted JS string is not valid JSON, so this path always fails); \
+         content:\n{}",
+        code.code
+    );
 }
 
 /// Regression coverage for xberg#1636 defects #1/#2: the async body must dispatch through the
