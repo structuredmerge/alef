@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cause instead of `map_err(|_| ..)`-erasing it. No `tokio-util` dependency is emitted for trait
   bridges anymore (its only consumer, an unused `CancellationToken` field, is removed).
 
+### Removed
+
+- **`[crates.node] tokio_util_features`.** The key configured features for the `tokio-util`
+  dependency that backed napi trait-bridge cancellation tokens; the bridge rewrite removed both
+  the dependency and the cancellation token, leaving the key inert — a config that set it got no
+  error and no effect. Nothing needs to be done unless your `alef.toml` sets it, in which case
+  delete the line.
+
 ## [0.90.0] - 2026-09-16
 
 ### Added
