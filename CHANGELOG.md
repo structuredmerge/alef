@@ -328,6 +328,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Honor Python native reexports for defaultable input DTOs so public constructors do not shadow native classes with incompatible dataclasses.
 
+- Escape crate, self, Self, and super wire names in Python constructors without generating invalid Rust raw identifiers.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
