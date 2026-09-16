@@ -1,6 +1,39 @@
 use super::*;
 use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeDef, TypeRef};
 
+#[test]
+fn typed_tagged_newtypes_extract_native_payloads_before_json_fallback() {
+    let def = EnumDef {
+        name: "Policy".into(),
+        serde_tag: Some("operation".into()),
+        serde_content: Some("policy".into()),
+        variants: vec![EnumVariant {
+            name: "Analyze".into(),
+            is_tuple: true,
+            fields: vec![FieldDef {
+                name: "_0".into(),
+                ty: TypeRef::Named("AnalyzePolicy".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let types = vec![TypeDef {
+        name: "AnalyzePolicy".into(),
+        ..Default::default()
+    }];
+    let code = gen_enum_with_module(&def, "core", None, &types, "CustomModule");
+    assert!(code.contains("Some(\"CustomModule::PolicyAnalyze\")"), "{code}");
+    assert!(
+        code.contains("let payload: AnalyzePolicy = val.funcall(\"value\", ())?;"),
+        "{code}"
+    );
+    assert!(code.contains("return Ok(Self::Analyze(payload));"), "{code}");
+    assert!(code.find("let payload:").unwrap() < code.find("let json_str:").unwrap());
+    syn::parse_file(&code).expect("native ingress conversion must be valid Rust");
+}
+
 fn make_field(name: &str, ty: TypeRef, optional: bool) -> FieldDef {
     FieldDef {
         version: Default::default(),

@@ -437,11 +437,12 @@ impl Backend for MagnusBackend {
 
         for enum_def in &api.enums {
             if !is_reserved_enum(&enum_def.name) && !exclude_types.contains(enum_def.name.as_str()) {
-                builder.add_item(&classes::gen_enum(
+                builder.add_item(&classes::gen_enum_with_module(
                     enum_def,
                     &core_import,
                     Some(enabled_features.as_slice()),
                     &api.types,
+                    &module_name,
                 ));
                 if enum_def.serde_tag.is_none() {
                     let constructors = classes::gen_data_enum_variant_constructors(

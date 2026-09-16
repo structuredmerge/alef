@@ -769,7 +769,11 @@ fn gen_async_instance_method(
 
 mod gen_enum;
 
-pub(super) use gen_enum::{data_enum_variant_constructor_registrations, gen_data_enum_variant_constructors, gen_enum};
+#[cfg(test)]
+pub(super) use gen_enum::gen_enum;
+pub(super) use gen_enum::{
+    data_enum_variant_constructor_registrations, gen_data_enum_variant_constructors, gen_enum_with_module,
+};
 
 /// Generate a From impl for binding → core conversion that excludes thread-unsafe fields.
 ///

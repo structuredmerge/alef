@@ -29,6 +29,18 @@ impl magnus::IntoValue for {{ enum_name }} {
 
 impl magnus::TryConvert for {{ enum_name }} {
     fn try_convert(val: magnus::Value) -> Result<Self, magnus::Error> {
+{%- if serde_tag %}
+        // Generated Data variants carry native DTOs, not JSON-compatible display strings.
+        let class_name: Option<String> = val.class().funcall("name", ())?;
+{%- for variant in variants %}
+{%- if variant.typed_newtype %}
+        if class_name.as_deref() == Some("{{ module_name }}::{{ enum_name }}{{ variant.name }}") {
+            let payload: {{ variant.fields[0].field_type }} = val.funcall("value", ())?;
+            return Ok(Self::{{ variant.name }}{% if variant.emits_as_tuple %}(payload){% else %} { _0: payload }{% endif %});
+        }
+{%- endif %}
+{%- endfor %}
+{%- endif %}
         // For data enums with fields (e.g., PageAction), try to deserialize from JSON first.
         // For unit enums or when passed as a string, fall back to string-based conversion.
         let json_str: String = if let Ok(s) = <String as magnus::TryConvert>::try_convert(val) {

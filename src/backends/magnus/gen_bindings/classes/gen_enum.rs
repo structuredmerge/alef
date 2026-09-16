@@ -42,11 +42,28 @@ fn declared_enum_variants<'a>(
 /// the `cfg` a `Keep` carries: like Rustler, a kept variant is always declared unconditionally
 /// with no per-variant `#[cfg(...)]` on the declaration -- `enum_variant_declaration` never
 /// resolves a host-owned gate to `Drop`, so a host-owned variant is always kept regardless. ~keep
+#[cfg(test)]
 pub fn gen_enum(
     enum_def: &EnumDef,
     core_import: &str,
     configured_features: Option<&[String]>,
     types: &[crate::core::ir::TypeDef],
+) -> String {
+    gen_enum_with_module(
+        enum_def,
+        core_import,
+        configured_features,
+        types,
+        &crate::backends::magnus::gen_bindings::get_module_name(core_import),
+    )
+}
+
+pub fn gen_enum_with_module(
+    enum_def: &EnumDef,
+    core_import: &str,
+    configured_features: Option<&[String]>,
+    types: &[crate::core::ir::TypeDef],
+    module_name: &str,
 ) -> String {
     let is_host_enum = is_host_owned_rust_path(core_import, &enum_def.rust_path);
     let configured_features_set: Option<HashSet<&str>> =
@@ -127,6 +144,10 @@ pub fn gen_enum(
                 snake_name => &snake_name,
                 wire_name => &wire_name,
                 accepted_input_values => accepted_unit_variant_input_spellings(&variant.name, &snake_name, &wire_name),
+                typed_newtype => enum_def.serde_tag.is_some() && variant.fields.len() == 1
+                    && variant.fields[0].name == "_0"
+                    && matches!(&variant.fields[0].ty, TypeRef::Named(name)
+                        if types.iter().any(|t| t.name == *name && !t.is_opaque && !t.is_trait)),
             }
         })
         .collect();
@@ -135,6 +156,7 @@ pub fn gen_enum(
         "enum_magnus.rs.jinja",
         minijinja::context! {
             enum_name => &enum_def.name,
+            module_name => module_name,
             has_data => has_data,
             serde_tag => &enum_def.serde_tag,
             serde_content => &enum_def.serde_content,
