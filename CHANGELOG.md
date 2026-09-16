@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.91.1] - 2026-09-16
+
+### Fixed
+
+- **A napi trait-bridge method returning a borrowed string slice (`-> &[&str]`) emitted code that
+  does not compile.** `trait_impl` wraps such a method's body in `let __types: Vec<String> = { .. };`
+  and leaks the result into a `&'static [&'static str]`, which assumes the body is an expression.
+  The sync bridge rewritten in 0.91.0 is statement-shaped -- it returns from inside its reply loop
+  -- so those `return`s left the trait method with the unconverted `Vec<String>`, producing two
+  `mismatched types` errors and an `unreachable statement` for the leak conversion below. The body
+  is now collected through an immediately-invoked closure (an `async` block for async methods), so
+  every exit path reaches the conversion. The downstream-output gate's fixture trait gained a
+  *required* `supported_mime_types(&self) -> &[&str]`, which reproduces the failure: a method with
+  a Rust default body routes through the presence-check delegate instead and does not exercise it.
+
 ## [0.91.0] - 2026-09-16
 
 ### Fixed

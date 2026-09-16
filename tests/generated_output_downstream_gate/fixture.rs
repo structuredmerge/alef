@@ -212,6 +212,13 @@ pub fn recolor(swatch: foreign_core::Swatch) -> foreign_core::Swatch {
 /// - `cost`: sync, infallible, required -- the `TokenizerBackend::count_tokens` shape.
 /// - `label`: sync, fallible, Rust-defaulted.
 /// - `preferred_mode`: sync, an enum return.
+/// - `supported_mime_types`: sync, *required* (no Rust default -- a defaulted one routes through
+///   the presence-check delegate instead and does not exercise this), returning a borrowed `&[&str]`. This is the one shape whose
+///   emitted body is not used as-is: `trait_impl` collects it into a `Vec<String>` and leaks it
+///   into a `&'static [&'static str]`. It is covered here because the napi sync bridge returns
+///   from inside its reply loop rather than ending in a tail expression, and a plain block
+///   around such a body lets those `return`s escape the trait method with the unconverted
+///   `Vec<String>` (xberg#1636 follow-up).
 #[async_trait::async_trait]
 pub trait DocumentProcessor: Send + Sync {
     async fn transform(&self, content: Vec<u8>) -> Result<Report, Error>;
@@ -235,6 +242,8 @@ pub trait DocumentProcessor: Send + Sync {
     fn preferred_mode(&self) -> Mode {
         Mode::Fast
     }
+
+    fn supported_mime_types(&self) -> &[&str];
 }
 "#;
 

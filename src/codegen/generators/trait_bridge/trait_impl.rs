@@ -62,8 +62,20 @@ pub fn gen_bridge_trait_impl(spec: &TraitBridgeSpec, generator: &dyn TraitBridge
             if body_is_static_slice {
                 raw_body
             } else {
+                // ~keep The body is collected through a closure, not a plain `{ ... }` block,
+                // because a generated body may end in `return` rather than a tail expression
+                // (the napi sync bridge does: it returns from inside a recv_timeout loop). A
+                // block would let those `return`s leave the trait method with the unconverted
+                // `Vec<String>`, which both fails to typecheck against `&[&str]` and makes the
+                // conversion below unreachable. Inside the closure they return `Vec<String>`
+                // to it, so every exit path reaches the leak conversion.
+                let collect_types = if method.is_async {
+                    format!("let __types: Vec<String> = async {{ {raw_body} }}.await;")
+                } else {
+                    format!("let __types: Vec<String> = (|| -> Vec<String> {{ {raw_body} }})();")
+                };
                 format!(
-                    "let __types: Vec<String> = {{ {raw_body} }};\n\
+                    "{collect_types}\n\
                      let __strs: Vec<&'static str> = __types.into_iter()\n\
                          .map(|s| -> &'static str {{ Box::leak(s.into_boxed_str()) }})\n\
                          .collect();\n\
