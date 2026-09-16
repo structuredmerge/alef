@@ -415,7 +415,7 @@ pub(crate) fn gen_flat_data_enum(enum_def: &EnumDef, mapper: &PhpMapper, php_nam
 /// single-keyed object whose value IS the payload (`{"custom":"latex"}`) -- and a variant carrying
 /// `#[serde(untagged)]` as its bare payload with no wrapper at all. The derived impl this replaces
 /// read and wrote the class's own flat `{"type":"markdown"}` object instead, so no real wire value
-/// ever deserialized: xberg's PHP binding raised
+/// ever deserialized: a downstream PHP binding raised
 /// `invalid type: string "markdown", expected struct OutputFormat` on every `outputFormat` call.
 ///
 /// `#[serde(untagged)]` is honoured per VARIANT, not just per enum (`EnumVariant::serde_untagged`);

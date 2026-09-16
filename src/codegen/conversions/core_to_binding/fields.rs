@@ -25,7 +25,7 @@ fn camel_json_value(core_expr: &str, rec: &WasmCamelRecasedEnum) -> String {
 /// object, and a recased enum's pipeline hands it a `serde_json::Value::Object`. The field
 /// therefore arrived in JavaScript as a `Map`, on which property access returns `undefined`,
 /// while the `.d.ts` `ts_union` emits for it declares a plain object with camelCase keys:
-/// xberg's wasm e2e read `metadata.format.sheetCount` as `NaN` and `metadata.format.title` as
+/// a downstream wasm e2e read `metadata.format.sheetCount` as `NaN` and `metadata.format.title` as
 /// `''`. `JSON.parse` of the serialized text always yields plain objects, and is already this
 /// module's idiom for `Map<String, String>` fields.
 ///
