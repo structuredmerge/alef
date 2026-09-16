@@ -198,7 +198,10 @@ fn indexed_fields_require_enum_type_evidence() {
             let out = render(&fixture, &config, &types, &enums, &functions);
             assert_eq!(out.contains(ENUM_MARKER), expected_enum, "{call}: {out}");
             if !expected_enum {
-                assert!(out.contains(&format!("assert result.{field} == \"key_value\"")), "{out}");
+                assert!(
+                    out.contains(&format!("assert result.{field} == \"key_value\"")),
+                    "{out}"
+                );
                 assert!(!out.contains(".lower()"), "{out}");
             }
         }
