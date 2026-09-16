@@ -326,6 +326,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   had no choice but to hand-edit the generated (and hash-stamped) `poly.toml` directly, which
   `alef verify` then reports as stale bindings on every subsequent regeneration.
 
+- Convert named map keys and nested vectors of JSON metadata maps in generated core/binding field conversions, including optional fields.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
