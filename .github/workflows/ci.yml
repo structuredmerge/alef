@@ -157,7 +157,13 @@ jobs:
           # the variable without installing Go only converted a silent skip into a permanently red
           # leg. `ci_requires_go_for_runtime_regressions` now asserts both halves are present.
           ALEF_REQUIRE_GO: "1"
-        run: cargo test --workspace
+        # `--no-fail-fast` is load-bearing, not tidiness: without it cargo stops after the
+        # first failing *target*, so every integration binary ordered after it never runs and
+        # its result is indistinguishable from a pass. A stale assertion in
+        # `backends_wasm_gen_bindings_test` masked a second, unrelated failure in
+        # `ci_poly_pin_gate` across two releases that way -- the log showed one red test and
+        # looked complete. Run every target and report every failure. ~keep
+        run: cargo test --workspace --no-fail-fast
       # Every Elixir escaping oracle is #[ignore]d, so the step above runs none of them and
       # still exits 0. They evaluate generated Elixir through the real interpreter -- the only
       # checks in this repo that do -- so dropping `--ignored` or the filter here retires them
