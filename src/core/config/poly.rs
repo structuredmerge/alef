@@ -133,6 +133,46 @@ impl Default for UncommentConfig {
     }
 }
 
+/// Shell formatter (`shfmt`) opt-in emitted under `[fmt.shell.shfmt]`.
+///
+/// Declared under `[workspace.poly.shell-formatter]` in `alef.toml`. Absent
+/// (the default) emits NO `[fmt.shell.shfmt]` table, leaving the output
+/// byte-identical to the pre-feature default and preserving alef's
+/// pure-Rust-tooling policy (see `poly_toml_never_enables_system_native_formatters`).
+/// A consumer repo that needs shell scripts formatted opts in explicitly.
+///
+/// ```toml
+/// [workspace.poly.shell-formatter]
+/// enabled = true
+/// indent-width = 2
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ShellFormatterConfig {
+    /// Whether the shfmt catalog tool runs at all.
+    ///
+    /// Emitted as `enabled` in the generated `[fmt.shell.shfmt]` table.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Indent width (in spaces) shfmt uses to reformat shell scripts.
+    ///
+    /// Emitted as `indent_width` in the generated `[fmt.shell.shfmt]` table
+    /// when set. Absent leaves the key unset, so shfmt falls back to its own
+    /// default (tabs).
+    #[serde(default)]
+    pub indent_width: Option<u8>,
+}
+
+impl Default for ShellFormatterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            indent_width: None,
+        }
+    }
+}
+
 /// Repo-specific `poly.toml` overrides merged into the emitter's generated
 /// output.
 ///
@@ -158,6 +198,10 @@ impl Default for UncommentConfig {
 /// [workspace.poly.uncomment]
 /// enabled = true
 /// preserve-patterns = ["SAFETY:"]
+///
+/// [workspace.poly.shell-formatter]
+/// enabled = true
+/// indent-width = 2
 /// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -230,6 +274,16 @@ pub struct PolyConfig {
     #[serde(default)]
     pub uncomment: Option<UncommentConfig>,
 
+    /// Optional shell formatter (`shfmt`) opt-in emitted as a `[fmt.shell.shfmt]`
+    /// table.
+    ///
+    /// Absent (the default) emits NO `[fmt.shell.shfmt]` table, keeping alef's
+    /// pure-Rust-tooling policy intact and the output byte-identical to the
+    /// pre-feature default. When present, a `[fmt.shell.shfmt]` table is
+    /// emitted with the configured `enabled` / `indent_width` values.
+    #[serde(default)]
+    pub shell_formatter: Option<ShellFormatterConfig>,
+
     /// External git-sourced pre-commit hook sources, emitted as `[[hooks.sources]]`
     /// blocks in the generated `poly.toml`. Each entry pins a hook repository (e.g.
     /// an `ai-rulez` validation hook) by git URL + revision.
@@ -281,6 +335,10 @@ mod tests {
             cfg.uncomment.is_none(),
             "absent [uncomment] must deserialize to None (no table emitted)"
         );
+        assert!(
+            cfg.shell_formatter.is_none(),
+            "absent [shell-formatter] must deserialize to None (no table emitted)"
+        );
     }
 
     #[test]
@@ -311,6 +369,10 @@ remove-fixme = true
 remove-docs = false
 use-default-ignores = false
 preserve-patterns = ["SAFETY:", "allow("]
+
+[shell-formatter]
+enabled = true
+indent-width = 2
 "#;
         let cfg: PolyConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.exclude, vec!["vendor/**", "third-party/**"]);
@@ -339,6 +401,9 @@ preserve-patterns = ["SAFETY:", "allow("]
             cfg.pyrefly_sub_configs["**/schema.py"],
             vec!["missing-import", "bad-return"]
         );
+        let shell_formatter = cfg.shell_formatter.as_ref().expect("shell-formatter section present");
+        assert!(shell_formatter.enabled);
+        assert_eq!(shell_formatter.indent_width, Some(2));
     }
 
     #[test]
@@ -386,6 +451,33 @@ preserve-patterns = ["SAFETY:", "allow("]
         assert!(!cfg.remove_docs);
         assert!(cfg.use_default_ignores);
         assert!(cfg.preserve_patterns.is_empty());
+    }
+
+    #[test]
+    fn shell_formatter_config_rejects_unknown_fields() {
+        let err = toml::from_str::<ShellFormatterConfig>("unknown_field = true");
+        assert!(err.is_err(), "deny_unknown_fields must reject unrecognised keys");
+    }
+
+    #[test]
+    fn shell_formatter_config_default_matches_poly_defaults() {
+        let cfg = ShellFormatterConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.indent_width, None);
+    }
+
+    #[test]
+    fn poly_config_shell_formatter_empty_table_uses_defaults() {
+        let cfg: PolyConfig = toml::from_str("[shell-formatter]\n").unwrap();
+        let shell_formatter = cfg
+            .shell_formatter
+            .as_ref()
+            .expect("empty [shell-formatter] table -> Some");
+        assert!(shell_formatter.enabled, "enabled defaults to true");
+        assert_eq!(
+            shell_formatter.indent_width, None,
+            "indent_width defaults unset (shfmt falls back to its own default)"
+        );
     }
 
     #[test]

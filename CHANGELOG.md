@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.90.0] - 2026-09-16
+
+### Added
+
+- **An opt-in shell formatter, emitted as `[fmt.shell.shfmt]` in the generated `poly.toml`.**
+  Declare `[workspace.poly.shell-formatter]` (`enabled`, `indent-width`) in `alef.toml` to have
+  the scaffolder emit the table; absent, the generated output is unchanged and alef's
+  pure-Rust-tooling policy holds. Without this, a consumer that needs its shell scripts formatted
+  had no choice but to hand-edit the generated (and hash-stamped) `poly.toml` directly, which
+  `alef verify` then reports as stale bindings on every subsequent regeneration.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed

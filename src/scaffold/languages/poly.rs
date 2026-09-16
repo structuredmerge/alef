@@ -542,6 +542,19 @@ pub(crate) fn scaffold_poly_config(config: &ResolvedCrateConfig, languages: &[La
         out.push_str(&format!("preserve_patterns = {}\n\n", toml_array(&patterns)));
     }
 
+    // Opt-in only: alef's pure-Rust-tooling policy forbids enabling system-native
+    // formatters (shfmt included) by default — see
+    // `poly_toml_never_enables_system_native_formatters`. A consumer that hand-edits
+    // shell scripts and wants them formatted declares `[workspace.poly.shell-formatter]`.
+    if let Some(shell_formatter) = &config.poly.shell_formatter {
+        out.push_str("[fmt.shell.shfmt]\n");
+        out.push_str(&format!("enabled = {}\n", shell_formatter.enabled));
+        if let Some(indent_width) = shell_formatter.indent_width {
+            out.push_str(&format!("indent_width = {indent_width}\n"));
+        }
+        out.push('\n');
+    }
+
     // cbindgen writes the C FFI header (crates/*-ffi/include/*.h) at BUILD time,
     // so alef's post-generate `poly fmt` pass never sees it. poly ships no native
     // C formatter, so enable its clang-format catalog tool: `poly fmt` and the

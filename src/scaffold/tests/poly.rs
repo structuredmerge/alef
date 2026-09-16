@@ -908,6 +908,37 @@ fn poly_toml_uncomment_empty_table_fills_poly_defaults() {
 }
 
 #[test]
+fn poly_toml_omits_shell_formatter_table_by_default() {
+    let config = test_config();
+    let api = test_api();
+    let files = scaffold(&api, &config, &[Language::Python]).unwrap();
+    let c = &poly_toml(&files).content;
+
+    assert!(
+        !c.contains("[fmt.shell.shfmt]"),
+        "no [fmt.shell.shfmt] table when [workspace.poly.shell-formatter] is absent; got:\n{c}"
+    );
+}
+
+#[test]
+fn poly_toml_shell_formatter_table_emitted_when_configured() {
+    let config = test_config_with_workspace_toml(
+        r#"[workspace.poly.shell-formatter]
+enabled = true
+indent-width = 2
+"#,
+    );
+    let api = test_api();
+    let files = scaffold(&api, &config, &[Language::Python]).unwrap();
+    let c = &poly_toml(&files).content;
+
+    assert!(
+        c.contains("[fmt.shell.shfmt]\nenabled = true\nindent_width = 2\n"),
+        "shell formatter table must be emitted with the configured indent_width; got:\n{c}"
+    );
+}
+
+#[test]
 fn poly_toml_file_safety_exclude_defaults_to_shared_excludes() {
     let config = test_config();
     let api = test_api();
