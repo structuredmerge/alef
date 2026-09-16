@@ -7,6 +7,33 @@ use crate::core::backend::Backend;
 use crate::core::config::Language;
 use crate::core::ir::{EnumDef, EnumVariant, FieldDef, PrimitiveType, TypeRef};
 
+#[test]
+fn unit_enum_supports_map_keys_and_required_record_has_no_invented_default() {
+    let cfg = super::config::binding_config("core", true);
+    let role = EnumDef {
+        name: "Role".into(),
+        variants: vec![EnumVariant {
+            name: "Source".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let generated = crate::codegen::generators::gen_enum(&role, &cfg, None);
+    assert!(generated.contains("PartialEq, Eq, Hash"), "{generated}");
+    let request = crate::core::ir::TypeDef {
+        name: "Request".into(),
+        fields: vec![FieldDef {
+            name: "policy".into(),
+            ty: TypeRef::Named("RequiredPolicy".into()),
+            ..Default::default()
+        }],
+        has_default: false,
+        ..Default::default()
+    };
+    let generated = crate::codegen::generators::gen_struct(&request, &Pyo3Mapper::new(), &cfg);
+    assert!(!generated.contains("Default"), "{generated}");
+}
+
 /// The production pyo3 data-enum path emits one `#[staticmethod]` constructor per data-carrying
 /// struct variant, mapped through the real `Pyo3Mapper`. Proves the wiring at `gen_bindings/mod.rs`,
 /// not just the generator helper.

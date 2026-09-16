@@ -328,6 +328,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Convert named map keys and nested vectors of JSON metadata maps in generated core/binding field conversions, including optional fields.
 
+- Generate hashable Ruby/Python unit-enum map keys and avoid invented defaults for required Python structs and Ruby data enums.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
