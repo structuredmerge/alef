@@ -326,6 +326,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   had no choice but to hand-edit the generated (and hash-stamped) `poly.toml` directly, which
   `alef verify` then reports as stale bindings on every subsequent regeneration.
 
+- **Magnus RBS interfaces now cover direct typed trait arguments.** Trait bridges emit their host-implementable interface whenever methods are present, even when no generated registration function is configured, so direct `Arc<dyn Trait>` arguments have a declared RBS type.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
