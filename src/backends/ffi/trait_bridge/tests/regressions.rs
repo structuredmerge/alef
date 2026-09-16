@@ -744,3 +744,64 @@ fn bug3_ffi_set_out_error_helper_uses_collapsed_let_chain() {
          actual code:\n{code}"
     );
 }
+
+/// Regression test for xberg#1636's Blocker 1: the FFI backend never consulted
+/// `TraitBridgeConfig::exclude_languages`, unlike every other backend (`bridge_targets_language`
+/// is filtered on in napi/pyo3/php/magnus/rustler). A bridge configured `exclude_languages =
+/// ["ffi"]` (or `["c"]`, the e2e-consumer spelling) was still emitted into the FFI crate,
+/// breaking any bridge intentionally scoped away from a C-ABI consumer -- e.g. one whose trait
+/// uses a crate-wide error type or return type only the excluded target's own fixture satisfies.
+#[test]
+fn bug4_targets_ffi_respects_exclude_languages_both_spellings() {
+    use crate::backends::ffi::trait_bridge::targets_ffi;
+
+    let mut cfg = sample_bridge_cfg("Renderer");
+    assert!(
+        targets_ffi(&cfg),
+        "a bridge with no exclude_languages must target ffi by default"
+    );
+
+    cfg.exclude_languages = vec!["ffi".to_string()];
+    assert!(
+        !targets_ffi(&cfg),
+        "exclude_languages = [\"ffi\"] must suppress the FFI backend"
+    );
+
+    cfg.exclude_languages = vec!["c".to_string()];
+    assert!(
+        !targets_ffi(&cfg),
+        "exclude_languages = [\"c\"] must also suppress the FFI backend"
+    );
+
+    cfg.exclude_languages = vec!["node".to_string()];
+    assert!(targets_ffi(&cfg), "excluding an unrelated target must not affect ffi");
+}
+
+/// `registration_surface` must apply the same exclusion: a `register_fn`-configured bridge
+/// excluded for ffi must report no registration symbols at all, not just skip emitting the
+/// bridge body.
+#[test]
+fn bug4_registration_surface_omits_excluded_bridge() {
+    use crate::backends::ffi::trait_bridge::registration_surface;
+    use crate::core::config::ResolvedCrateConfig;
+
+    let trait_def = make_trait_def("Renderer", vec![make_method("render", TypeRef::String, false, false)]);
+    let mut api = sample_api();
+    api.types.push(trait_def);
+
+    let mut bridge_cfg = sample_bridge_cfg("Renderer");
+    bridge_cfg.register_fn = Some("register_renderer".to_string());
+    bridge_cfg.exclude_languages = vec!["ffi".to_string()];
+
+    let config = ResolvedCrateConfig {
+        name: "my-lib".to_string(),
+        trait_bridges: vec![bridge_cfg],
+        ..Default::default()
+    };
+
+    let surface = registration_surface(&api, &config);
+    assert!(
+        surface.is_empty(),
+        "an ffi-excluded bridge must report no registration surface; got {surface:?}"
+    );
+}
