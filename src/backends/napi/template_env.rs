@@ -16,10 +16,6 @@ static TEMPLATES: &[(&str, &str)] = &[
         include_str!("templates/sync_method_unit_return.jinja"),
     ),
     (
-        "sync_method_non_unit_return.jinja",
-        include_str!("templates/sync_method_non_unit_return.jinja"),
-    ),
-    (
         "trait_bridge_constructor.jinja",
         include_str!("templates/trait_bridge_constructor.jinja"),
     ),
