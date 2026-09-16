@@ -2106,6 +2106,51 @@ fn test_napi_plugin_bridge_validates_required_methods() {
     );
 }
 
+/// Regression coverage for `writeback_param`'s unenforced invariant: a `Unit`-returning method
+/// with exactly one `&mut` native-marshalled-struct param is the `PostProcessor::process`
+/// write-back shape, but `writeback_param` picked its single candidate via `.find()` with no
+/// check that there wasn't a second one. A second such param's mutations would be silently
+/// discarded the same way defect #4 (discarded `PostProcessor` mutations) was before this
+/// bridge tracked write-backs at all. Generation must now fail loudly instead.
+#[test]
+fn test_napi_trait_bridge_rejects_multiple_writeback_params() {
+    use alef::backends::napi::trait_bridge::gen_trait_bridge;
+
+    let mut refine = make_method_napi("refine", TypeRef::Unit, false, false);
+    refine.params = vec![
+        ParamDef {
+            name: "primary".to_string(),
+            ty: TypeRef::Named("NodeContext".to_string()),
+            is_ref: true,
+            is_mut: true,
+            ..Default::default()
+        },
+        ParamDef {
+            name: "secondary".to_string(),
+            ty: TypeRef::Named("NodeContext".to_string()),
+            is_ref: true,
+            is_mut: true,
+            ..Default::default()
+        },
+    ];
+
+    let trait_def = make_trait_def_napi("DocumentProcessor", vec![refine]);
+    let bridge_cfg = make_plugin_bridge_cfg("DocumentProcessor");
+    let api = make_api_napi();
+
+    let result = gen_trait_bridge(&trait_def, &bridge_cfg, "my_lib", "Error", "Error::from({msg})", &api);
+    let err = match result {
+        Ok(_) => panic!("a method with two &mut native-struct params must fail generation, not silently drop one"),
+        Err(e) => e,
+    };
+
+    let message = err.to_string();
+    assert!(
+        message.contains("DocumentProcessor::refine") && message.contains("more than one"),
+        "error must name the offending trait::method and explain the conflict; got: {message}"
+    );
+}
+
 #[test]
 fn test_napi_sync_method_body_uses_get_named_property() {
     use alef::backends::napi::trait_bridge::gen_trait_bridge;

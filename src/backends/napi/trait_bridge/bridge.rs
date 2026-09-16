@@ -78,6 +78,7 @@ pub fn gen_trait_bridge(
             api: api.clone(),
             unsupported_args: Default::default(),
             extra_impl_items: Default::default(),
+            writeback_conflicts: Default::default(),
         };
         let lifetime_type_names: std::collections::HashSet<String> = api
             .types
@@ -184,6 +185,16 @@ pub fn gen_trait_bridge(
                 trait_type.name,
                 unsupported.len(),
                 sites
+            );
+        }
+
+        let writeback_conflicts = generator.take_writeback_conflicts();
+        if !writeback_conflicts.is_empty() {
+            anyhow::bail!(
+                "napi trait bridge for '{}' cannot write back {} method(s):\n  - {}",
+                trait_type.name,
+                writeback_conflicts.len(),
+                writeback_conflicts.join("\n  - ")
             );
         }
 

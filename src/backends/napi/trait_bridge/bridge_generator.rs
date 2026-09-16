@@ -53,6 +53,13 @@ pub struct NapiBridgeGenerator {
     /// own body string; `gen_trait_bridge` drains this into a second `impl { .. }` block after
     /// the trait impl.
     pub(crate) extra_impl_items: RefCell<Vec<String>>,
+    /// Methods with more than one `&mut` native-marshalled-struct param — the shape
+    /// [`Self::writeback_param`] picks a single winner from via `.find()`. A second matching
+    /// param's mutations would be silently discarded the same way defect #4 (`PostProcessor`'s
+    /// write-back) was before this bridge tracked write-backs at all. Checked by
+    /// `gen_trait_bridge` after all method bodies are generated; a non-empty list is a hard
+    /// `anyhow::bail!` rather than an unenforced invariant.
+    pub(crate) writeback_conflicts: RefCell<Vec<String>>,
 }
 
 impl NapiBridgeGenerator {
@@ -317,14 +324,27 @@ impl NapiBridgeGenerator {
     /// type is the `PostProcessor::process`-shape write-back case: the host mutates its own copy
     /// and returns it (or nothing, to mean "unchanged"), instead of the bridge silently
     /// discarding whatever the JS side returned.
-    fn writeback_param<'a>(&self, method: &'a MethodDef) -> Option<&'a ParamDef> {
+    fn writeback_param<'a>(&self, method: &'a MethodDef, spec: &TraitBridgeSpec) -> Option<&'a ParamDef> {
         if !matches!(method.return_type, TypeRef::Unit) {
             return None;
         }
-        method
+        let mut candidates = method
             .params
             .iter()
-            .find(|p| p.is_mut && matches!(&p.ty, TypeRef::Named(n) if self.struct_param_types.contains(n)))
+            .filter(|p| p.is_mut && matches!(&p.ty, TypeRef::Named(n) if self.struct_param_types.contains(n)));
+        let first = candidates.next()?;
+        if candidates.next().is_some() {
+            let message = format!(
+                "{}::{} has more than one `&mut` native-marshalled-struct param; the napi trait \
+                 bridge can only write back a single param per call",
+                spec.trait_def.name, method.name
+            );
+            let mut conflicts = self.writeback_conflicts.borrow_mut();
+            if !conflicts.contains(&message) {
+                conflicts.push(message);
+            }
+        }
+        Some(first)
     }
 }
 
@@ -510,7 +530,7 @@ impl TraitBridgeGenerator for NapiBridgeGenerator {
         };
         let call_prelude = format!("let __payload = {payload_expr};\nlet __call = {tsfn_expr};");
 
-        if let Some(mut_param) = self.writeback_param(method) {
+        if let Some(mut_param) = self.writeback_param(method, spec) {
             let TypeRef::Named(core_name) = &mut_param.ty else {
                 unreachable!("writeback_param only returns Named params");
             };
@@ -1078,9 +1098,9 @@ impl NapiBridgeGenerator {
         let payload_ty = self.payload_tuple_type(method);
         let payload_pattern = Self::payload_pattern(method);
 
-        let is_writeback = self.writeback_param(method).is_some();
+        let is_writeback = self.writeback_param(method, spec).is_some();
         let reply_ty = if is_writeback {
-            let mut_param = self.writeback_param(method).expect("checked above");
+            let mut_param = self.writeback_param(method, spec).expect("checked above");
             let TypeRef::Named(core_name) = &mut_param.ty else {
                 unreachable!("writeback_param only returns Named params");
             };
@@ -1160,7 +1180,7 @@ impl NapiBridgeGenerator {
                 let m = &m;
                 let alias = self.tsfn_alias_name(spec, m);
                 let payload_ty = self.payload_tuple_type(m);
-                let reply_ty = if let Some(mut_param) = self.writeback_param(m) {
+                let reply_ty = if let Some(mut_param) = self.writeback_param(m, spec) {
                     let TypeRef::Named(core_name) = &mut_param.ty else {
                         unreachable!("writeback_param only returns Named params");
                     };
@@ -1200,6 +1220,10 @@ impl NapiBridgeGenerator {
     /// the visitor path's own params, which do not flow through this generator) is generated.
     pub(super) fn take_unsupported_args(&self) -> Vec<UnsupportedArg> {
         std::mem::take(&mut self.unsupported_args.borrow_mut())
+    }
+
+    pub(super) fn take_writeback_conflicts(&self) -> Vec<String> {
+        std::mem::take(&mut self.writeback_conflicts.borrow_mut())
     }
 }
 
