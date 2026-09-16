@@ -62,17 +62,21 @@ pub fn gen_bridge_trait_impl(spec: &TraitBridgeSpec, generator: &dyn TraitBridge
             if body_is_static_slice {
                 raw_body
             } else {
-                // ~keep The body is collected through a closure, not a plain `{ ... }` block,
-                // because a generated body may end in `return` rather than a tail expression
-                // (the napi sync bridge does: it returns from inside a recv_timeout loop). A
-                // block would let those `return`s leave the trait method with the unconverted
-                // `Vec<String>`, which both fails to typecheck against `&[&str]` and makes the
-                // conversion below unreachable. Inside the closure they return `Vec<String>`
-                // to it, so every exit path reaches the leak conversion.
-                let collect_types = if method.is_async {
-                    format!("let __types: Vec<String> = async {{ {raw_body} }}.await;")
-                } else {
-                    format!("let __types: Vec<String> = (|| -> Vec<String> {{ {raw_body} }})();")
+                // ~keep A body containing `return` is statement-shaped, not an expression: a
+                // plain `{ ... }` block would let those `return`s escape the trait method with
+                // the unconverted `Vec<String>`, which fails to typecheck against `&[&str]` and
+                // leaves the conversion below unreachable (the napi sync bridge returns from
+                // inside its recv_timeout loop). Such a body is collected through a closure so
+                // every exit path reaches the conversion. An expression-shaped body keeps the
+                // plain block -- wrapping it too would be a redundant closure call, which clippy
+                // denies (the pyo3 bridge emits one bare `Python::attach(..)` expression).
+                let needs_capture = contains_return_keyword(&raw_body);
+                let collect_types = match (needs_capture, method.is_async) {
+                    (false, _) => format!("let __types: Vec<String> = {{ {raw_body} }};"),
+                    (true, true) => format!("let __types: Vec<String> = async {{ {raw_body} }}.await;"),
+                    (true, false) => {
+                        format!("let __types: Vec<String> = (|| -> Vec<String> {{ {raw_body} }})();")
+                    }
                 };
                 format!(
                     "{collect_types}\n\
@@ -114,4 +118,21 @@ pub fn gen_bridge_trait_impl(spec: &TraitBridgeSpec, generator: &dyn TraitBridge
             methods_code => methods_code,
         },
     )
+}
+
+/// Whether `body` contains a `return` *keyword* rather than a substring such as `returning`,
+/// which appears in this generator's own emitted log messages. Distinguishes a statement-shaped
+/// emitted body from an expression-shaped one.
+fn contains_return_keyword(body: &str) -> bool {
+    body.match_indices("return").any(|(index, matched)| {
+        let before_is_word = body[..index]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let after_is_word = body[index + matched.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        !before_is_word && !after_is_word
+    })
 }

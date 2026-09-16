@@ -203,7 +203,7 @@ pub fn recolor(swatch: foreign_core::Swatch) -> foreign_core::Swatch {
 
 /// A napi-only trait bridge (`[[crates.trait_bridges]]` below restricts it to `node` via
 /// `exclude_languages` -- every other GATE_LANGUAGES backend has its own trait-bridge generator,
-/// untouched by xberg#1636's fix, and is out of scope here). Covers the six method shapes the
+/// untouched by xberg#1636's fix, and is out of scope here). Covers the method shapes the
 /// rewritten napi generator (`NapiBridgeGenerator`) distinguishes:
 /// - `transform`: async, a `Bytes` param, a native-struct (`Report`) return.
 /// - `describe`: async, a `Path` param, Rust-defaulted (forwardable).
@@ -345,6 +345,11 @@ roots = ["Swatch"]
 # napi-only: every other GATE_LANGUAGES backend has its own trait-bridge generator, untouched
 # by this fixture's reason for existing (the napi async/sync trait-bridge rewrite), and
 # exercising them here is out of scope. See `DocumentProcessor`'s doc in `FIXTURE_SOURCE`.
+#
+# ~keep Adding "python" here does NOT currently work, and the reason is not this fixture: the
+# pyo3 trait-bridge generator cannot convert a native enum return (`preferred_mode -> Mode`),
+# so the emitted crate fails with E0277 before any shared-`trait_impl` behaviour is reached.
+# Widening this gate to pyo3 has to wait on that generator gap.
 [[crates.trait_bridges]]
 trait_name = "DocumentProcessor"
 exclude_languages = [
