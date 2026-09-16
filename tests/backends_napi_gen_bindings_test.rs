@@ -2373,7 +2373,6 @@ package_name = "test-lib"
         exclude_types: vec![],
         exclude_platforms: vec![],
         extra_dependencies: Default::default(),
-        tokio_util_features: None,
         scaffold_output: None,
         rename_fields: Default::default(),
         run_wrapper: None,
