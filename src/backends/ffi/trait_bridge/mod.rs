@@ -29,6 +29,23 @@ use std::collections::{HashMap, HashSet};
 
 use helpers::prim_to_c;
 
+/// The `exclude_languages` spellings that name this target: the e2e-consumer language (`"c"`)
+/// and the backend itself (`"ffi"`) -- mirrors every other backend's `TARGET_SPELLINGS`
+/// (`napi/trait_bridge.rs`'s `["node", "napi"]`, `magnus/trait_bridge.rs`'s `["ruby",
+/// "magnus"]`), so `exclude_languages = ["ffi"]` or `["c"]` both suppress this backend's
+/// trait-bridge output. ~keep
+pub const TARGET_SPELLINGS: [&str; 2] = ["c", "ffi"];
+
+/// Whether `bridge` is emitted for the FFI target at all.
+pub fn targets_ffi(bridge: &TraitBridgeConfig) -> bool {
+    crate::codegen::generators::trait_bridge::bridge_targets_language(bridge, &TARGET_SPELLINGS)
+}
+
+/// The trait a bridge wraps, when FFI emits that bridge at all.
+pub fn active_bridge_trait<'a>(bridge: &TraitBridgeConfig, api: &'a ApiSurface) -> Option<&'a TypeDef> {
+    crate::codegen::generators::trait_bridge::active_bridge_trait_def(bridge, api, &TARGET_SPELLINGS)
+}
+
 /// FFI-specific trait bridge generator.
 ///
 /// Produces vtable structs and bridge structs that implement Rust traits by
@@ -180,7 +197,7 @@ pub fn registration_surface(api: &ApiSurface, config: &ResolvedCrateConfig) -> V
     config
         .trait_bridges
         .iter()
-        .filter(|bridge| bridge.register_fn.is_some())
+        .filter(|bridge| bridge.register_fn.is_some() && targets_ffi(bridge))
         .filter_map(|bridge| {
             let trait_def = api.types.iter().find(|t| t.is_trait && t.name == bridge.trait_name)?;
             let register_fn = bridge.register_fn.as_deref()?;

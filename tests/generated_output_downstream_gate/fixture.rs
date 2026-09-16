@@ -43,6 +43,35 @@ pub enum Mode {
     Chunked,
 }
 
+/// A manual (not derived) `Default` impl: `DocumentProcessor::preferred_mode` returns `Mode`
+/// from a Rust-defaulted, infallible sync method, and every backend's sync trait-bridge body
+/// substitutes `Default::default()` on a failure path (missing JS property, unparseable
+/// return, ...) regardless of whether that path is ever exercised at runtime -- the substitution
+/// is source code, so `Mode: Default` is a compile-time requirement independent of it. A manual
+/// impl (rather than `#[derive(Default)]` on the enum above) keeps that derive list -- and the
+/// `unreachable_patterns` catch-all coverage it documents -- untouched. ~keep
+impl Default for Mode {
+    fn default() -> Self {
+        Mode::Fast
+    }
+}
+
+/// The crate's uniform trait-bridge error type: bridge codegen constructs every bridged-method
+/// failure via `{core_import}::{error_type}::from({msg})` (see
+/// `ResolvedCrateConfig::error_constructor_expr`) and requires each bridged trait's fallible
+/// methods to return exactly this configured type -- not an arbitrary per-method error, since
+/// the generated `impl Trait for Wrapper` block must match the real trait declaration. Plain
+/// (not `#[derive(thiserror::Error)]`), so it is never extracted into `ErrorDef`/`api.errors`
+/// and triggers no codegen beyond `DocumentProcessor` itself. ~keep
+#[derive(Debug)]
+pub struct Error(pub String);
+
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Error(message)
+    }
+}
+
 /// A free function gated the same way, covering the function-position half of the same
 /// forwarding requirement (`Mode::Chunked` above only covers the enum-variant position).
 #[cfg(feature = "chunking-tokenizers")]
@@ -185,20 +214,20 @@ pub fn recolor(swatch: foreign_core::Swatch) -> foreign_core::Swatch {
 /// - `preferred_mode`: sync, an enum return.
 #[async_trait::async_trait]
 pub trait DocumentProcessor: Send + Sync {
-    async fn transform(&self, content: Vec<u8>) -> Result<Report, String>;
+    async fn transform(&self, content: Vec<u8>) -> Result<Report, Error>;
 
     async fn describe(&self, path: std::path::PathBuf) -> String {
         let _ = path;
         "unchanged".to_string()
     }
 
-    async fn refine(&self, report: &mut Report) -> Result<(), String>;
+    async fn refine(&self, report: &mut Report) -> Result<(), Error>;
 
     fn cost(&self, text: &str) -> u64 {
         text.len() as u64
     }
 
-    fn label(&self, mode: Mode) -> Result<String, String> {
+    fn label(&self, mode: Mode) -> Result<String, Error> {
         let _ = mode;
         Ok("default".to_string())
     }

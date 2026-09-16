@@ -751,6 +751,9 @@ pub(super) fn gen_lib_rs(api: &ApiSurface, prefix: &str, config: &ResolvedCrateC
         let error_constructor = config.error_constructor_expr();
         let plugin_error_constructor = config.ffi_plugin_error_constructor();
         for bridge_cfg in &config.trait_bridges {
+            if !crate::backends::ffi::trait_bridge::targets_ffi(bridge_cfg) {
+                continue;
+            }
             if visitor_callbacks_enabled
                 && bridge_cfg.bind_via == crate::core::config::BridgeBinding::OptionsField
                 && bridge_cfg.register_fn.is_none()
