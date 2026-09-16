@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.91.3] - 2026-09-16
+
+### Fixed
+
+- **The defaulted-method guard emitted `if !(self.x.is_some())`,** which `clippy::nonminimal_bool`
+  denies, so a generated napi crate carrying any forwardable-defaulted method failed to build under
+  `-D warnings` (16 sites in xberg's Node binding). A backend can now declare the *absence*
+  spelling of its presence check directly -- napi negates an `Option` presence to `is_none()` --
+  instead of the guard template negating every backend's expression textually.
+
+- **0.91.2 decided whether a borrowed-slice body needed capturing by scanning it for the word
+  `return`.** That misread emitted comments and log strings -- the php bridge's body contains "The
+  return type is php-native" -- and wrapped an expression-shaped body in a closure, tripping
+  `redundant_closure_call` again. The decision is now declared by the backend rather than sniffed
+  out of the emitted text, and additionally accounts for the defaulted-method guard, which
+  prepends a `return` to the body of *any* backend.
+
 ## [0.91.2] - 2026-09-16
 
 ### Fixed

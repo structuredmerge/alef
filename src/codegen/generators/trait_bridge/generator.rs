@@ -79,6 +79,29 @@ pub trait TraitBridgeGenerator {
         None
     }
 
+    /// Whether this backend's emitted body for `method` exits via `return` rather than
+    /// evaluating to its value.
+    ///
+    /// Only consulted for a borrowed-slice (`-> &[&str]`) return, whose conversion in
+    /// `trait_impl` consumes the body as a value and so must capture a `return`-shaped body
+    /// first. Declared by the backend rather than sniffed out of the emitted text: `return`
+    /// also occurs in emitted comments and log strings.
+    fn borrowed_slice_body_uses_return(&self, _method: &MethodDef) -> bool {
+        false
+    }
+
+    /// The *absence* spelling of [`Self::gen_method_presence_check`], used as the
+    /// defaulted-method guard condition.
+    ///
+    /// Defaults to negating the presence expression. Override when the negation
+    /// clippy accepts is not `!(presence)` — an `Option::is_some()` presence check
+    /// must negate to `is_none()`, since `!x.is_some()` is denied by
+    /// `clippy::nonminimal_bool` and generated crates are built with `-D warnings`.
+    fn gen_method_absence_check(&self, method: &MethodDef, spec: &TraitBridgeSpec) -> Option<String> {
+        self.gen_method_presence_check(method, spec)
+            .map(|presence| format!("!({presence})"))
+    }
+
     /// Presence-check expression for a `Plugin` lifecycle method (`initialize`,
     /// `shutdown`) synthesized by the super-trait impl.
     ///

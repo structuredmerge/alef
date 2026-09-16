@@ -421,6 +421,18 @@ impl TraitBridgeGenerator for NapiBridgeGenerator {
             .then(|| format!("self.{}.is_some()", Self::tsfn_field_name(method)))
     }
 
+    fn borrowed_slice_body_uses_return(&self, method: &MethodDef) -> bool {
+        // ~keep The sync bridge body returns from inside its recv_timeout loop; the async one
+        // evaluates to its value.
+        !method.is_async
+    }
+
+    fn gen_method_absence_check(&self, method: &MethodDef, _spec: &TraitBridgeSpec) -> Option<String> {
+        self.forwardable_defaulted
+            .contains(&method.name)
+            .then(|| format!("self.{}.is_none()", Self::tsfn_field_name(method)))
+    }
+
     fn extra_bridge_fields(&self, spec: &TraitBridgeSpec) -> Vec<(String, String)> {
         self.tsfn_methods(spec)
             .into_iter()

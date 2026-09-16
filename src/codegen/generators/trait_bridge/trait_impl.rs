@@ -32,15 +32,17 @@ pub fn gen_bridge_trait_impl(spec: &TraitBridgeSpec, generator: &dyn TraitBridge
             generator.gen_sync_method_body(method, spec)
         };
 
+        let mut guard_emitted = false;
         let raw_body = match generator
-            .gen_method_presence_check(method, spec)
+            .gen_method_absence_check(method, spec)
             .filter(|_| method.has_default_impl)
         {
-            Some(presence) => {
+            Some(absence) => {
+                guard_emitted = true;
                 let guard = crate::codegen::template_env::render(
                     "generators/trait_bridge/default_method_guard.jinja",
                     minijinja::context! {
-                        presence => presence,
+                        absence => absence,
                         delegate_name => default_delegate_name(spec, method),
                         method_name => &method.name,
                         arg_names => &sig.arg_names,
@@ -62,15 +64,16 @@ pub fn gen_bridge_trait_impl(spec: &TraitBridgeSpec, generator: &dyn TraitBridge
             if body_is_static_slice {
                 raw_body
             } else {
-                // ~keep A body containing `return` is statement-shaped, not an expression: a
-                // plain `{ ... }` block would let those `return`s escape the trait method with
-                // the unconverted `Vec<String>`, which fails to typecheck against `&[&str]` and
-                // leaves the conversion below unreachable (the napi sync bridge returns from
-                // inside its recv_timeout loop). Such a body is collected through a closure so
-                // every exit path reaches the conversion. An expression-shaped body keeps the
-                // plain block -- wrapping it too would be a redundant closure call, which clippy
-                // denies (the pyo3 bridge emits one bare `Python::attach(..)` expression).
-                let needs_capture = contains_return_keyword(&raw_body);
+                // ~keep This conversion consumes the body as a value, so a body that exits via
+                // `return` must be captured first -- otherwise the `return` leaves the trait method
+                // with the unconverted `Vec<String>`, which fails to typecheck against `&[&str]` and
+                // leaves the conversion below unreachable. Two things put a `return` in the body: the
+                // defaulted-method guard prepended above, and a backend whose emitted body is
+                // statement-shaped (the napi sync bridge returns from inside its recv_timeout loop).
+                // Everything else is a single expression and keeps the plain block -- wrapping those
+                // would be a redundant closure call, which clippy denies, and the pyo3 and php
+                // bridges both emit one bare expression.
+                let needs_capture = guard_emitted || generator.borrowed_slice_body_uses_return(method);
                 let collect_types = match (needs_capture, method.is_async) {
                     (false, _) => format!("let __types: Vec<String> = {{ {raw_body} }};"),
                     (true, true) => format!("let __types: Vec<String> = async {{ {raw_body} }}.await;"),
@@ -118,21 +121,4 @@ pub fn gen_bridge_trait_impl(spec: &TraitBridgeSpec, generator: &dyn TraitBridge
             methods_code => methods_code,
         },
     )
-}
-
-/// Whether `body` contains a `return` *keyword* rather than a substring such as `returning`,
-/// which appears in this generator's own emitted log messages. Distinguishes a statement-shaped
-/// emitted body from an expression-shaped one.
-fn contains_return_keyword(body: &str) -> bool {
-    body.match_indices("return").any(|(index, matched)| {
-        let before_is_word = body[..index]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_');
-        let after_is_word = body[index + matched.len()..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_');
-        !before_is_word && !after_is_word
-    })
 }
