@@ -246,6 +246,10 @@ impl Backend for NapiBackend {
             builder.add_item(support::js_visitor_ref_def());
         }
 
+        if crate::backends::napi::trait_bridge::has_non_visitor_trait_bridges(config, api) {
+            builder.add_item(support::trait_bridge_runtime_def());
+        }
+
         for adapter in &config.adapters {
             match adapter.pattern {
                 crate::core::config::AdapterPattern::Streaming => {
@@ -517,7 +521,30 @@ impl Backend for NapiBackend {
 
         let binding_to_core = crate::codegen::conversions::convertible_types(api);
         let core_to_binding = crate::codegen::conversions::core_to_binding_convertible_types(api, &[]);
-        let input_types = crate::codegen::conversions::input_type_names(api);
+        let mut input_types = crate::codegen::conversions::input_type_names(api);
+        // `input_type_names` walks `!typ.is_trait` types' own methods, so a type that appears
+        // ONLY as a trait-bridge method's return type is never discovered as needing a
+        // `From<Js{T}> for core::T` impl -- the trait bridge's own decode path
+        // (`NapiBridgeGenerator::plan_return_decode`'s `Named`/`Optional`/`VecNamed` cases)
+        // needs exactly that impl to exist. Seed those return types in here rather than
+        // widening the shared cross-backend `input_type_names` (every other backend's trait
+        // bridge return path goes through a JSON/FFI boundary uniformly and has no equivalent
+        // need).
+        for bridge_cfg in &config.trait_bridges {
+            let Some(trait_type) = crate::backends::napi::trait_bridge::active_bridge_trait(bridge_cfg, api) else {
+                continue;
+            };
+            // A visitor bridge's methods have no `ReturnDecode`/`Js{T}` decode path at all (see
+            // `is_visitor_bridge`'s doc) -- seeding its return types here would ask for a
+            // `From<Js{T}> for core::T` impl (or, for an enum return, an unwanted extra
+            // binding_to_core enum conversion) that nothing generates or needs.
+            if crate::backends::napi::trait_bridge::is_visitor_bridge(trait_type, bridge_cfg) {
+                continue;
+            }
+            for method in bridge_cfg.resolve_methods(api) {
+                collect_named_leaf_types(&method.return_type, &mut input_types);
+            }
+        }
         // NOTE: NAPI does NOT populate `trait_bridge_arc_wrapper_field_names`. Unlike
         let napi_conv_config = crate::codegen::conversions::ConversionConfig {
             type_name_prefix: &prefix,
@@ -933,5 +960,25 @@ impl Backend for NapiBackend {
                 replace: "export declare enum",
             }],
         })
+    }
+}
+
+/// Collect every `Named` leaf reachable from `ty` through `Optional`/`Vec`/`Map`, for seeding
+/// `input_types` with a trait-bridge method's return type (see the `gen_bindings` fn above).
+/// Deliberately local rather than reusing `type_discovery`'s private `collect_named_types`: this
+/// caller only needs a shallow reachability seed, not that function's full transitive-closure
+/// contract, and every other backend's trait-bridge return path has no equivalent need.
+fn collect_named_leaf_types(ty: &crate::core::ir::TypeRef, out: &mut AHashSet<String>) {
+    use crate::core::ir::TypeRef;
+    match ty {
+        TypeRef::Named(n) => {
+            out.insert(n.clone());
+        }
+        TypeRef::Optional(inner) | TypeRef::Vec(inner) => collect_named_leaf_types(inner, out),
+        TypeRef::Map(k, v) => {
+            collect_named_leaf_types(k, out);
+            collect_named_leaf_types(v, out);
+        }
+        _ => {}
     }
 }

@@ -20,14 +20,6 @@ static TEMPLATES: &[(&str, &str)] = &[
         include_str!("templates/sync_method_non_unit_return.jinja"),
     ),
     (
-        "async_method_unit_return.jinja",
-        include_str!("templates/async_method_unit_return.jinja"),
-    ),
-    (
-        "async_method_non_unit_return.jinja",
-        include_str!("templates/async_method_non_unit_return.jinja"),
-    ),
-    (
         "trait_bridge_constructor.jinja",
         include_str!("templates/trait_bridge_constructor.jinja"),
     ),
@@ -299,9 +291,9 @@ pub(crate) fn make_env() -> Environment<'static> {
     env.set_keep_trailing_newline(true);
     // Strict: referencing a context key that was never passed is a render-time error
     // instead of minijinja's default Lenient behavior of silently treating it as falsy/empty.
-    // Lenient mode let `{% if missing_key %}` branches take the `else` arm unnoticed — see
-    // xberg#1636, where the async trait-bridge templates branched on `wrapper`/`has_error`/
-    // `has_default_impl` keys the generator never passed.
+    // Lenient mode let `{% if missing_key %}` branches take the `else` arm unnoticed: the async
+    // trait-bridge templates once branched on `wrapper`/`has_error`/`has_default_impl` keys the
+    // generator never passed, and nothing caught it.
     env.set_undefined_behavior(UndefinedBehavior::Strict);
     for (name, src) in TEMPLATES {
         env.add_template(name, src).expect("built-in template is valid");

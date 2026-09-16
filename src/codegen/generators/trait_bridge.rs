@@ -32,7 +32,7 @@ pub use registration::{
 };
 pub use spec::{TraitBridgeSpec, own_vtable_methods, trait_snake_of, visitor_callback_methods, vtable_slot_names};
 pub use trait_impl::gen_bridge_trait_impl;
-pub use wrapper::{gen_bridge_debug_impl, gen_bridge_plugin_impl, gen_bridge_wrapper_struct};
+pub use wrapper::{gen_bridge_debug_impl, gen_bridge_plugin_impl, gen_bridge_wrapper_struct, plugin_lifecycle_methods};
 
 #[cfg(test)]
 mod tests;

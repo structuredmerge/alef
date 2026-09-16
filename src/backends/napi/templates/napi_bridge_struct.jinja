@@ -6,9 +6,11 @@
 /// pins the libuv event loop, letting Node/worker threads exit cleanly.
 pub struct {{ wrapper_name }} {
     env: napi::sys::napi_env,
+    /// Thread `new()` ran on — always the JS thread. See the sync fast/slow split
+    /// (`gen_sync_method_body`) and the drop-hazard guard (`release_ref`).
+    js_thread: std::thread::ThreadId,
     obj_ref: std::sync::Mutex<Option<napi::bindgen_prelude::ObjectRef<false>>>,
     cached_name: String,
-    cancellation_token: std::sync::Arc<tokio_util::sync::CancellationToken>,
 {% for f in extra_fields %}
     {{ f.name }}: {{ f.ty }},
 {% endfor %}

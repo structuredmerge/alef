@@ -39,6 +39,78 @@ pub fn gen_bridge_debug_impl(spec: &TraitBridgeSpec) -> String {
     )
 }
 
+/// The three `Plugin` super-trait lifecycle methods (`version`, `initialize`, `shutdown`) as
+/// synthetic [`MethodDef`]s — the super trait is forwarded by construction here, not extracted
+/// from any crate's IR, so no `TypeDef` carries these. Exposed so a backend that needs to treat
+/// them uniformly with the trait's own methods (the napi backend allocates a per-method
+/// `ThreadsafeFunction` field for every bridged method, lifecycle methods included) builds the
+/// exact same three `MethodDef`s [`gen_bridge_plugin_impl`] does, instead of re-deriving a
+/// second copy that could drift from it.
+pub fn plugin_lifecycle_methods(spec: &TraitBridgeSpec, version_is_fallible: bool) -> [MethodDef; 3] {
+    let error_path = spec.error_path();
+    let version_method = MethodDef {
+        name: "version".to_string(),
+        params: vec![],
+        return_type: crate::core::ir::TypeRef::String,
+        is_async: false,
+        is_static: false,
+        error_type: version_is_fallible.then(|| error_path.clone()),
+        doc: String::new(),
+        receiver: Some(crate::core::ir::ReceiverKind::Ref),
+        cfg: None,
+        sanitized: false,
+        trait_source: None,
+        returns_ref: false,
+        returns_cow: false,
+        return_newtype_wrapper: None,
+        has_default_impl: false,
+        binding_excluded: false,
+        binding_exclusion_reason: None,
+        version: Default::default(),
+    };
+    let init_method = MethodDef {
+        name: "initialize".to_string(),
+        params: vec![],
+        return_type: crate::core::ir::TypeRef::Unit,
+        is_async: false,
+        is_static: false,
+        error_type: Some(error_path.clone()),
+        doc: String::new(),
+        receiver: Some(crate::core::ir::ReceiverKind::Ref),
+        cfg: None,
+        sanitized: false,
+        trait_source: None,
+        returns_ref: false,
+        returns_cow: false,
+        return_newtype_wrapper: None,
+        has_default_impl: true,
+        binding_excluded: false,
+        binding_exclusion_reason: None,
+        version: Default::default(),
+    };
+    let shutdown_method = MethodDef {
+        name: "shutdown".to_string(),
+        params: vec![],
+        return_type: crate::core::ir::TypeRef::Unit,
+        is_async: false,
+        is_static: false,
+        error_type: Some(error_path.clone()),
+        doc: String::new(),
+        receiver: Some(crate::core::ir::ReceiverKind::Ref),
+        cfg: None,
+        sanitized: false,
+        trait_source: None,
+        returns_ref: false,
+        returns_cow: false,
+        return_newtype_wrapper: None,
+        has_default_impl: true,
+        binding_excluded: false,
+        binding_exclusion_reason: None,
+        version: Default::default(),
+    };
+    [version_method, init_method, shutdown_method]
+}
+
 /// Generate `impl SuperTrait for Wrapper` when the bridge config specifies a super-trait.
 ///
 /// Forwards `name()`, `version()`, `initialize()`, and `shutdown()` to the
@@ -60,74 +132,15 @@ pub fn gen_bridge_plugin_impl(spec: &TraitBridgeSpec, generator: &dyn TraitBridg
 
     let error_path = spec.error_path();
     let version_is_fallible = generator.plugin_version_is_fallible();
+    let [version_method, init_method, shutdown_method] = plugin_lifecycle_methods(spec, version_is_fallible);
 
-    let version_method = MethodDef {
-        name: "version".to_string(),
-        params: vec![],
-        return_type: crate::core::ir::TypeRef::String,
-        is_async: false,
-        is_static: false,
-        error_type: version_is_fallible.then(|| error_path.clone()),
-        doc: String::new(),
-        receiver: Some(crate::core::ir::ReceiverKind::Ref),
-        cfg: None,
-        sanitized: false,
-        trait_source: None,
-        returns_ref: false,
-        returns_cow: false,
-        return_newtype_wrapper: None,
-        has_default_impl: false,
-        binding_excluded: false,
-        binding_exclusion_reason: None,
-        version: Default::default(),
-    };
     let version_body = generator.gen_sync_method_body(&version_method, spec);
 
-    let init_method = MethodDef {
-        name: "initialize".to_string(),
-        params: vec![],
-        return_type: crate::core::ir::TypeRef::Unit,
-        is_async: false,
-        is_static: false,
-        error_type: Some(error_path.clone()),
-        doc: String::new(),
-        receiver: Some(crate::core::ir::ReceiverKind::Ref),
-        cfg: None,
-        sanitized: false,
-        trait_source: None,
-        returns_ref: false,
-        returns_cow: false,
-        return_newtype_wrapper: None,
-        has_default_impl: true,
-        binding_excluded: false,
-        binding_exclusion_reason: None,
-        version: Default::default(),
-    };
     let mut init_body = generator.gen_sync_method_body(&init_method, spec);
     if let Some(presence) = generator.gen_lifecycle_presence_check(&init_method, spec) {
         init_body = format!("if !({presence}) {{\n    return Ok(());\n}}\n{init_body}");
     }
 
-    let shutdown_method = MethodDef {
-        name: "shutdown".to_string(),
-        params: vec![],
-        return_type: crate::core::ir::TypeRef::Unit,
-        is_async: false,
-        is_static: false,
-        error_type: Some(error_path.clone()),
-        doc: String::new(),
-        receiver: Some(crate::core::ir::ReceiverKind::Ref),
-        cfg: None,
-        sanitized: false,
-        trait_source: None,
-        returns_ref: false,
-        returns_cow: false,
-        return_newtype_wrapper: None,
-        has_default_impl: true,
-        binding_excluded: false,
-        binding_exclusion_reason: None,
-        version: Default::default(),
-    };
     let mut shutdown_body = generator.gen_sync_method_body(&shutdown_method, spec);
     if let Some(presence) = generator.gen_lifecycle_presence_check(&shutdown_method, spec) {
         shutdown_body = format!("if !({presence}) {{\n    return Ok(());\n}}\n{shutdown_body}");

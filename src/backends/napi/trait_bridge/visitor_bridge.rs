@@ -1,7 +1,23 @@
 use crate::codegen::generators::trait_bridge::{bridge_param_type as param_type, to_camel_case, visitor_param_type};
 use crate::core::config::TraitBridgeConfig;
-use crate::core::ir::{ApiSurface, MethodDef, TypeDef, TypeRef};
+use crate::core::ir::{ApiSurface, MethodDef, ParamDef, TypeDef, TypeRef};
+use std::cell::RefCell;
 use std::collections::HashMap;
+
+/// One site where [`build_napi_args`] could not marshal a parameter natively.
+///
+/// Recorded instead of silently falling back to a `{:?}` Debug-string encoding (the historic
+/// behavior, and the root of several trait-bridge argument-corruption bugs found in production).
+/// A caller that owns a whole bridge/trait generation pass collects these and turns a non-empty
+/// list into a hard `anyhow::bail!` naming every site, so an unhandled parameter shape is a
+/// generation-time error instead of a runtime protocol corruption.
+#[derive(Debug, Clone)]
+pub(crate) struct UnsupportedArg {
+    pub trait_name: String,
+    pub method_name: String,
+    pub param_name: String,
+    pub type_desc: String,
+}
 
 pub(super) fn gen_visitor_bridge(
     trait_type: &TypeDef,
@@ -20,6 +36,8 @@ pub(super) fn gen_visitor_bridge(
         crate::codegen::visitor_context::VisitorContextBackend::Napi,
     )?;
     let mut method_impls = String::with_capacity(4096);
+    let unsupported: RefCell<Vec<UnsupportedArg>> = RefCell::new(Vec::new());
+    let json_safe = json_safe_named_types(api);
     for method in crate::codegen::generators::trait_bridge::visitor_callback_methods(trait_type, bridge_cfg) {
         gen_visitor_method_napi(
             &mut method_impls,
@@ -29,6 +47,29 @@ pub(super) fn gen_visitor_bridge(
             bridge_cfg,
             type_paths,
             &result_metadata,
+            &trait_type.name,
+            &unsupported,
+            &json_safe,
+        );
+    }
+
+    let unsupported = unsupported.into_inner();
+    if !unsupported.is_empty() {
+        let sites = unsupported
+            .iter()
+            .map(|u| {
+                format!(
+                    "  - {}::{}({}: {})",
+                    u.trait_name, u.method_name, u.param_name, u.type_desc
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!(
+            "napi visitor bridge for '{}' cannot marshal {} parameter(s) to JS natively:\n{}",
+            trait_type.name,
+            unsupported.len(),
+            sites
         );
     }
 
@@ -45,6 +86,20 @@ pub(super) fn gen_visitor_bridge(
     ))
 }
 
+/// Named enum types safe to JSON-encode as a trait-bridge callback argument: real,
+/// serde-enabled, non-excluded enums. Anything else reaching a bare `Named` param
+/// (an opaque/handle type, or one the extractor couldn't otherwise resolve) has no proven
+/// `Serialize` impl, so `build_napi_args` keeps the historic Debug-string representation for it
+/// instead of emitting a `serde_json::to_value` call that might not compile against the real
+/// core type.
+pub(super) fn json_safe_named_types(api: &ApiSurface) -> std::collections::HashSet<String> {
+    api.enums
+        .iter()
+        .filter(|e| e.has_serde && !e.binding_excluded)
+        .map(|e| e.name.clone())
+        .collect()
+}
+
 /// Build the Function args tuple type string for a given number of Unknown args.
 pub(super) fn unknown_tuple_type(count: usize) -> String {
     if count == 0 {
@@ -55,6 +110,7 @@ pub(super) fn unknown_tuple_type(count: usize) -> String {
 }
 
 /// Generate a single visitor method that checks for a camelCase JS property and calls it.
+#[allow(clippy::too_many_arguments)]
 fn gen_visitor_method_napi(
     out: &mut String,
     method: &MethodDef,
@@ -63,6 +119,9 @@ fn gen_visitor_method_napi(
     bridge_cfg: &TraitBridgeConfig,
     type_paths: &HashMap<String, String>,
     result_metadata: &crate::codegen::visitor_result::VisitorResultMetadata,
+    trait_name: &str,
+    unsupported: &RefCell<Vec<UnsupportedArg>>,
+    json_safe_named_types: &std::collections::HashSet<String>,
 ) {
     let name = &method.name;
     let js_method_name = to_camel_case(name);
@@ -91,7 +150,15 @@ fn gen_visitor_method_napi(
         format!("napi::bindgen_prelude::FnArgs<{inner_tuple_ty}>")
     };
 
-    let js_args_exprs = build_napi_args(method, bridge_cfg, &std::collections::HashSet::new(), "Js");
+    let js_args_exprs = build_napi_args(
+        method,
+        bridge_cfg,
+        &std::collections::HashSet::new(),
+        "Js",
+        trait_name,
+        unsupported,
+        json_safe_named_types,
+    );
     let arg_exprs: Vec<String> = js_args_exprs
         .iter()
         .map(|expr| expr.replace("self.env()", "__env"))
@@ -148,9 +215,20 @@ pub(super) fn is_napi_encodable(ty: &TypeRef) -> bool {
 /// napi-rs implements `ToNapiValue` for `f32` but not `FromNapiValue` (JS numbers decode
 /// as `f64`), so a `Vec<f32>` / `Vec<Vec<f32>>` return type cannot be decoded natively.
 pub(super) fn is_napi_decodable(ty: &TypeRef) -> bool {
+    use crate::core::ir::PrimitiveType;
     match ty {
         TypeRef::String => true,
-        TypeRef::Primitive(p) => !matches!(p, crate::core::ir::PrimitiveType::F32),
+        // `f32` has `ToNapiValue` but no `FromNapiValue` (see the module doc above this
+        // function's caller). `u64`/`usize`/`isize` have neither: napi-rs's blanket integer
+        // macro (`bindgen_runtime::js_values::number`) covers u8/i8/u16/i16/u32/i32/i64/f64
+        // only -- u64/usize/isize instead get a BigInt-based `ToNapiValue` (encodable as an
+        // argument) with no `FromNapiValue` counterpart at all (not decodable as a return).
+        // Verified against napi 3.12.4's source directly; a mismatch here previously would have
+        // produced a `from_napi_value` call on `u64` that fails to compile (E0277).
+        TypeRef::Primitive(p) => !matches!(
+            p,
+            PrimitiveType::F32 | PrimitiveType::U64 | PrimitiveType::Usize | PrimitiveType::Isize
+        ),
         TypeRef::Vec(inner) => is_napi_decodable(inner),
         _ => false,
     }
@@ -191,122 +269,257 @@ pub(super) fn f32_bridge_cast_expr(ty: &TypeRef, var: &str) -> String {
 /// Build NAPI argument expressions for a visitor method.
 ///
 /// Returns one expression per parameter, each producing a `napi::bindgen_prelude::Unknown`.
+/// `unsafe { ToNapiValue::to_napi_value(env, null()) }`, the shared "encoding failed / nothing
+/// to encode" fallback used throughout the arms below.
+fn napi_null_expr() -> String {
+    "unsafe { \
+     let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), napi::bindgen_prelude::Null).unwrap_or(std::ptr::null_mut()); \
+     napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }"
+        .to_string()
+}
+
+/// `unsafe { ToNapiValue::to_napi_value(env, <value_expr>) }`, falling back to
+/// [`napi_null_expr`] on conversion failure.
+fn to_napi_value_expr(value_expr: &str) -> String {
+    format!(
+        "unsafe {{ \
+         let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), {value_expr}).unwrap_or(std::ptr::null_mut()); \
+         napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }}"
+    )
+}
+
+/// Encode `value_expr` (any `Serialize` value) as its `serde_json::Value` JSON representation
+/// and hand that to `ToNapiValue` (napi-rs's `serde-json` feature implements it for
+/// `serde_json::Value`, always enabled when a crate has trait bridges — see
+/// `scaffold::languages::node`). Used for shapes with no cheaper native `ToNapiValue`
+/// encoding: enums, maps, `Duration`, already-JSON values, and `Optional<T>` for a non-`String`
+/// `T`. Round-trips faithfully (unlike the historic `{:?}` Debug-string encoding it replaces),
+/// at the cost of a JSON allocation per call.
+fn json_encode_expr(value_expr: &str) -> String {
+    // `serde_json::to_value<T: Serialize>(value: T)` takes its argument BY VALUE (not `&T`);
+    // every caller already passes an owned or already-reference expression as appropriate
+    // (`clippy::needless_borrows_for_generic_args` flags a redundant `&` here otherwise).
+    to_napi_value_expr(&format!(
+        "serde_json::to_value({value_expr}).unwrap_or(serde_json::Value::Null)"
+    ))
+}
+
+/// Build the NAPI argument expressions for one trait-bridge method's parameters.
+///
+/// Every returned expression evaluates to a `napi::bindgen_prelude::Unknown` and textually
+/// contains the literal substring `self.env()` wherever it needs the bridge's live `Env` —
+/// callers requiring a different env expression (the visitor path's local `__env`, or an
+/// async bridge's `ctx.env` inside a threadsafe-function callback) do a literal
+/// `.replace("self.env()", ...)` on the result, so every arm MUST spell it exactly that way.
+///
+/// A parameter shape with no arm below is not silently encoded (the historic `{:?}`
+/// Debug-string fallback, root cause of a class of production argument-corruption bugs): it is
+/// recorded into `unsupported` instead, and the caller that owns the whole generation pass
+/// turns a non-empty `unsupported` into a hard `anyhow::bail!` naming every site.
 pub(super) fn build_napi_args(
     method: &MethodDef,
     bridge_cfg: &TraitBridgeConfig,
     struct_param_types: &std::collections::HashSet<String>,
     type_prefix: &str,
+    trait_name: &str,
+    unsupported: &RefCell<Vec<UnsupportedArg>>,
+    json_safe_named_types: &std::collections::HashSet<String>,
 ) -> Vec<String> {
     method
         .params
         .iter()
-
         .map(|p| {
-            if let TypeRef::Named(n) = &p.ty {
-                if Some(n.as_str()) == bridge_cfg.context_type.as_deref() {
-                    return crate::backends::napi::template_env::render(
-                        "visitor_context_arg_expr.jinja",
-                        minijinja::context! { ref_prefix => if p.is_ref { "" } else { "&" }, name => p.name.as_str() },
-                    )
-                    .trim_end()
-                    .to_string();
-                }
-                if struct_param_types.contains(n.as_str()) {
-                    let owned = if p.is_ref {
-                        format!("(*{}).clone()", p.name)
-                    } else {
-                        p.name.clone()
-                    };
-                    return format!(
-                        "unsafe {{ \
-                         let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), {prefix}{ty}::from({owned})).unwrap_or(std::ptr::null_mut()); \
-                         napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }}",
-                        prefix = type_prefix,
-                        ty = n,
-                    );
-                }
-            }
-            if p.optional && matches!(&p.ty, TypeRef::String) && p.is_ref {
-                return format!(
-                    "match {name} {{ \
-                     Some(s) => match self.env().create_string(s) {{ \
-                       Ok(v) => v.to_unknown(), \
-                       Err(_) => unsafe {{ \
-                       let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), napi::bindgen_prelude::Null).unwrap_or(std::ptr::null_mut()); \
-                       napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }} \
-                     }}, \
-                     None => unsafe {{ \
-                       let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), napi::bindgen_prelude::Null).unwrap_or(std::ptr::null_mut()); \
-                       napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }} \
-                    }}",
-                    name = p.name
-                );
-            }
-            if matches!(&p.ty, TypeRef::String) && p.is_ref {
-                return format!(
-                    "match self.env().create_string({name}) {{ \
-                     Ok(s) => s.to_unknown(), \
-                     Err(_) => unsafe {{ \
-                     let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), napi::bindgen_prelude::Null).unwrap_or(std::ptr::null_mut()); \
-                     napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }} \
-                    }}",
-                    name = p.name
-                );
-            }
-            if matches!(&p.ty, TypeRef::String) {
-                return format!(
-                    "match self.env().create_string({name}.as_str()) {{ \
-                     Ok(s) => s.to_unknown(), \
-                     Err(_) => unsafe {{ \
-                     let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), napi::bindgen_prelude::Null).unwrap_or(std::ptr::null_mut()); \
-                     napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }} \
-                    }}",
-                    name = p.name
-                );
-            }
-            if matches!(&p.ty, TypeRef::Primitive(crate::core::ir::PrimitiveType::Bool)) {
-                return format!(
-                    "unsafe {{ \
-                     let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), {name}).unwrap_or(std::ptr::null_mut()); \
-                     napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }}",
-                    name = p.name
-                );
-            }
-            if matches!(&p.ty, TypeRef::Primitive(crate::core::ir::PrimitiveType::U32)) {
-                return format!(
-                    "match self.env().create_uint32({name}) {{ Ok(n) => n.to_unknown(), Err(_) => unsafe {{ \
-                     let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), napi::bindgen_prelude::Null).unwrap_or(std::ptr::null_mut()); \
-                     napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }} \
-                    }}",
-                    name = p.name
-                );
-            }
-            if matches!(&p.ty, TypeRef::Primitive(crate::core::ir::PrimitiveType::Usize)) {
-                return format!(
-                    "match self.env().create_uint32({name} as u32) {{ Ok(n) => n.to_unknown(), Err(_) => unsafe {{ \
-                     let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), napi::bindgen_prelude::Null).unwrap_or(std::ptr::null_mut()); \
-                     napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }} \
-                    }}",
-                    name = p.name
-                );
-            }
-            if let TypeRef::Vec(inner) = &p.ty
-                && is_napi_encodable(inner) {
-                    let owned = if p.is_ref { format!("{}.to_vec()", p.name) } else { format!("{}.clone()", p.name) };
-                    return format!(
-                        "unsafe {{ \
-                         let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), {owned}).unwrap_or(std::ptr::null_mut()); \
-                         napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }}",
-                    );
-                }
-
-            format!(
-                "match self.env().create_string(&format!(\"{{:?}}\", {name})) {{ Ok(s) => s.to_unknown(), Err(_) => unsafe {{ \
-                 let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), napi::bindgen_prelude::Null).unwrap_or(std::ptr::null_mut()); \
-                 napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }} \
-                }}",
-                name = p.name
+            build_one_napi_arg(
+                p,
+                method,
+                bridge_cfg,
+                struct_param_types,
+                type_prefix,
+                trait_name,
+                unsupported,
+                json_safe_named_types,
             )
         })
         .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_one_napi_arg(
+    p: &ParamDef,
+    method: &MethodDef,
+    bridge_cfg: &TraitBridgeConfig,
+    struct_param_types: &std::collections::HashSet<String>,
+    type_prefix: &str,
+    trait_name: &str,
+    unsupported: &RefCell<Vec<UnsupportedArg>>,
+    json_safe_named_types: &std::collections::HashSet<String>,
+) -> String {
+    use crate::core::ir::PrimitiveType;
+
+    if let TypeRef::Named(n) = &p.ty {
+        if Some(n.as_str()) == bridge_cfg.context_type.as_deref() {
+            return crate::backends::napi::template_env::render(
+                "visitor_context_arg_expr.jinja",
+                minijinja::context! { ref_prefix => if p.is_ref { "" } else { "&" }, name => p.name.as_str() },
+            )
+            .trim_end()
+            .to_string();
+        }
+        if struct_param_types.contains(n.as_str()) {
+            let owned = if p.is_ref {
+                format!("(*{}).clone()", p.name)
+            } else {
+                p.name.clone()
+            };
+            return format!(
+                "unsafe {{ \
+                 let r = napi::bindgen_prelude::ToNapiValue::to_napi_value(self.env().raw(), {prefix}{ty}::from({owned})).unwrap_or(std::ptr::null_mut()); \
+                 napi::bindgen_prelude::Unknown::from_raw_unchecked(self.env().raw(), r) }}",
+                prefix = type_prefix,
+                ty = n,
+            );
+        }
+        if json_safe_named_types.contains(n.as_str()) {
+            // A real, serde-enabled enum: JSON-encode it faithfully instead of
+            // Debug-stringifying (`serde_json::to_value` -- the enum genuinely implements
+            // `Serialize`, unlike an opaque/unknown `Named` param, which may not).
+            return json_encode_expr(&p.name);
+        }
+        // Opaque/handle or otherwise-unknown `Named` param: no cheap native `ToNapiValue` and no
+        // proven `Serialize` impl either, so this keeps the prior Debug-string representation
+        // rather than risk a JSON encode that doesn't compile against the real core type.
+        return to_napi_value_expr(&format!("format!(\"{{:?}}\", {})", p.name));
+    }
+    if p.optional && matches!(&p.ty, TypeRef::String) && p.is_ref {
+        return format!(
+            "match {name} {{ Some(s) => {some}, None => {null} }}",
+            name = p.name,
+            some = to_napi_value_expr("s"),
+            null = napi_null_expr()
+        );
+    }
+    if p.optional && !matches!(&p.ty, TypeRef::String) {
+        // `Optional<non-String>` — no per-primitive native arm. `p.ty` here is the IR's INNER
+        // type (the `Optional` wrapper is carried on `p.optional`, not as a nested
+        // `TypeRef::Optional`, for a top-level parameter), so `Some`/`None` on the owned Rust
+        // value round-trips through `Option<T>: Serialize` -- but only when `T` provably
+        // implements it (a bare `Named` inner must be a serde-enabled enum, same rule as the
+        // bare-`Named` arm above; anything else -- primitives, Bytes, Path, Vec, Map, Json,
+        // Duration -- is already known-`Serialize`).
+        if let TypeRef::Named(n) = &p.ty
+            && !json_safe_named_types.contains(n.as_str())
+        {
+            unsupported.borrow_mut().push(UnsupportedArg {
+                trait_name: trait_name.to_string(),
+                method_name: method.name.clone(),
+                param_name: p.name.clone(),
+                type_desc: format!("Optional({:?})", p.ty),
+            });
+            return napi_null_expr();
+        }
+        return json_encode_expr(&p.name);
+    }
+    if matches!(&p.ty, TypeRef::String) && p.is_ref {
+        // `&str: ToNapiValue`. Routed through the same raw-pointer `ToNapiValue`/
+        // `Unknown::from_raw_unchecked` pattern as every other arm below, rather than
+        // `Env::create_string(..).to_unknown()`: the latter returns a `JsString<'_>` borrowed
+        // from the `Env` it was created on, which does not compile inside a threadsafe-function
+        // `build_callback` closure -- there, `ctx.env: Env` is owned by the closure's own stack
+        // frame, so a value borrowed from it cannot be returned as part of the closure's own
+        // `Ok((..))` result (E0515). The raw-pointer form only ever moves a `napi_value`
+        // (a plain pointer), never a borrow, so it is valid in every context this function's
+        // output is spliced into (an inline method-body expression, or a closure return).
+        return to_napi_value_expr(&p.name);
+    }
+    if matches!(&p.ty, TypeRef::String) {
+        return to_napi_value_expr(&format!("{}.clone()", p.name));
+    }
+    if matches!(&p.ty, TypeRef::Char) {
+        return to_napi_value_expr(&format!("{}.to_string()", p.name));
+    }
+    if matches!(&p.ty, TypeRef::Path) {
+        // `&Path` and `PathBuf` both expose `.to_string_lossy()`; ownership doesn't change the
+        // expression, only whether `{name}` is a reference or a value.
+        return to_napi_value_expr(&format!("{}.to_string_lossy().into_owned()", p.name));
+    }
+    if matches!(&p.ty, TypeRef::Bytes) {
+        let owned = if p.is_ref {
+            format!("{}.to_vec()", p.name)
+        } else {
+            format!("{}.clone()", p.name)
+        };
+        return to_napi_value_expr(&format!("napi::bindgen_prelude::Buffer::from({owned})"));
+    }
+    if matches!(&p.ty, TypeRef::Duration) {
+        return to_napi_value_expr(&format!("{}.as_secs_f64()", p.name));
+    }
+    if matches!(&p.ty, TypeRef::Json) {
+        let owned = if p.is_ref {
+            format!("{}.clone()", p.name)
+        } else {
+            p.name.clone()
+        };
+        return to_napi_value_expr(&owned);
+    }
+    if matches!(&p.ty, TypeRef::Map(_, _)) {
+        return json_encode_expr(&p.name);
+    }
+    if matches!(&p.ty, TypeRef::Primitive(PrimitiveType::Bool)) {
+        return to_napi_value_expr(&p.name);
+    }
+    if matches!(
+        &p.ty,
+        TypeRef::Primitive(
+            PrimitiveType::U32
+                | PrimitiveType::I32
+                | PrimitiveType::I64
+                | PrimitiveType::U64
+                | PrimitiveType::F32
+                | PrimitiveType::F64
+                | PrimitiveType::I8
+                | PrimitiveType::I16
+                | PrimitiveType::U8
+                | PrimitiveType::U16
+                | PrimitiveType::Isize
+        )
+    ) {
+        return to_napi_value_expr(&p.name);
+    }
+    if matches!(&p.ty, TypeRef::Primitive(PrimitiveType::Usize)) {
+        return to_napi_value_expr(&format!("{} as u32", p.name));
+    }
+    if let TypeRef::Vec(inner) = &p.ty {
+        if is_napi_encodable(inner) {
+            let owned = if p.is_ref {
+                format!("{}.to_vec()", p.name)
+            } else {
+                format!("{}.clone()", p.name)
+            };
+            return to_napi_value_expr(&owned);
+        }
+        // Vec of a non-natively-encodable element (Bytes, Path, Map, Json, Duration, a
+        // serde-enabled enum, ...): JSON-encode the whole vector. A `Vec<Named>` element must be
+        // a proven-`Serialize` enum, same rule as the bare-`Named` arm above -- an opaque/unknown
+        // element type is a generation-time error rather than a guessed encoding.
+        if let TypeRef::Named(n) = inner.as_ref()
+            && !json_safe_named_types.contains(n.as_str())
+        {
+            unsupported.borrow_mut().push(UnsupportedArg {
+                trait_name: trait_name.to_string(),
+                method_name: method.name.clone(),
+                param_name: p.name.clone(),
+                type_desc: format!("{:?}", p.ty),
+            });
+            return napi_null_expr();
+        }
+        return json_encode_expr(&p.name);
+    }
+
+    unsupported.borrow_mut().push(UnsupportedArg {
+        trait_name: trait_name.to_string(),
+        method_name: method.name.clone(),
+        param_name: p.name.clone(),
+        type_desc: format!("{:?}", p.ty),
+    });
+    napi_null_expr()
 }

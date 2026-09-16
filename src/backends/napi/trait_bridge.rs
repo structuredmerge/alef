@@ -12,7 +12,7 @@ mod visitor_bridge;
 
 use crate::core::config::TraitBridgeConfig;
 
-pub use bridge::gen_trait_bridge;
+pub use bridge::{gen_trait_bridge, is_visitor_bridge};
 pub use bridge_functions::gen_bridge_function;
 pub use bridge_generator::NapiBridgeGenerator;
 pub use options_field_bridge::gen_options_field_bridge_function;
@@ -36,6 +36,22 @@ pub const TARGET_SPELLINGS: [&str; 2] = ["node", "napi"];
 /// disagree and leave one pass referring to a struct another pass never wrote. ~keep
 pub fn targets_napi(bridge: &TraitBridgeConfig) -> bool {
     crate::codegen::generators::trait_bridge::bridge_targets_language(bridge, &TARGET_SPELLINGS)
+}
+
+/// Whether `config` has at least one active, NON-visitor (plugin-flavor) trait bridge for napi —
+/// the ones that need `ThreadsafeFunction` fields, `AlefJsReply` decoding, and the runtime
+/// scaffolding that go with them (the `AlefJsReply` preamble; the napi `serde-json` feature).
+/// A crate whose only configured bridge is visitor-flavored (e.g. an HTML-node-visitor-style
+/// callback) needs none of it — see [`is_visitor_bridge`]'s doc for why.
+pub fn has_non_visitor_trait_bridges(
+    config: &crate::core::config::ResolvedCrateConfig,
+    api: &crate::core::ir::ApiSurface,
+) -> bool {
+    config.trait_bridges.iter().any(|bridge_cfg| {
+        active_bridge_trait(bridge_cfg, api)
+            .map(|trait_type| !is_visitor_bridge(trait_type, bridge_cfg))
+            .unwrap_or(false)
+    })
 }
 
 /// The trait a bridge wraps, when NAPI emits that bridge at all.

@@ -155,6 +155,13 @@ pub(crate) fn scaffold_node_cargo(
     let extra_deps = render_extra_deps(config, Language::Node);
 
     let has_trait_bridges = !config.trait_bridges.is_empty();
+    // Narrower than `has_trait_bridges`: a crate whose only bridge is visitor-flavored (e.g. an
+    // HTML-node-visitor-style callback) never emits `AlefJsReply`/JSON-encoded callback
+    // arguments, so it doesn't need the napi `serde-json` feature those require -- unlike
+    // `async-trait`/`tracing` below, which the visitor flavor's generated code doesn't
+    // reference either but which predate this change and are deliberately left on the coarser
+    // `has_trait_bridges` check to avoid touching bytes this fix has no reason to touch.
+    let has_non_visitor_trait_bridges = crate::backends::napi::trait_bridge::has_non_visitor_trait_bridges(config, api);
     let has_streaming = config
         .adapters
         .iter()
@@ -166,25 +173,8 @@ pub(crate) fn scaffold_node_cargo(
         }
         all_deps.push_str(&format!("async-trait = \"{}\"", tv::cargo::ASYNC_TRAIT));
     }
-    if has_trait_bridges && !all_deps.contains("tokio-util") {
-        if !all_deps.is_empty() {
-            all_deps.push('\n');
-        }
-        let tokio_util_feats = config
-            .node
-            .as_ref()
-            .and_then(|n| n.tokio_util_features.as_ref())
-            .cloned()
-            .unwrap_or_else(|| vec!["rt".to_string()]);
-        let feats_list = tokio_util_feats
-            .iter()
-            .map(|f| format!("\"{f}\""))
-            .collect::<Vec<_>>()
-            .join(", ");
-        all_deps.push_str(&format!(
-            "tokio-util = {{ version = \"0.7\", features = [{feats_list}] }}"
-        ));
-    }
+    // No tokio-util dependency: its only consumer was the bridge's `cancellation_token`
+    // field, which is gone (the field was written, cancelled, and never read — see #1636).
     if has_streaming && !all_deps.contains("futures-util = ") && !all_deps.contains("futures-util =\"") {
         if !all_deps.is_empty() {
             all_deps.push('\n');
@@ -205,7 +195,12 @@ pub(crate) fn scaffold_node_cargo(
     };
 
     let mut napi_features = vec!["async"];
-    if api_has_json_fields(api) {
+    // `AlefJsReply<T>`'s fallback decode path (for any bridged-method payload/return shape
+    // without a cheaper native `ToNapiValue`/`FromNapiValue`) goes through `serde_json::Value`,
+    // which napi-rs's "serde-json" feature is what implements `ToNapiValue`/`FromNapiValue` for
+    // — required unconditionally once a crate has any trait bridge, not just when the API's own
+    // DTOs happen to have JSON fields.
+    if api_has_json_fields(api) || has_non_visitor_trait_bridges {
         napi_features.push("serde-json");
     }
     let napi_features_str = napi_features
@@ -217,7 +212,6 @@ pub(crate) fn scaffold_node_cargo(
     let mut machete_ignored: Vec<&str> = vec!["serde_json"];
     if has_trait_bridges {
         machete_ignored.push("async-trait");
-        machete_ignored.push("tokio-util");
         machete_ignored.push("tracing");
     }
     if has_streaming {
