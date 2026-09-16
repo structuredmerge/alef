@@ -3549,8 +3549,8 @@ fn test_option_and_bare_tagged_data_enum_fields_use_js_value() {
         "flattened-internal enum setter must accept the typed handle;\nactual:\n{content}"
     );
 
-    // ~keep Both directions still cross the boundary through `serde_wasm_bindgen` -- that is what
-    // these two assertions exist to pin -- but the call is now wrapped in the camelCase recasing
+    // ~keep Both directions are routed through the camelCase wire mirror -- that is what these two
+    // assertions exist to pin -- and the call is wrapped in the camelCase recasing
     // pipeline (`codegen::json_wire_types`), so pinning one literal expression would re-break every
     // time that pipeline gains a step. Assert the two facts that actually matter instead: the
     // boundary crossing uses `serde_wasm_bindgen`, and the value is routed through the wire mirror
@@ -3564,11 +3564,20 @@ fn test_option_and_bare_tagged_data_enum_fields_use_js_value() {
          serde_wasm_bindgen and deserialize through the camelCase wire mirror;\nactual:\n{content}"
     );
 
+    // ~keep The OUT direction deliberately does NOT use `serde_wasm_bindgen::to_value`, though the
+    // IN direction above still uses `from_value`. `to_value` renders every serde map as a JS `Map`,
+    // on which property access returns `undefined`, and a recased enum's pipeline hands it a
+    // `serde_json::Value::Object` — xberg's wasm e2e read `metadata.format.sheetCount` as `NaN` and
+    // `metadata.format.title` as `''` because of it. `JSON.parse` of the serialized text always
+    // yields plain objects, which is what the `.d.ts` `ts_union` declares. Pin the two facts that
+    // matter — routed through the camelCase wire mirror, and crossing as a plain object — not the
+    // literal bridge expression, which is what left this assertion demanding the very call the fix
+    // removed.
     assert!(
-        content.contains("serde_wasm_bindgen::to_value(&__alef_wire_retag_")
+        content.contains("js_sys::JSON::parse(&serde_json::to_string(&__alef_wire_retag_")
             && content.contains("__AlefWireOutWasmResponseFormat"),
         "Option<TaggedDataEnum> core→binding From impl must serialize through the camelCase wire \
-         mirror and cross the boundary with serde_wasm_bindgen;\nactual:\n{content}"
+         mirror and cross the boundary as a plain object, not a JS Map;\nactual:\n{content}"
     );
 
     assert!(
@@ -3592,8 +3601,8 @@ fn test_option_and_bare_tagged_data_enum_fields_use_js_value() {
         "flattened-internal enum setter must accept the typed handle;\nactual:\n{content}"
     );
 
-    // ~keep Same reasoning as the `Option` pair above: the boundary crossing is still
-    // `serde_wasm_bindgen`, now wrapped in the camelCase recasing pipeline.
+    // ~keep Same reasoning as the `Option` pair above: IN crosses with `serde_wasm_bindgen`, OUT
+    // deliberately does not, and both route through the camelCase recasing pipeline.
     assert!(
         content.contains("serde_wasm_bindgen::from_value::<serde_json::Value>(val.format.clone())")
             && content.contains("__AlefWireInWasmResponseFormat"),
@@ -3602,10 +3611,10 @@ fn test_option_and_bare_tagged_data_enum_fields_use_js_value() {
     );
 
     assert!(
-        content.contains("format: serde_wasm_bindgen::to_value(&__alef_wire_retag_")
+        content.contains("format: js_sys::JSON::parse(&serde_json::to_string(&__alef_wire_retag_")
             && content.contains("__AlefWireOutWasmResponseFormat"),
         "bare TaggedDataEnum core→binding From impl must serialize through the camelCase wire \
-         mirror and cross the boundary with serde_wasm_bindgen;\nactual:\n{content}"
+         mirror and cross the boundary as a plain object, not a JS Map;\nactual:\n{content}"
     );
 
     assert!(
