@@ -328,6 +328,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Render root-array indices without an empty field in Ruby, Python, and Rust e2e assertions.
 
+- Import the normalized Python package name, not the hyphenated distribution name, in generated registry smoke tests.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
