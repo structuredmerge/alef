@@ -352,8 +352,23 @@ roots = ["Swatch"]
 # Widening this gate to pyo3 has to wait on that generator gap.
 [[crates.trait_bridges]]
 trait_name = "DocumentProcessor"
+# Written in poly's own canonical TOML array layout -- one element per line at two spaces.
+# The poly lane checks the whole emitted tree, this fixture's own input file included, so a
+# hand-wrapped array here reports as unformatted alef output and the lane fails on the test's
+# input rather than on anything alef produced. Same reason `fixture_language_list` wraps and
+# `FIXTURE_SOURCE` is written with `trim_start`. ~keep
 exclude_languages = [
-    "ffi", "python", "wasm", "jni", "kotlin_android", "java",
-    "ruby", "php", "elixir", "swift", "go", "csharp",
+  "ffi",
+  "python",
+  "wasm",
+  "jni",
+  "kotlin_android",
+  "java",
+  "ruby",
+  "php",
+  "elixir",
+  "swift",
+  "go",
+  "csharp",
 ]
 "#;
