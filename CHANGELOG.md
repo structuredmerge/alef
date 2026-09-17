@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.91.4] - 2026-09-17
+
 ### Fixed
 
 - **The Go e2e emitter chose a raw (backtick) string literal for any assertion value without a
