@@ -332,6 +332,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Match Python struct constructor enum annotations to typed PyO3 extraction instead of advertising implicit string coercion; retain explicit enum construction and optional None.
 
+- Python generated fixture assertions no longer infer enum types from index-zero access; unknown and plain string fields retain exact equality while declared enum fields retain wire coercion.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
