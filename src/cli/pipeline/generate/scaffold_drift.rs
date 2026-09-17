@@ -108,7 +108,16 @@ fn differs_from_template(file: &GeneratedFile, base_dir: &Path) -> bool {
         return false;
     };
     let is_rust = file.path.extension().is_some_and(|ext| ext == "rs");
-    let generated = normalize_content(&file.path, &file.content);
+    // A normalization failure here (see `reject_trailing_whitespace_on_content_lines`) is a
+    // real bug in the template, but this function's whole policy -- documented above and in
+    // `non_rust_content_still_differs_after_formatting` -- is to report "no drift" rather than
+    // a false positive whenever it cannot confirm the comparison. The actual regeneration path
+    // (`write_files_report`/`write_scaffold_files_report`) still catches the same failure
+    // loudly the moment this file is regenerated for real; this check only gates a drift
+    // *warning* for an already-materialized create-once seed. ~keep
+    let Ok(generated) = normalize_content(&file.path, &file.content) else {
+        return false;
+    };
     let on_disk = if is_rust {
         format_rust_content(&full_path, &existing)
     } else {

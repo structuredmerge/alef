@@ -318,10 +318,21 @@ pub(crate) fn is_create_once_seed(file: &crate::core::backend::GeneratedFile) ->
 /// writers use rather than reimplemented, so the diff cannot drift from what a
 /// subsequent `alef generate` actually does. A diff that is merely close is a diff that
 /// obtained consent for something else. ~keep
+///
+/// This is a read-only preview path (`alef adopt`'s diff, and the "frozen file" near-miss
+/// detector in `bin_cli/helpers/frozen.rs`) -- it never writes anything itself. A file whose
+/// content fails the writer's normalization (see
+/// `reject_trailing_whitespace_on_content_lines`) is skipped with a logged warning rather than
+/// aborting the whole preview: the real enforcement point for that failure is the writer this
+/// function mirrors (`write_files_report` / `write_scaffold_files_report`), which will refuse
+/// to write the same file loudly the moment it is actually regenerated. Silently omitting one
+/// entry from a diff preview is a smaller loss than either crashing `alef adopt` over every
+/// other, unrelated file in the batch, or pretending the unnormalizable file matches something
+/// on disk. ~keep
 pub fn managed_outputs(files: &[crate::core::backend::GeneratedFile], base_dir: &Path) -> Vec<ManagedOutput> {
     files
         .iter()
-        .map(|file| {
+        .filter_map(|file| {
             let full_path = base_dir.join(&file.path);
             if crate::cli::pipeline::is_base64_binary_output(&file.path) {
                 // Verbatim, because the writers decode `file.content` verbatim. Running the
@@ -329,23 +340,32 @@ pub fn managed_outputs(files: &[crate::core::backend::GeneratedFile], base_dir: 
                 // gets, and the decoder then rejects the whole payload -- so the artifact alef
                 // would actually write becomes unrepresentable here, and every binary match
                 // classifies as "alef cannot read this" rather than by its bytes. ~keep
-                return ManagedOutput {
+                return Some(ManagedOutput {
                     relative: file.path.clone(),
                     content: file.content.clone(),
                     create_once: is_create_once_seed(file),
-                };
+                });
             }
-            let normalized = crate::cli::pipeline::normalize_content(&full_path, &file.content);
+            let normalized = match crate::cli::pipeline::normalize_content(&full_path, &file.content) {
+                Ok(normalized) => normalized,
+                Err(error) => {
+                    tracing::warn!(
+                        "  {}: skipped from adoption preview -- normalization failed: {error:#}",
+                        full_path.display()
+                    );
+                    return None;
+                }
+            };
             let content = if file.generated_header {
                 crate::cli::pipeline::ensure_generated_header(&full_path, &normalized)
             } else {
                 normalized
             };
-            ManagedOutput {
+            Some(ManagedOutput {
                 relative: file.path.clone(),
                 content,
                 create_once: is_create_once_seed(file),
-            }
+            })
         })
         .collect()
 }

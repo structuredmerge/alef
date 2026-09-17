@@ -304,7 +304,8 @@ pub fn write_scaffold_files_report(
             }
             file.content.clone()
         };
-        let normalized = normalize_content(&full_path, &content);
+        let normalized = normalize_content(&full_path, &content)
+            .with_context(|| format!("failed to normalize generated content for {}", full_path.display()))?;
         // Seeded unstamped -- see `super::user_owned::skip_declared_existing`. ~keep
         // Explicit adoption remains durable even when this emitter produces an unmarked seed. ~keep
         let normalized = if !declared.matches(base_dir, &full_path)

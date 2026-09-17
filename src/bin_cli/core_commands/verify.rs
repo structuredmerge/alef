@@ -634,7 +634,15 @@ fn frb_generated_drift(config: &crate::core::config::ResolvedCrateConfig, base_d
         return Vec::new();
     };
 
-    let canonical = pipeline::canonical_frb_generated(&lib_rs, &frb_generated, &frb_generated_path);
+    // Same ambiguity policy as this function's "nothing generated yet is not drift" doc
+    // comment above: a normalization failure here (see
+    // `reject_trailing_whitespace_on_content_lines`) means `alef build`'s own
+    // `CarryFrbCfgGates` step would fail loudly the next time it actually runs against this
+    // file -- that is the real enforcement point. `alef verify` only reports pre-existing
+    // drift; it is not the place to surface a hard failure for a file it never writes. ~keep
+    let Ok(canonical) = pipeline::canonical_frb_generated(&lib_rs, &frb_generated, &frb_generated_path) else {
+        return Vec::new();
+    };
     if canonical == frb_generated {
         return Vec::new();
     }
@@ -791,7 +799,8 @@ mod frb_generated_drift_tests {
         let config = dart_config("sample-lib");
         let base_dir = tempfile::tempdir().expect("tempdir");
         let frb_generated_path = write_frb_fixture(&config, base_dir.path(), LIB_RS, RAW_FROM_TOOL);
-        let canonical = crate::cli::pipeline::canonical_frb_generated(LIB_RS, RAW_FROM_TOOL, &frb_generated_path);
+        let canonical = crate::cli::pipeline::canonical_frb_generated(LIB_RS, RAW_FROM_TOOL, &frb_generated_path)
+            .expect("canonicalize");
         std::fs::write(&frb_generated_path, &canonical).expect("write canonical frb_generated.rs");
 
         let drift = frb_generated_drift(&config, base_dir.path());

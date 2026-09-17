@@ -14,22 +14,55 @@ mod write_scaffold_normalize_tests {
         }
     }
 
-    /// `write_scaffold_files_with_overwrite` must strip trailing whitespace and
-    /// ensure a single trailing newline — matching what prek's
-    /// `end-of-file-fixer` and `trailing-whitespace` hooks would do.
+    /// `write_scaffold_files_with_overwrite` must ensure a single trailing newline —
+    /// matching what prek's `end-of-file-fixer` hook would do — for content that has no
+    /// trailing whitespace on a non-blank line to begin with.
     #[test]
-    fn test_scaffold_write_normalizes_trailing_whitespace_and_newline() {
+    fn test_scaffold_write_ensures_a_single_trailing_newline() {
         let dir = tempfile::tempdir().expect("tempdir");
         let base = dir.path();
 
-        let content = "line one   \nline two\n\n";
+        let content = "line one\nline two\n\n";
         let files = vec![make_file("out.py", content)];
         write_scaffold_files_with_overwrite(&files, base, true).expect("write ok");
 
         let written = std::fs::read_to_string(base.join("out.py")).expect("read ok");
         assert_eq!(
             written, "line one\nline two\n",
-            "trailing whitespace must be stripped and single newline ensured"
+            "the extra trailing blank line must collapse to a single trailing newline"
+        );
+    }
+
+    /// Trailing whitespace on a non-blank line is no longer silently stripped —
+    /// `write_scaffold_files_with_overwrite` must refuse to write it. This was the same
+    /// content shape (`"line one   \n..."`) the previous, pre-fix version of this test
+    /// pinned as a silent trim; that was exactly the corruption class that shipped three
+    /// broken `html-to-markdown` Go e2e assertions (a Markdown two-space hard break lost
+    /// its trailing spaces the same way). Scaffold output goes through the same
+    /// `normalize_content` every other generated file does, so it gets the same
+    /// generation-time failure instead of a silent rewrite.
+    #[test]
+    fn test_scaffold_write_rejects_trailing_whitespace_on_a_non_blank_line() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+
+        let content = "line one   \nline two\n\n";
+        let files = vec![make_file("out.py", content)];
+        let error = write_scaffold_files_with_overwrite(&files, base, true)
+            .expect_err("trailing whitespace on a non-blank line must be rejected, not trimmed");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("out.py"),
+            "error must name the offending file: {message}"
+        );
+        assert!(
+            message.contains("line 1"),
+            "error must name the 1-based offending line: {message}"
+        );
+        assert!(
+            !base.join("out.py").exists(),
+            "a refused file must not be written at all, got: {:?}",
+            std::fs::read_to_string(base.join("out.py"))
         );
     }
 
@@ -450,19 +483,21 @@ file_safety = { exclude = ["target/**"] }
         );
     }
 
-    /// `normalize_content` must strip trailing whitespace from `.rs` files even
-    /// when rustfmt rejects them — e.g. cextendr `lib.rs` files use the
-    /// `name: T = "default"` parameter-default syntax that rustfmt cannot
-    /// parse, so it falls back to the raw codegen output. Without a final
-    /// whitespace pass, the raw output's trailing-whitespace blank lines
-    /// (e.g. `    \n` between `#[must_use]` and `pub fn …`) survive into the
-    /// finalised `alef:hash`, and prek's `trailing-whitespace` hook then
-    /// rewrites the file post-hash, breaking `alef verify`.
+    /// `normalize_content` must still silently strip trailing whitespace on *blank* lines of
+    /// `.rs` files even when rustfmt rejects them — e.g. cextendr `lib.rs` files use the
+    /// `name: T = "default"` parameter-default syntax that rustfmt cannot parse, so it falls
+    /// back to the raw codegen output. Without this pass, the raw output's trailing-whitespace
+    /// blank lines (e.g. `    \n` between `#[must_use]` and `pub fn …`) survive into the
+    /// finalised `alef:hash`, and prek's `trailing-whitespace` hook then rewrites the file
+    /// post-hash, breaking `alef verify`. This is the asymmetric half of the policy: blank-line
+    /// whitespace is layout noise and keeps being trimmed; whitespace on a line that otherwise
+    /// has content is a potential literal value and now fails generation instead — see
+    /// `normalize_content_rejects_trailing_whitespace_inside_a_go_raw_backtick_literal` below.
     #[test]
     fn test_normalize_content_strips_trailing_whitespace_when_rustfmt_fails() {
         let path = PathBuf::from("packages/r/src/rust/src/lib.rs");
         let content = "extendr_module! {\n    fn convert(\n    \n        title: String = \"\",\n    );\n}\n";
-        let normalized = normalize_content(&path, content);
+        let normalized = normalize_content(&path, content).expect("blank-line-only whitespace must not be rejected");
         for (i, line) in normalized.lines().enumerate() {
             assert_eq!(
                 line.trim_end(),
@@ -471,6 +506,46 @@ file_safety = { exclude = ["target/**"] }
             );
         }
         assert!(normalized.ends_with('\n'), "must end with newline");
+    }
+
+    /// Regression test for the corruption this whole check exists to prevent:
+    /// `normalize_content` used to silently strip trailing whitespace inside a Go raw
+    /// (backtick) literal spanning multiple physical lines, because the trim pass in
+    /// `normalize_whitespace_with_policy` has no concept of "inside a string literal" -- it is
+    /// called unconditionally from every write path (`write_files_report`, `diff_files`,
+    /// `write_scaffold_files_report`) for every backend's generated files. A Markdown
+    /// two-space hard break emitted as `` `[Alpha  \n](url)Beta` `` lost its two trailing
+    /// spaces this way, at write time, before gofmt or poly fmt ever ran -- three
+    /// `html-to-markdown` Go e2e assertions shipped silently corrupted as a result.
+    ///
+    /// `normalize_content` must now reject that content outright rather than rewrite it: the
+    /// emitter is the one place that can tell "trailing whitespace is the tail of a literal
+    /// value" from "trailing whitespace is stray formatting noise", so it must choose an
+    /// escaped/quoted literal form instead (see `go_needs_quoted` in `src/e2e/escape.rs`,
+    /// which alef's Go emitter was fixed to use for exactly this case).
+    #[test]
+    fn normalize_content_rejects_trailing_whitespace_inside_a_go_raw_backtick_literal() {
+        let path = PathBuf::from("e2e/go/conversion_test.go");
+        let content = "package e2e\n\nvar x = `[Alpha  \n](https://example.com)Beta`\n";
+        assert!(
+            content.contains("Alpha  \n"),
+            "fixture must start with the two spaces present"
+        );
+        let error = normalize_content(&path, content)
+            .expect_err("trailing whitespace on a non-blank line inside a raw literal must be rejected, not trimmed");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("e2e/go/conversion_test.go"),
+            "error must name the offending file: {message}"
+        );
+        assert!(
+            message.contains("line 3"),
+            "error must name the 1-based offending line: {message}"
+        );
+        assert!(
+            message.contains("go_needs_quoted") && message.contains("rust_needs_quoted"),
+            "error must point at the established escaping pattern: {message}"
+        );
     }
 
     /// `sweep_orphans` must delete alef-marked files that aren't in the keep set,
@@ -1010,7 +1085,8 @@ file_safety = { exclude = ["target/**"] }
         );
         assert_eq!(
             after_true,
-            normalize_content(&std::path::PathBuf::from("README.md"), compact_content),
+            normalize_content(&std::path::PathBuf::from("README.md"), compact_content)
+                .expect("compact_content has no non-blank trailing whitespace"),
             "alef readme and alef all must produce identical on-disk bytes for README files"
         );
     }

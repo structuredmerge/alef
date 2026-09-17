@@ -267,14 +267,20 @@ pub(crate) fn emit_swift_bridge_files(
 /// whitespace or missing final newline swift-bridge's own codegen happens to emit (e.g. a
 /// `#include <stdbool.h>` line with a trailing space) therefore reached the committed
 /// `RustBridgeC.h`/`*.swift` files uncorrected until this normalized every line the same way the
-/// in-process placeholder path already does. ~keep
+/// in-process placeholder path already does.
+///
+/// Deliberately routed through [`crate::cli::pipeline::normalize_foreign_tool_content`], not
+/// the stricter [`crate::cli::pipeline::normalize_content`]: this content is swift-bridge's own
+/// C/Swift source, not an alef template or fixture-driven assertion value, so there is no
+/// emitter here that could have chosen a safer literal form and no "value" the whitespace could
+/// belong to -- see that function's doc comment for why this is the one exempt path. ~keep
 pub(crate) fn write_materialized_files(files: Vec<GeneratedFile>) -> anyhow::Result<()> {
     for f in files {
         if let Some(parent) = f.path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| anyhow::anyhow!("failed to create directory {}: {e}", parent.display()))?;
         }
-        let normalized = crate::cli::pipeline::normalize_content(&f.path, &f.content);
+        let normalized = crate::cli::pipeline::normalize_foreign_tool_content(&f.path, &f.content);
         std::fs::write(&f.path, &normalized)
             .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", f.path.display()))?;
     }

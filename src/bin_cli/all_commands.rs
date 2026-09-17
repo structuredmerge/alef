@@ -511,16 +511,15 @@ pub(crate) fn handle(command: Commands, context: &DispatchContext) -> Result<Opt
                     if !public_api_files.is_empty() {
                         let api_hashes: Vec<(String, String)> = public_api_files
                             .iter()
-                            .flat_map(|(_, fs)| {
-                                fs.iter().map(|f| {
-                                    let normalized = pipeline::normalize_content(&f.path, &f.content);
-                                    (
-                                        base_dir.join(&f.path).display().to_string(),
-                                        cache::hash_content(&normalized),
-                                    )
-                                })
+                            .flat_map(|(_, fs)| fs.iter())
+                            .map(|f| -> anyhow::Result<(String, String)> {
+                                let normalized = pipeline::normalize_content(&f.path, &f.content)?;
+                                Ok((
+                                    base_dir.join(&f.path).display().to_string(),
+                                    cache::hash_content(&normalized),
+                                ))
                             })
-                            .collect();
+                            .collect::<anyhow::Result<Vec<_>>>()?;
                         let api_cache_key = format!("{}.public_api", resolved_cfg.name);
                         let stored_api = cache::read_generation_hashes(&api_cache_key).unwrap_or_default();
                         let api_match =

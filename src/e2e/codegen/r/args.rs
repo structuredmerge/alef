@@ -267,7 +267,16 @@ pub(super) fn build_args_string(
                     fixture.id, arg.trait_name
                 );
             }
-            format!("{arg_name} = {}", json_to_r(val, true))
+            // This is the generic scalar fallback for every remaining arg type (plain
+            // `string` fixture fields like `html`/`content`/`source_code`, numbers,
+            // bools, ...). `lowercase_enum_values = true` applies `pascal_to_snake_case`
+            // to the whole string when it starts with an uppercase letter, which is only
+            // correct for actual enum wire values — free-text args must round-trip
+            // verbatim. No arg reaching this branch across the polyrepo's alef.toml
+            // configs is an enum value, so this must always be `false` here, matching
+            // the Vec<String> branch above (`json_to_r(val, false)`) and every other
+            // backend, none of which transforms plain string arguments. ~keep
+            format!("{arg_name} = {}", json_to_r(val, false))
         })
         .collect();
 
@@ -528,5 +537,112 @@ mod tests {
         );
 
         assert_eq!(rendered, "content = NULL");
+    }
+
+    /// Regression test: a plain `string`-typed arg (e.g. fixture `html` input) must be
+    /// emitted verbatim, not run through the enum PascalCase→snake_case transform meant
+    /// only for enum wire values. Before the fix, any string value starting with an
+    /// ASCII uppercase letter was mangled — `Beta<a href="...">` became
+    /// `beta<a href="..."><br>_alpha</a>` because `json_to_r(val, true)` was called
+    /// unconditionally in the generic scalar fallback, applying `pascal_to_snake_case`
+    /// to the entire string.
+    #[test]
+    fn string_arg_starting_with_uppercase_letter_is_emitted_verbatim() {
+        let input = json!({
+            "html": "Beta<a href=\"https://example.com\"><br>Alpha</a>"
+        });
+        let args = vec![ArgMapping {
+            name: "html".to_string(),
+            field: "html".to_string(),
+            arg_type: "string".to_string(),
+            optional: false,
+            owned: false,
+            element_type: None,
+            go_type: None,
+            vec_inner_is_ref: false,
+            trait_name: None,
+        }];
+        let fixture = Fixture {
+            docs: None,
+            requirements: Vec::new(),
+            id: "string_arg_verbatim".to_string(),
+            ..Fixture::default()
+        };
+        let config = ResolvedCrateConfig::default();
+        let mut setup_lines = Vec::new();
+        let mut teardown_block = String::new();
+
+        let rendered = build_args_string(
+            &input,
+            &args,
+            RArgsContext {
+                arg_name_map: None,
+                options_type: None,
+                fixture: &fixture,
+                config: &config,
+                type_defs: &[],
+                setup_lines: &mut setup_lines,
+                teardown_block: &mut teardown_block,
+            },
+        );
+
+        assert_eq!(
+            rendered,
+            "html = \"Beta<a href=\\\"https://example.com\\\"><br>Alpha</a>\""
+        );
+    }
+
+    /// Companion positive control for the fix above: a `json_object` arg with no
+    /// resolvable `options_type` (the "emit as plain R list" branch, distinct from
+    /// `build_args_string_wraps_typed_json_object_with_preserved_arrays` which covers
+    /// the typed-constructor branch) must still lower PascalCase enum wire values to
+    /// R's snake_case convention — e.g. fixture `"Markdown"` must render as
+    /// `"markdown"`. Enum lowering is driven entirely by *where* a value is reached
+    /// from (inside a `json_object`), never by `ArgMapping.arg_type`, so flipping the
+    /// unrelated top-level scalar fallback to verbatim emission must not touch this
+    /// call site — it still passes `lowercase_enum_values = true`. ~keep
+    #[test]
+    fn json_object_arg_without_options_type_still_lowercases_enum_values() {
+        let input = json!({
+            "config": {
+                "output_format": "Markdown"
+            }
+        });
+        let args = vec![ArgMapping {
+            name: "config".to_string(),
+            field: "config".to_string(),
+            arg_type: "json_object".to_string(),
+            optional: false,
+            owned: false,
+            element_type: None,
+            go_type: None,
+            vec_inner_is_ref: false,
+            trait_name: None,
+        }];
+        let fixture = Fixture {
+            docs: None,
+            requirements: Vec::new(),
+            id: "plain_json_object_enum".to_string(),
+            ..Fixture::default()
+        };
+        let config = ResolvedCrateConfig::default();
+        let mut setup_lines = Vec::new();
+        let mut teardown_block = String::new();
+
+        let rendered = build_args_string(
+            &input,
+            &args,
+            RArgsContext {
+                arg_name_map: None,
+                options_type: None,
+                fixture: &fixture,
+                config: &config,
+                type_defs: &[],
+                setup_lines: &mut setup_lines,
+                teardown_block: &mut teardown_block,
+            },
+        );
+
+        assert_eq!(rendered, "config = list(\"output_format\" = \"markdown\")");
     }
 }

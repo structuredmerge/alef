@@ -25,7 +25,7 @@ pub(crate) fn canonical_frb_generated(
     lib_rs_source: &str,
     frb_generated_source: &str,
     frb_generated_path: &Path,
-) -> String {
+) -> anyhow::Result<String> {
     let gated = crate::backends::dart::carry_lib_rs_cfg_gates_into_frb_generated(lib_rs_source, frb_generated_source);
     crate::cli::pipeline::normalize_content(frb_generated_path, &gated)
 }
@@ -50,7 +50,7 @@ pub(super) fn run(source_file: &Path, target_file: &Path) -> anyhow::Result<()> 
     let target_content = std::fs::read_to_string(target_file)
         .with_context(|| format!("failed to read cfg-gate target {}", target_file.display()))?;
 
-    let canonical = canonical_frb_generated(&source_content, &target_content, target_file);
+    let canonical = canonical_frb_generated(&source_content, &target_content, target_file)?;
     if canonical != target_content {
         std::fs::write(target_file, &canonical)
             .with_context(|| format!("failed to write cfg-gated file {}", target_file.display()))?;
@@ -114,8 +114,8 @@ mod tests {
         );
 
         let path = Path::new("frb_generated.rs");
-        let from_raw = canonical_frb_generated(lib_rs, raw_from_tool, path);
-        let from_formatted = canonical_frb_generated(lib_rs, already_formatted, path);
+        let from_raw = canonical_frb_generated(lib_rs, raw_from_tool, path).expect("canonicalize raw");
+        let from_formatted = canonical_frb_generated(lib_rs, already_formatted, path).expect("canonicalize formatted");
 
         assert_eq!(
             from_raw, from_formatted,
@@ -145,8 +145,8 @@ mod tests {
                    fn wire__crate__add_impl() {}\n";
         let path = Path::new("frb_generated.rs");
 
-        let once = canonical_frb_generated(lib_rs, raw, path);
-        let twice = canonical_frb_generated(lib_rs, &once, path);
+        let once = canonical_frb_generated(lib_rs, raw, path).expect("canonicalize once");
+        let twice = canonical_frb_generated(lib_rs, &once, path).expect("canonicalize twice");
 
         assert_eq!(
             once, twice,

@@ -101,8 +101,15 @@ pub fn escape_js_template(s: &str) -> String {
 ///
 /// Go raw string literals cannot contain backtick characters or NUL bytes, and
 /// `\r` inside a raw string is passed through as a literal CR which gofmt rejects.
+///
+/// A raw literal also reproduces its content byte for byte, real newlines included, so a
+/// value carrying whitespace immediately before a newline lands as *trailing whitespace on a
+/// physical source line*. gofmt -- and any trailing-whitespace tidy pass -- strips that,
+/// silently rewriting the literal to a different value than the fixture asked for. A Markdown
+/// two-space hard break (`"a  \nb"`) is exactly this shape. Same class of problem as
+/// [`rust_needs_quoted`], and handled the same way. ~keep
 fn go_needs_quoted(s: &str) -> bool {
-    s.contains('`') || s.bytes().any(|b| b == 0 || b == b'\r')
+    s.contains('`') || s.bytes().any(|b| b == 0 || b == b'\r') || s.contains(" \n") || s.contains("\t\n")
 }
 
 /// Format a string as a Go string literal (backtick or quoted).
@@ -706,6 +713,23 @@ mod tests {
             lit.starts_with('"'),
             "expected double-quoted form when string contains backtick, got: {lit:?}"
         );
+    }
+
+    /// A raw (backtick) Go literal reproduces its content byte for byte, real newlines
+    /// included, so whitespace immediately before a newline lands as trailing whitespace on
+    /// a physical source line -- which gofmt (and any trailing-whitespace tidy pass) strips.
+    /// A Markdown two-space hard break is exactly this shape. Same class of problem as
+    /// [`rust_needs_quoted`], and must be handled the same way: fall back to a quoted literal.
+    #[test]
+    fn go_string_literal_falls_back_to_quoted_when_whitespace_precedes_a_newline() {
+        let s = "[Alpha  \n](https://example.com)Beta";
+        let lit = go_string_literal(s);
+        assert!(
+            lit.starts_with('"'),
+            "expected double-quoted form when a line ends in whitespace, got: {lit:?}"
+        );
+        assert_eq!(lit, "\"[Alpha  \\n](https://example.com)Beta\"");
+        assert!(!lit.contains(" \n"), "no real trailing whitespace may survive: {lit}");
     }
 
     /// Fixture ids with a numeric prefix (`24_cookie_samesite_strict`) must not

@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The Go e2e emitter chose a raw (backtick) string literal for any assertion value without a
+  backtick, `\r`, or NUL byte, with no regard for whether the value itself carried meaning in its
+  whitespace.** A raw literal reproduces its content byte for byte, real newlines included, so a
+  value with whitespace immediately before a newline lands as trailing whitespace on a physical
+  source line -- exactly the shape of a Markdown two-space hard line break. `go_needs_quoted`
+  (`src/e2e/escape.rs`) now falls back to a quoted, `\n`-escaped literal for that shape too, the
+  same rule `rust_needs_quoted` already applied to the Rust backend.
+
+- **That value was then rewritten a second time, independently, by alef's own generated-file
+  writer.** `normalize_content` (`src/cli/pipeline/generate/normalization.rs`) trims trailing
+  whitespace from every physical line of every generated file, for every backend, with no concept
+  of "inside a string literal" -- so even a correctly-escaped value could still be corrupted if an
+  emitter ever chose a raw form. `html-to-markdown`'s generated Go e2e suite shipped this exact
+  corruption: three assertions asserted `[Alpha\n](url)Beta` when their fixtures said
+  `[Alpha␣␣\n](url)Beta`. Nothing reported the rewrite itself; what eventually surfaced it was
+  the generated tests failing against correct converter output, and only once that repo's full E2E
+  matrix ran -- the preceding runs had skipped every language job. `normalize_content` now
+  refuses to silently rewrite a non-blank line's trailing whitespace: it fails generation with the
+  offending file path, 1-based line number, and the stripped whitespace made visible, naming
+  `go_needs_quoted`/`rust_needs_quoted` as the pattern an emitter must use instead. Blank-line
+  whitespace (pure layout noise) is unaffected and still collapses silently, as does content read
+  straight from an external tool's own build output (swift-bridge's `RustBridgeC.h`), which has no
+  emitter of alef's own to hold accountable.
+
+- **The R e2e emitter's generic scalar argument fallback ran every string value through the enum
+  PascalCase-to-snake_case transform meant only for enum wire values nested inside a `json_object`
+  config, mangling free text that happened to start with an ASCII letter.** `build_args_string`
+  (`src/e2e/codegen/r/args.rs`) called `json_to_r(val, true)` unconditionally for any arg not
+  otherwise special-cased (`json_object`, `bytes`, `file_path`, `test_backend`) -- covering every
+  plain `string`-typed arg, such as `html-to-markdown`'s `html` input. `json_to_r` inserts an
+  underscore before every non-leading uppercase letter and lowercases the whole string, so
+  `html-to-markdown`'s generated R e2e suite asserted against input the fixtures never specified:
+  `Alpha<span style="white-space:pre">\n</span>13` became `alpha<span ...>...13`, and
+  `Beta<a href="https://example.com"><br>Alpha</a>` became
+  `beta<a href="https://example.com"><br>_alpha</a>`. Only values starting with `<` were spared,
+  since `<` isn't uppercase -- one of these two fixtures had been silently wrong since it landed.
+  The fallback now calls `json_to_r(val, false)`, matching the `Vec<String>` branch beside it and
+  every other backend, none of which transforms plain string arguments; enum lowering for values
+  reached through a `json_object` argument is untouched.
+
 ## [0.91.3] - 2026-09-16
 
 ### Fixed

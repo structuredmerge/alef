@@ -16,9 +16,17 @@ pub fn diff_files(files: &[(Language, Vec<GeneratedFile>)], base_dir: &Path) -> 
         .flat_map(|(lang, lang_files)| lang_files.iter().map(move |f| (*lang, f)))
         .collect();
 
+    // `normalize_content` now fails loudly on a generated file whose content would need a
+    // real, non-blank trailing-whitespace trim -- see `reject_trailing_whitespace_on_content_lines`
+    // in `normalization.rs`. That failure describes a real bug in the in-memory `GeneratedFile`
+    // the run just produced, independent of anything on disk, so `alef diff` (a preview-only
+    // read path) must surface it exactly like `alef generate`/`alef write` do rather than
+    // swallow it into a misleading "no diff" or silently fall back to the corrupt content.
+    // `par_iter().map(...).collect::<Result<Vec<_>>>()` short-circuits on the first such
+    // failure and returns it through this function's own `anyhow::Result`. ~keep
     let diffs: Vec<String> = all_items
         .par_iter()
-        .filter_map(|(lang, file)| {
+        .map(|(lang, file)| -> anyhow::Result<Option<String>> {
             let full_path = base_dir.join(&file.path);
             // Binary output is compared as bytes or not at all. `read_to_string` fails on a
             // jar and `unwrap_or_default()` turns that failure into an empty string, which
@@ -32,7 +40,7 @@ pub fn diff_files(files: &[(Language, Vec<GeneratedFile>)], base_dir: &Path) -> 
                     .ok()
                     .zip(std::fs::read(&full_path).ok())
                     .is_some_and(|(generated, on_disk)| generated == on_disk);
-                return (!matches).then(|| format!("[{lang}] {}", file.path.display()));
+                return Ok((!matches).then(|| format!("[{lang}] {}", file.path.display())));
             }
             let existing = std::fs::read_to_string(&full_path).unwrap_or_default();
             let is_rust = file.path.extension().is_some_and(|ext| ext == "rs");
@@ -45,7 +53,7 @@ pub fn diff_files(files: &[(Language, Vec<GeneratedFile>)], base_dir: &Path) -> 
             } else {
                 file.content.clone()
             };
-            let generated = normalize_content(&file.path, &generated_content);
+            let generated = normalize_content(&file.path, &generated_content)?;
             let generated = if file.generated_header {
                 super::write::ensure_generated_header(&file.path, &generated)
             } else {
@@ -58,11 +66,14 @@ pub fn diff_files(files: &[(Language, Vec<GeneratedFile>)], base_dir: &Path) -> 
             };
             let on_disk_body = hash::strip_hash_line(&on_disk);
             if normalize_whitespace(&on_disk_body) != normalize_whitespace(&generated) {
-                Some(format!("[{lang}] {}", file.path.display()))
+                Ok(Some(format!("[{lang}] {}", file.path.display())))
             } else {
-                None
+                Ok(None)
             }
         })
+        .collect::<anyhow::Result<Vec<Option<String>>>>()?
+        .into_iter()
+        .flatten()
         .collect();
 
     Ok(diffs)
