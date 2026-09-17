@@ -142,7 +142,14 @@ impl magnus::IntoValue for {{ enum_name }} {
 
 impl magnus::TryConvert for {{ enum_name }} {
     fn try_convert(val: magnus::Value) -> Result<Self, magnus::Error> {
-        let s: String = magnus::TryConvert::try_convert(val)?;
+        // IntoValue emits Symbols, including when this enum is a Hash key.
+        // Accept that exact representation as well as String inputs; do not
+        // coerce arbitrary objects through to_s.
+        let s: String = if let Some(symbol) = magnus::Symbol::from_value(val) {
+            symbol.name()?.into_owned()
+        } else {
+            magnus::TryConvert::try_convert(val)?
+        };
         // Accept the real serde wire value, the legacy always-snake_case symbol Magnus used to
         // emit unconditionally, and the verbatim PascalCase Rust variant name, so fixtures and
         // existing consumer code written in any of those styles keep working.

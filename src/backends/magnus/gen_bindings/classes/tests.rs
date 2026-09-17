@@ -368,6 +368,9 @@ fn gen_enum_unit_variant_try_convert_still_accepts_the_legacy_snake_case_spellin
         ..Default::default()
     };
     let code = gen_enum(&enum_def, "test_lib", None, &[]);
+    assert!(code.contains("magnus::Symbol::from_value(val)"));
+    assert!(code.contains("symbol.name()?.into_owned()"));
+    assert!(!code.contains("funcall(\"to_s\""));
     assert!(
         code.contains("\"key_value\""),
         "existing consumer code passing the old snake_case symbol must keep working:\n{code}"

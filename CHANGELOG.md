@@ -336,6 +336,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Do not invent Python TypedDict discriminator fields for untagged or externally tagged payload enums.
 
+- Accept generated Ruby unit-enum Symbols on input, including enum-keyed Hash round trips, while retaining String support and rejecting arbitrary object coercion.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
