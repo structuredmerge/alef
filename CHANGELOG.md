@@ -326,6 +326,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   had no choice but to hand-edit the generated (and hash-stamped) `poly.toml` directly, which
   `alef verify` then reports as stale bindings on every subsequent regeneration.
 
+- Let idle Ruby trait dispatchers process VM shutdown interrupts through protected Magnus checks instead of waiting indefinitely for live registry senders.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
