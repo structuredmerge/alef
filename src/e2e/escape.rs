@@ -732,6 +732,62 @@ mod tests {
         assert!(!lit.contains(" \n"), "no real trailing whitespace may survive: {lit}");
     }
 
+    /// Regression net for the whole class alef-task #557 found in the Go emitter: any
+    /// backend's string-literal function must never let a value's trailing whitespace before
+    /// a newline survive as trailing whitespace on a physical source line. A file-level
+    /// whitespace-trim gate was tried at the generated-file writer and reverted -- a real
+    /// downstream regeneration run showed 409 of 409 trailing-whitespace hits there were
+    /// ordinary layout (doc-comment continuations, parameter-list continuations), not fixture
+    /// values, because a file-level check cannot distinguish the two. Only the emitter
+    /// choosing a literal form can, which is exactly what `go_needs_quoted` does -- so the
+    /// guard belongs here, at the literal-rendering functions themselves, one entry per
+    /// backend that can reach this shape. A backend not listed here has no raw/verbatim
+    /// literal form yet (every other `escape_*` in this module unconditionally escapes `\n`),
+    /// so it cannot fail this test today; a future backend that adds one will, the moment its
+    /// literal function is added to this table. ~keep
+    #[test]
+    fn every_backend_string_literal_function_survives_a_markdown_hard_line_break() {
+        // The exact shape that broke Go: a value with two spaces immediately before a real
+        // newline, embedded in surrounding text -- a Markdown hard line break.
+        const VALUE: &str = "[Alpha  \n](https://example.com)Beta";
+
+        // One entry per backend's primary "render this exact fixture value as a string
+        // literal" function -- not every helper in this module (e.g. `*_regex_literal`,
+        // `*_template_to_*`, `sanitize_*` build something other than a value literal, and are
+        // out of scope for this particular guard).
+        type LiteralFn = fn(&str) -> String;
+        let literal_functions: &[(&str, LiteralFn)] = &[
+            ("go", go_string_literal),
+            ("rust", rust_raw_string),
+            ("python", escape_python),
+            ("javascript/typescript", escape_js),
+            ("java", escape_java),
+            ("swift", escape_swift),
+            ("kotlin", escape_kotlin),
+            ("csharp", escape_csharp),
+            ("php", escape_php),
+            ("ruby (double-quoted)", escape_ruby),
+            ("ruby (single/double chooser)", ruby_string_literal),
+            ("elixir", escape_elixir),
+            ("r", escape_r),
+            ("c", escape_c),
+            ("gleam", escape_gleam),
+            ("zig", escape_zig),
+        ];
+
+        for (backend, literal_fn) in literal_functions {
+            let rendered = literal_fn(VALUE);
+            for line in rendered.lines() {
+                assert_eq!(
+                    line,
+                    line.trim_end(),
+                    "{backend}: string-literal function let \"{VALUE:?}\" render with trailing \
+                     whitespace on a physical source line -- rendered: {rendered:?}"
+                );
+            }
+        }
+    }
+
     /// Fixture ids with a numeric prefix (`24_cookie_samesite_strict`) must not
     /// produce names like `_cookie_samesite_strict` that, when prefixed with
     /// `test_`, yield the invalid-looking `test__cookie_samesite_strict`.

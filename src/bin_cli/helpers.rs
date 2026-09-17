@@ -125,14 +125,7 @@ pub(crate) fn generated_files_match_disk(
     base_dir: &std::path::Path,
 ) -> bool {
     lang_files.iter().all(|file| {
-        // A normalization failure here (see `reject_trailing_whitespace_on_content_lines`) is
-        // not this function's job to report -- it only gates a skip-the-rewrite optimization.
-        // Treating it as "does not match disk" is safe: the caller falls through to the real
-        // write path, where `write_files_report` surfaces the same failure loudly instead of
-        // this boolean-returning helper swallowing it. ~keep
-        let Ok(normalized) = crate::cli::pipeline::normalize_content(&file.path, &file.content) else {
-            return false;
-        };
+        let normalized = crate::cli::pipeline::normalize_content(&file.path, &file.content);
         match std::fs::read_to_string(base_dir.join(&file.path)) {
             Ok(disk) => crate::core::hash::strip_hash_line(&disk) == crate::core::hash::strip_hash_line(&normalized),
             Err(_) => false,
