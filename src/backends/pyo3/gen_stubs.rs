@@ -670,6 +670,35 @@ module_name = "test_lib"
         );
     }
 
+    #[test]
+    fn rust_default_constructor_fields_do_not_claim_none_is_accepted() {
+        let api = ApiSurface {
+            types: vec![TypeDef {
+                name: "Defaults".into(),
+                has_default: true,
+                fields: vec![
+                    FieldDef {
+                        name: "label".into(),
+                        ty: TypeRef::String,
+                        ..Default::default()
+                    },
+                    FieldDef {
+                        name: "optional".into(),
+                        ty: TypeRef::String,
+                        optional: true,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let stub = gen_stubs(&api, &[], &python_config(), &ahash::AHashSet::default());
+        assert!(stub.contains("label: str = ..."), "{stub}");
+        assert!(!stub.contains("label: str | None"), "{stub}");
+        assert!(stub.contains("optional: str | None = None"), "{stub}");
+    }
+
     fn widget_request() -> TypeDef {
         TypeDef {
             name: "WidgetRequest".to_string(),

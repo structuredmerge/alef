@@ -55,6 +55,29 @@ pub(in crate::backends::pyo3) fn resolve_param_ident<'a>(
     }
 }
 
+/// Whether a nested default is exposed as a None-able constructor argument.
+/// Shared with stubs so omission is not confused with accepting Python None.
+pub(in crate::backends::pyo3) fn should_option_for_nested_default(
+    typ: &TypeDef,
+    field: &FieldDef,
+    api: &ApiSurface,
+) -> bool {
+    if !typ.has_default || field.optional || matches!(&field.ty, TypeRef::Optional(_)) {
+        return false;
+    }
+    let TypeRef::Named(ref type_name) = field.ty else {
+        return false;
+    };
+    if api.types.iter().any(|t| t.name == *type_name && t.has_default) {
+        return true;
+    }
+    field.default.as_deref() == Some("/* serde(default) */")
+        && api
+            .enums
+            .iter()
+            .any(|e| e.name == *type_name && crate::codegen::generators::enum_has_data_variants(e))
+}
+
 /// Replace the constructor in an impl block with one that honors serde_rename.
 /// For has_default types, the constructor parameters should use serde_rename names
 /// (the JSON wire names) to match other language bindings' public APIs.
@@ -76,30 +99,6 @@ pub(super) fn replace_constructor_with_serde_rename(
     let has_explicit_new = typ.methods.iter().any(|m| m.is_static && m.name == "new");
     if has_explicit_new {
         return impl_block.to_string();
-    }
-
-    /// Check if a field should be emitted as Option<T> to accept None for BLK-5 fix.
-    /// This applies when:
-    /// - The parent type has_default=true
-    /// - The field is non-optional (!f.optional && not already Optional)
-    /// - The field type is a Named type
-    /// - The referenced type has has_default=true
-    fn should_option_for_nested_default(typ: &TypeDef, field: &FieldDef, api: &ApiSurface) -> bool {
-        if !typ.has_default || field.optional || matches!(&field.ty, TypeRef::Optional(_)) {
-            return false;
-        }
-        let TypeRef::Named(ref type_name) = field.ty else {
-            return false;
-        };
-        if api.types.iter().any(|t| t.name == *type_name && t.has_default) {
-            return true;
-        }
-        // default. Such a field is None-able in the public surface, so its `#[new]` param is `Option<T>`
-        field.default.as_deref() == Some("/* serde(default) */")
-            && api
-                .enums
-                .iter()
-                .any(|e| e.name == *type_name && crate::codegen::generators::enum_has_data_variants(e))
     }
 
     let bridge_field_name = trait_bridges

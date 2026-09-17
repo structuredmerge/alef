@@ -275,7 +275,10 @@ fn gen_type_init_stub(
             renames_ref,
         );
         let param_name = param_name.strip_prefix("r#").map(str::to_owned).unwrap_or(param_name);
-        format!("{param_name}: {param_type} = None")
+        // Rust Default expressions are evaluated natively; PyO3 describes
+        // them as ellipsis. Omission is allowed, but None is not a valid value.
+        let default = if accepts_none { "None" } else { "..." };
+        format!("{param_name}: {param_type} = {default}")
     }));
 
     // the PyO3 `#[new]` constructor accepts an additional `{kwarg_name}: {trait_name} = None`
@@ -799,8 +802,10 @@ mod tests {
             &OptionsFieldBridges::default(),
         );
 
-        assert!(stub.contains("mode: UrlExtractionMode | None = None"), "{stub}");
-        assert!(stub.contains("crawl: CrawlConfig | None = None"), "{stub}");
+        // Neither field is Option-backed in the generated constructor; the
+        // parent's Default makes omission valid, not an explicit None value.
+        assert!(stub.contains("mode: UrlExtractionMode = ..."), "{stub}");
+        assert!(stub.contains("crawl: CrawlConfig = ..."), "{stub}");
     }
 
     #[test]
