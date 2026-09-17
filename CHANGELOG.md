@@ -330,6 +330,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Generate hashable Ruby/Python unit-enum map keys and avoid invented defaults for required Python structs and Ruby data enums.
 
+- Preserve serializable nested Python request DTOs containing data enums instead of incorrectly skipping them as opaque fields.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
