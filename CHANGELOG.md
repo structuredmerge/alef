@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.91.6] - 2026-09-17
+
+### Fixed
+
+- **The PHP and Ruby e2e emitters built a delimited regex literal around a declared error value
+  without escaping the value's control characters**, so a value carrying a newline split the
+  generated source across physical lines and left any space or tab in front of that newline as
+  trailing whitespace -- which whatever trims trailing whitespace next silently removed, turning
+  the pattern into one that no longer matches the value it was built from. Same defect class as
+  0.91.5's Go emitter fix, arriving through a delimited literal rather than a raw one.
+  `php_pcre_literal` and `ruby_regex_literal` (`src/e2e/escape.rs`) now emit `\n`, `\r` and `\t`
+  escapes instead of the raw bytes; `r_regex_literal` already delegated to `escape_r` and was
+  never affected. Guarded by `every_regex_literal_function_survives_a_markdown_hard_line_break`,
+  the companion to 0.91.5's string-literal table, which the string-literal table had explicitly
+  declared these helpers out of scope for. Each of the two new escape arms was removed on purpose
+  to confirm the guard names its backend and fails.
+
+- **A Ruby regex literal interpolates `#{...}` exactly as a double-quoted string does**, so a
+  declared error value containing `#{` produced a generated spec that did not parse at all rather
+  than one that merely matched the wrong thing. `ruby_regex_literal` now escapes `#`, which in a
+  regex matches a literal `#`.
+
 ## [0.91.5] - 2026-09-17
 
 ### Fixed

@@ -225,16 +225,26 @@ pub fn escape_php_single(s: &str) -> String {
 /// (single-quoted PHP only collapses `\\` to one backslash — everything else
 /// passes through unmodified) before quotes are escaped, or the pattern
 /// arrives at `preg_match` with half its escapes stripped.
+///
+/// A newline, carriage return or tab in `value` becomes its PCRE escape rather than the raw
+/// byte: a raw newline would split the generated PHP across physical source lines, and any
+/// space or tab standing in front of it then reads as trailing whitespace that a formatter is
+/// free to strip -- silently changing what the pattern matches. This is the same defect class
+/// alef-task #557 found in the Go emitter, arriving through a delimited literal instead of a
+/// raw one. ~keep
 pub fn php_pcre_literal(value: &str) -> String {
     let mut pattern = String::with_capacity(value.len());
     for ch in value.chars() {
-        if matches!(
-            ch,
-            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' | '/'
-        ) {
-            pattern.push('\\');
+        match ch {
+            '\n' => pattern.push_str("\\n"),
+            '\r' => pattern.push_str("\\r"),
+            '\t' => pattern.push_str("\\t"),
+            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' | '/' => {
+                pattern.push('\\');
+                pattern.push(ch);
+            }
+            _ => pattern.push(ch),
         }
-        pattern.push(ch);
     }
     let delimited = format!("/{pattern}/");
     let php_escaped = delimited.replace('\\', "\\\\").replace('\'', "\\'");
@@ -263,16 +273,26 @@ pub fn escape_ruby_single(s: &str) -> String {
 /// `/` delimiter itself, so any characters in `value` — including regex
 /// metacharacters a fixture author didn't intend as regex syntax — are matched
 /// as plain text rather than interpreted as pattern syntax.
+///
+/// `#` is escaped too, because a Ruby regex literal interpolates `#{...}` exactly as a
+/// double-quoted string does -- an unescaped `#{` in `value` would not merely mis-match, it
+/// would fail to parse. A newline, carriage return or tab becomes its regex escape rather than
+/// the raw byte, for the reason given on [`php_pcre_literal`]: a raw newline splits the literal
+/// across physical source lines and leaves any preceding space or tab as strippable trailing
+/// whitespace. ~keep
 pub fn ruby_regex_literal(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
-        if matches!(
-            ch,
-            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' | '/'
-        ) {
-            escaped.push('\\');
+        match ch {
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' | '/' | '#' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
         }
-        escaped.push(ch);
     }
     format!("/{escaped}/")
 }
@@ -786,6 +806,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The companion to the string-literal table above, for the helpers it explicitly declares
+    /// out of scope. A regex literal is delimited source too, so a value carrying a Markdown
+    /// hard line break leaks the same way: `/Alpha  \n/` puts two spaces at the end of a
+    /// physical line, and whatever strips trailing whitespace next quietly turns the pattern
+    /// into one that no longer matches the value it was built from. ~keep
+    #[test]
+    fn every_regex_literal_function_survives_a_markdown_hard_line_break() {
+        const VALUE: &str = "[Alpha  \n](https://example.com)Beta";
+
+        type LiteralFn = fn(&str) -> String;
+        let regex_functions: &[(&str, LiteralFn)] = &[
+            ("php", php_pcre_literal),
+            ("ruby", ruby_regex_literal),
+            ("r", r_regex_literal),
+        ];
+
+        for (backend, regex_fn) in regex_functions {
+            let rendered = regex_fn(VALUE);
+            assert!(
+                !rendered.contains('\n'),
+                "{backend}: regex literal for {VALUE:?} spans physical source lines: {rendered:?}"
+            );
+            for line in rendered.lines() {
+                assert_eq!(
+                    line,
+                    line.trim_end(),
+                    "{backend}: regex literal for {VALUE:?} rendered with trailing whitespace on a \
+                     physical source line -- rendered: {rendered:?}"
+                );
+            }
+        }
+    }
+
+    /// The two spaces are kept verbatim -- they are what the pattern must match -- while only
+    /// the newline becomes an escape. PCRE sees `\n` because single-quoted PHP collapses the
+    /// doubled backslash to one.
+    #[test]
+    fn php_pcre_literal_escapes_a_newline_rather_than_emitting_it() {
+        assert_eq!(php_pcre_literal("Alpha  \nBeta"), "'/Alpha  \\\\nBeta/'");
+        assert_eq!(php_pcre_literal("a\tb\r"), "'/a\\\\tb\\\\r/'");
+    }
+
+    #[test]
+    fn ruby_regex_literal_escapes_a_newline_rather_than_emitting_it() {
+        assert_eq!(ruby_regex_literal("Alpha  \nBeta"), "/Alpha  \\nBeta/");
+        assert_eq!(ruby_regex_literal("a\tb\r"), "/a\\tb\\r/");
+    }
+
+    /// An unescaped `#{` in a Ruby regex literal interpolates: the generated spec would not
+    /// parse at all, rather than merely match the wrong thing.
+    #[test]
+    fn ruby_regex_literal_escapes_the_interpolation_sigil() {
+        assert_eq!(ruby_regex_literal("a#{b}c"), "/a\\#\\{b\\}c/");
+        assert_eq!(ruby_regex_literal("issue #12"), "/issue \\#12/");
     }
 
     /// Fixture ids with a numeric prefix (`24_cookie_samesite_strict`) must not
