@@ -330,6 +330,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Escape crate, self, Self, and super wire names in Python constructors without generating invalid Rust raw identifiers.
 
+- Match Python struct constructor enum annotations to typed PyO3 extraction instead of advertising implicit string coercion; retain explicit enum construction and optional None.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed

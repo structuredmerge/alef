@@ -251,7 +251,7 @@ fn gen_type_init_stub(
     let mut params: Vec<String> = required
         .iter()
         .map(|f| {
-            let param_type = qualify_shadowed_builtin_types(&constructor_param_type(&f.ty, api), &shadowed);
+            let param_type = qualify_shadowed_builtin_types(&constructor_param_type(&f.ty), &shadowed);
             let param_name = crate::backends::pyo3::gen_bindings::constructors::resolve_param_ident(
                 &f.name,
                 f.serde_rename.as_ref(),
@@ -264,7 +264,10 @@ fn gen_type_init_stub(
 
     params.extend(optional.iter().map(|f| {
         let type_str = qualify_shadowed_builtin_types(&constructor_param_type(&f.ty, api), &shadowed);
-        let param_type = if !type_str.ends_with("| None") {
+        let accepts_none = f.optional
+            || matches!(f.ty, TypeRef::Optional(_) | TypeRef::Duration)
+            || crate::backends::pyo3::gen_bindings::constructors::should_option_for_nested_default(typ, f, api);
+        let param_type = if accepts_none && !type_str.ends_with("| None") {
             format!("{} | None", type_str)
         } else {
             type_str
