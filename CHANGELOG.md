@@ -322,6 +322,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   had no choice but to hand-edit the generated (and hash-stamped) `poly.toml` directly, which
   `alef verify` then reports as stale bindings on every subsequent regeneration.
 
+- Keep required arguments following a required Python Arc trait-bridge parameter non-optional, preserving the generated call signature and Rust argument type.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
