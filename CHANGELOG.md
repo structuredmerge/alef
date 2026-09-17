@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.91.4] - 2026-09-17
+## [0.91.5] - 2026-09-17
 
 ### Fixed
 
@@ -18,22 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source line -- exactly the shape of a Markdown two-space hard line break. `go_needs_quoted`
   (`src/e2e/escape.rs`) now falls back to a quoted, `\n`-escaped literal for that shape too, the
   same rule `rust_needs_quoted` already applied to the Rust backend.
-
-- **That value was then rewritten a second time, independently, by alef's own generated-file
-  writer.** `normalize_content` (`src/cli/pipeline/generate/normalization.rs`) trims trailing
-  whitespace from every physical line of every generated file, for every backend, with no concept
-  of "inside a string literal" -- so even a correctly-escaped value could still be corrupted if an
-  emitter ever chose a raw form. `html-to-markdown`'s generated Go e2e suite shipped this exact
-  corruption: three assertions asserted `[Alpha\n](url)Beta` when their fixtures said
-  `[Alpha␣␣\n](url)Beta`. Nothing reported the rewrite itself; what eventually surfaced it was
-  the generated tests failing against correct converter output, and only once that repo's full E2E
-  matrix ran -- the preceding runs had skipped every language job. `normalize_content` now
-  refuses to silently rewrite a non-blank line's trailing whitespace: it fails generation with the
-  offending file path, 1-based line number, and the stripped whitespace made visible, naming
-  `go_needs_quoted`/`rust_needs_quoted` as the pattern an emitter must use instead. Blank-line
-  whitespace (pure layout noise) is unaffected and still collapses silently, as does content read
-  straight from an external tool's own build output (swift-bridge's `RustBridgeC.h`), which has no
-  emitter of alef's own to hold accountable.
 
 - **The R e2e emitter's generic scalar argument fallback ran every string value through the enum
   PascalCase-to-snake_case transform meant only for enum wire values nested inside a `json_object`
@@ -50,6 +34,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The fallback now calls `json_to_r(val, false)`, matching the `Vec<String>` branch beside it and
   every other backend, none of which transforms plain string arguments; enum lowering for values
   reached through a `json_object` argument is untouched.
+
+### Reverted
+
+- **0.91.4 shipped a generation-time gate in `normalize_content`
+  (`src/cli/pipeline/generate/normalization.rs`) that failed generation outright the moment any
+  generated file's non-blank line ended in trailing whitespace,** intending to catch exactly the
+  raw-literal corruption the Go fix above addresses. A real downstream regeneration run against
+  0.91.4 hit 409 trailing-whitespace violations across 8 files, and not one was a string literal --
+  every hit was ordinary layout (Java parameter-list continuations, `///`/`##`/`#`/`*` doc-comment
+  continuations, ...). A file-level check cannot distinguish layout whitespace a formatter is right
+  to clean from the tail of a raw/verbatim literal's value; only the emitter choosing that literal
+  form can, which is exactly what `go_needs_quoted`/`rust_needs_quoted` already do. **A consumer on
+  0.91.4 cannot run `alef all` at all.** The gate and all its call-site plumbing are reverted; the
+  guard now lives at each backend's string-literal function instead, with a table-driven regression
+  test in `src/e2e/escape.rs` that runs a Markdown hard-line-break value through every backend's
+  literal function and fails immediately if any future raw/verbatim form lets it through
+  uncorrected.
+
+## [0.91.4] - 2026-09-17
+
+### Fixed
+
+- **`normalize_content` (`src/cli/pipeline/generate/normalization.rs`) started refusing to
+  silently rewrite a generated file's non-blank line ending in trailing whitespace, failing
+  generation with the offending file path, 1-based line number, and the stripped whitespace made
+  visible instead.** The intent was to close the same corruption class the Go fix above addresses
+  for any backend, from the write path rather than each emitter individually. **This gate is
+  reverted in 0.91.5 -- see that entry for why.** In practice a file-level trailing-whitespace
+  check cannot tell ordinary layout whitespace (a doc-comment continuation, a parameter-list
+  continuation) from the tail of a raw/verbatim literal's value, and it broke `alef all` for
+  essentially every consumer.
 
 ## [0.91.3] - 2026-09-16
 
