@@ -4,6 +4,10 @@ use alef::{
 };
 
 fn generated(optional: bool, fallible_core: bool) -> String {
+    generated_with_generation(optional, fallible_core, false)
+}
+
+fn generated_with_generation(optional: bool, fallible_core: bool, with_generation: bool) -> String {
     let config: NewAlefConfig = toml::from_str(
         r#"
 [workspace]
@@ -22,7 +26,7 @@ param_name = "host"
     )
     .unwrap();
     let mut config = config.resolve().unwrap();
-    let api = ApiSurface {
+    let mut api = ApiSurface {
         types: vec![TypeDef {
             name: "ParserHost".into(),
             rust_path: "sample_core::ParserHost".into(),
@@ -52,6 +56,13 @@ param_name = "host"
         }],
         ..Default::default()
     };
+    if with_generation {
+        api.functions[0].params.push(ParamDef {
+            name: "expected_generation".into(),
+            ty: TypeRef::Primitive(PrimitiveType::U64),
+            ..Default::default()
+        });
+    }
     Pyo3Backend
         .generate_bindings(&api, &config.remove(0))
         .unwrap()
@@ -59,6 +70,21 @@ param_name = "host"
         .find(|file| file.path.to_string_lossy().ends_with("lib.rs"))
         .unwrap()
         .content
+}
+
+#[test]
+fn required_argument_after_required_arc_host_is_not_promoted_to_option() {
+    let code = generated_with_generation(false, true, true);
+    assert!(code.contains("host: Py<PyAny>, expected_generation: u64"), "{code}");
+    assert!(
+        code.contains("#[pyo3(signature = (host, expected_generation))]"),
+        "{code}"
+    );
+    assert!(
+        code.contains("sample_core::register_parser_host(host, expected_generation)"),
+        "{code}"
+    );
+    assert!(!code.contains("expected_generation: Option<u64>"), "{code}");
 }
 
 #[test]

@@ -39,7 +39,7 @@ pub fn gen_bridge_function(
                 sig_parts.push(format!("{}: Py<PyAny>", p.name));
             }
         } else {
-            let promoted = idx > bridge_param_idx || func.params[..idx].iter().any(|pp| pp.optional);
+            let promoted = (is_optional && idx > bridge_param_idx) || func.params[..idx].iter().any(|pp| pp.optional);
             let ty = if p.optional || promoted {
                 format!("Option<{}>", mapper.map_type(&p.ty))
             } else {
