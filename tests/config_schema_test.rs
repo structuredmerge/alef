@@ -59,6 +59,27 @@ fn committed_schema_matches_current_package_version() {
     assert_eq!(actual, expected);
 }
 
+#[test]
+fn python_send_sync_types_match_schema_and_rust_config() {
+    let source = r#"
+[workspace]
+languages = ["python"]
+[[crates]]
+name = "sample"
+sources = ["src/lib.rs"]
+[crates.python]
+send_sync_types = ["SharedHandle"]
+"#;
+    let schema = alef_config_schema(env!("CARGO_PKG_VERSION")).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let toml_value: toml::Value = toml::from_str(source).unwrap();
+    let json_value = serde_json::to_value(toml_value).unwrap();
+    assert!(validator.is_valid(&json_value));
+    let config: NewAlefConfig = toml::from_str(source).unwrap();
+    let resolved = config.resolve().unwrap().remove(0);
+    assert_eq!(resolved.python.unwrap().send_sync_types, ["SharedHandle"]);
+}
+
 /// A `[crates.cargo_lints]` table with both string- and table-valued entries must
 /// validate against the generated schema and deserialize into `NewAlefConfig`,
 /// pinning the `CargoLintsConfig` schema entry to the type it describes rather

@@ -152,23 +152,7 @@ impl Backend for Pyo3Backend {
         }
 
         // binding-side #[pyclass] wrapper structs and must be treated as opaque in return wrapping
-        let mut opaque_types: AHashSet<String> = api
-            .types
-            .iter()
-            .filter(|t| t.is_opaque)
-            .map(|t| t.name.clone())
-            .collect();
-        // Capsule types bypass #[pyclass] generation entirely; opaque types that
-        let early_capsule_types = config
-            .python
-            .as_ref()
-            .map(|c| c.capsule_types.clone())
-            .unwrap_or_default();
-        for name in config.opaque_types.keys() {
-            if !early_capsule_types.contains_key(name) {
-                opaque_types.insert(name.clone());
-            }
-        }
+        let opaque_types = config_opaque::opaque_type_names(api, config);
         let data_enum_names: Vec<String> = api
             .enums
             .iter()
@@ -280,6 +264,7 @@ impl Backend for Pyo3Backend {
         // Shared with the visitor trait bridge and the `.pyi` protocol stub, both of which write
         // a generated class name and must not name one this loop skips. ~keep
         let py_exclude_types = binding_exclusions::pyclass_absent_type_names(config, &api.types, &api.errors);
+        let send_sync_types = config_opaque::send_sync_type_names(api, config, &py_exclude_types)?;
         // Types listed in capsule_types bypass #[pyclass] generation entirely — they are
         let capsule_types = config
             .python
@@ -334,7 +319,7 @@ impl Backend for Pyo3Backend {
             if !emitted_pyclass_names.insert(typ.name.as_str()) {
                 continue;
             }
-            let type_cfg = if opaque_types.contains(typ.name.as_str()) {
+            let type_cfg = if opaque_types.contains(typ.name.as_str()) && !send_sync_types.contains(&typ.name) {
                 &cfg_unsendable
             } else {
                 &cfg

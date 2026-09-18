@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PyO3: `[crates.python] send_sync_types` opts extracted opaque classes into checked thread
+  sharing.** Opaque classes are emitted `#[pyclass(unsendable)]` unconditionally, including
+  wrappers over thread-safe Rust state. A listed class is emitted as a frozen pyclass instead,
+  so Rust/PyO3 must prove the wrapper is `Send + Sync`; no unsafe impls are added and
+  free-threaded Python is not enabled. Names that do not identify an emitted, extracted opaque
+  class (excluded types, capsules, traits, DTOs, external-only remappings) fail generation.
+  Compiled regressions cover cross-thread method calls on `Arc` and `Arc<Mutex<_>>` wrappers,
+  the unchanged thread-affine default, and rejection of an `Rc`-backed opt-in. (#395, @pboling)
+
 ### Fixed
 
 - **PyO3: a DTO field holding a data-carrying enum is no longer emitted as `#[serde(skip)]`.**
