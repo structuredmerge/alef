@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve nested PyO3 DTO fields containing data-carrying enums during serde round trips. Serializable enum wrappers no longer make their containing records transitively opaque; genuine opaque handles and trait-bridge aliases still propagate through containing records. Regression coverage compiles freshly generated bindings and checks their JSON round trip, with separate controls for non-serializable fields.
+
 ## [0.91.6] - 2026-09-17
 
 ### Fixed

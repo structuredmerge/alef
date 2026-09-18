@@ -19,7 +19,10 @@ mod mutex;
 #[cfg(test)]
 mod native_delegation_tests;
 #[cfg(test)]
+mod nested_data_enum_tests;
+#[cfg(test)]
 mod nested_serde_default_tests;
+mod opaque_fields;
 mod opaque_helpers;
 mod postprocess;
 mod public_files;
@@ -184,25 +187,7 @@ impl Backend for Pyo3Backend {
         let serializable_opaque_names_vec: Vec<String> = data_enum_names.clone();
         opaque_names_vec.extend(data_enum_names);
         opaque_names_vec.extend(bridge_type_aliases);
-        let mut opaque_names_set: AHashSet<String> = opaque_names_vec.iter().cloned().collect();
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for typ in api.types.iter().filter(|t| !t.is_opaque) {
-                if opaque_names_set.contains(&typ.name) {
-                    continue;
-                }
-                let has_opaque = typ
-                    .fields
-                    .iter()
-                    .any(|f| generators::structs::field_references_opaque_type(&f.ty, &opaque_names_vec));
-                if has_opaque {
-                    opaque_names_vec.push(typ.name.clone());
-                    opaque_names_set.insert(typ.name.clone());
-                    changed = true;
-                }
-            }
-        }
+        opaque_fields::extend_nonserializable_records(api, &mut opaque_names_vec, &serializable_opaque_names_vec);
         cfg.opaque_type_names = &opaque_names_vec;
         cfg_unsendable.opaque_type_names = &opaque_names_vec;
         cfg.serializable_opaque_type_names = &serializable_opaque_names_vec;
