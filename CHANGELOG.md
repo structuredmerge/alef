@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **PyO3: a DTO field holding a data-carrying enum is no longer emitted as `#[serde(skip)]`.**
+  The opaque-field closure propagated from data-enum wrappers even though those wrappers
+  implement serde, so a `Batch -> Vec<Prepared> -> Request -> Policy` shape serialized a
+  populated batch as `{}`. Serializable enum wrappers are excluded from the propagation;
+  genuine opaque handles and trait-bridge aliases still propagate through containing records.
+  The regression compiles freshly generated bindings and checks their JSON round trip, with
+  controls for non-serializable fields. (#394, @pboling)
+
 ## [0.91.6] - 2026-09-18
 
 ### Fixed
