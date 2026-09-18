@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add Python send_sync_types as an explicit opt-in for extracted opaque classes that need to cross Python runtime threads. Opted-in wrappers use frozen pyclasses and must satisfy Rust/PyO3 Send + Sync bounds; other opaque classes remain unsendable. Invalid or excluded class names fail generation. This does not enable free-threaded Python. Compiled regressions cover cross-thread method calls for Arc and Arc<Mutex<_>> wrappers, the unchanged thread-affine default, and rejection of an Rc-backed opt-in.
+
 ## [0.91.6] - 2026-09-17
 
 ### Fixed

@@ -58,6 +58,11 @@ impl CapsuleTypeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PythonConfig {
+    /// Extracted opaque types whose Python objects may cross runtime threads.
+    /// Emits a frozen pyclass; the generated wrapper must satisfy PyO3's Send + Sync bounds.
+    /// Other opaque types remain unsendable. This does not enable free-threaded Python. ~keep
+    #[serde(default)]
+    pub send_sync_types: Vec<String>,
     pub module_name: Option<String>,
     pub async_runtime: Option<String>,
     pub stubs: Option<StubsConfig>,

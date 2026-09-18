@@ -121,6 +121,7 @@ fn test_return_type_exported_from_native_module_not_options() {
 
     let mut config = make_config();
     config.python = Some(PythonConfig {
+        send_sync_types: Vec::new(),
         module_name: Some("_my_lib".to_string()),
         pip_name: None,
         async_runtime: None,
@@ -384,6 +385,7 @@ fn test_api_py_imports_config_dto_with_self_returning_method_from_options() {
 
     let mut config = make_config();
     config.python = Some(PythonConfig {
+        send_sync_types: Vec::new(),
         module_name: Some("_my_lib".to_string()),
         pip_name: None,
         async_runtime: None,
@@ -549,6 +551,7 @@ fn test_typeddict_style_reexports_only_listed_results_as_native() {
         ..Default::default()
     };
     config.python = Some(PythonConfig {
+        send_sync_types: Vec::new(),
         module_name: Some("_my_lib".to_string()),
         pip_name: None,
         async_runtime: None,

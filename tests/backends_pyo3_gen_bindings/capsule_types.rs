@@ -184,6 +184,7 @@ fn test_capsule_types_end_to_end() {
         },
     );
     config.python = Some(PythonConfig {
+        send_sync_types: Vec::new(),
         module_name: Some("_sample_pack".to_string()),
         pip_name: None,
         async_runtime: None,
@@ -459,6 +460,7 @@ fn test_capsule_types_in_methods() {
         CapsuleTypeConfig::Capsule("sample_language.Language".to_string()),
     );
     config.python = Some(PythonConfig {
+        send_sync_types: Vec::new(),
         module_name: Some("_sample_pack".to_string()),
         pip_name: None,
         async_runtime: None,

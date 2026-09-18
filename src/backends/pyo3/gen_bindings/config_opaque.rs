@@ -1,7 +1,53 @@
 use crate::codegen::builder::RustFileBuilder;
 use crate::core::config::{CapsuleTypeConfig, ResolvedCrateConfig};
+use crate::core::ir::ApiSurface;
 use ahash::AHashSet;
 use std::collections::HashMap;
+
+#[cfg(test)]
+mod tests;
+
+pub(super) fn opaque_type_names(api: &ApiSurface, config: &ResolvedCrateConfig) -> AHashSet<String> {
+    let mut names: AHashSet<String> = api
+        .types
+        .iter()
+        .filter(|typ| typ.is_opaque)
+        .map(|typ| typ.name.clone())
+        .collect();
+    for name in config.opaque_types.keys() {
+        if !config
+            .python
+            .as_ref()
+            .is_some_and(|python| python.capsule_types.contains_key(name))
+        {
+            names.insert(name.clone());
+        }
+    }
+    names
+}
+
+pub(super) fn send_sync_type_names(
+    api: &ApiSurface,
+    config: &ResolvedCrateConfig,
+    absent_types: &AHashSet<String>,
+) -> anyhow::Result<AHashSet<String>> {
+    let names: AHashSet<String> = config
+        .python
+        .as_ref()
+        .map(|python| python.send_sync_types.iter().cloned().collect())
+        .unwrap_or_default();
+    for name in &names {
+        if absent_types.contains(name)
+            || !api
+                .types
+                .iter()
+                .any(|typ| typ.name == *name && typ.is_opaque && !typ.is_trait)
+        {
+            anyhow::bail!("python.send_sync_types names an unavailable extracted opaque type: {name}");
+        }
+    }
+    Ok(names)
+}
 
 pub(crate) fn exclude_capsule_opaque_types(
     py_exclude_types: &mut AHashSet<String>,
