@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **PyO3: a non-optional DTO field defaulted by a resolved core function returning the core type
+  (`CrawlConfig::ssrf`, `#[serde(default = "SsrfPolicy::from_env")]`) no longer breaks the
+  generated crate.** The shared `serde_default_field_attr` fallback copied the attribute text
+  verbatim, where `SsrfPolicy` names the *mirror* struct, which has no `from_env` (E0599). 0.92.0
+  exposed it: `extend_nonserializable_records` stopped marking every record holding a data enum
+  `#[serde(skip)]`, so the attribute was emitted for the first time and xberg's Python binding
+  failed to compile. `backends::pyo3::gen_bindings::serde_defaults` now synthesizes
+  `crate::serde_defaults::<type>_<field>() -> super::<Mirror> { <resolved core fn>().into() }`
+  for such a field, gated on the mirror being one this run emits with `From<core::T>`
+  (`core_to_binding_from_impl_emitted`); a type that is not mirrored still gets no shim.
+
 ## [0.92.0] - 2026-09-18
 
 ### Added

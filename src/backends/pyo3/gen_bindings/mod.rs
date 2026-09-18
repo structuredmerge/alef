@@ -303,6 +303,20 @@ impl Backend for Pyo3Backend {
         // `From<core::Type>` a delegating `Deserialize` needs is always emitted too. ~keep
         cfg.delegate_deserialize_to_core_for_types = Some(&core_to_binding_for_default);
         cfg_unsendable.delegate_deserialize_to_core_for_types = Some(&core_to_binding_for_default);
+        // Structs a `crate::serde_defaults` shim may produce by `.into()` from a resolved core
+        // default: exactly the ones `core_to_binding_from_impl_emitted` gives a `From<core::T>`,
+        // minus anything the loop below never emits as a pyclass (excluded, capsule, error). ~keep
+        let mirrored_structs: serde_defaults::MirroredStructs = api
+            .types
+            .iter()
+            .filter(|typ| !typ.is_trait && !typ.is_opaque && !py_exclude_types.contains(&typ.name))
+            .filter(|typ| !error_type_names.contains(typ.name.as_str()))
+            .filter(|typ| !capsule_types.contains_key(typ.name.as_str()))
+            .filter(|typ| {
+                crate::codegen::conversions::core_to_binding_from_impl_emitted(typ, &core_to_binding_for_default)
+            })
+            .map(|typ| typ.name.clone())
+            .collect();
         for typ in api
             .types
             .iter()
@@ -426,7 +440,8 @@ impl Backend for Pyo3Backend {
                         // `gen_struct_with_rename`, whose `already_emitted_attrs` guard skips a
                         // field that already carries a `serde(default...)` attribute. ~keep
                         if !attrs.iter().any(|a| a.starts_with("serde(default"))
-                            && let Some(fn_name) = serde_defaults::serde_default_fn_name(typ, field)
+                            && let Some(fn_name) =
+                                serde_defaults::serde_default_fn_name(typ, field, &mirrored_structs)
                         {
                             attrs.push(format!("serde(default = \"crate::serde_defaults::{fn_name}\")"));
                         }
@@ -530,7 +545,7 @@ impl Backend for Pyo3Backend {
         );
 
         // Referenced by #[serde(default = "crate::serde_defaults::...")] on struct fields.
-        if has_serde && let Some(serde_module) = serde_defaults::gen_serde_defaults_module(api) {
+        if has_serde && let Some(serde_module) = serde_defaults::gen_serde_defaults_module(api, &mirrored_structs) {
             builder.add_item(&serde_module);
         }
 

@@ -139,7 +139,7 @@ fn optional_scalar_return_type(ty: &TypeRef) -> Option<String> {
 /// pyo3 struct field-attribute closure (via [`serde_default_fn_name`]) to write the
 /// `#[serde(default = "crate::serde_defaults::…")]` that references it -- so the reference side
 /// can never name a function the definition side declines to emit. ~keep
-fn serde_default_body(typ: &TypeDef, field: &FieldDef) -> Option<(String, String)> {
+fn serde_default_body(typ: &TypeDef, field: &FieldDef, mirrored: &MirroredStructs) -> Option<(String, String)> {
     if !typ.has_default || field.binding_excluded {
         return None;
     }
@@ -175,22 +175,43 @@ fn serde_default_body(typ: &TypeDef, field: &FieldDef) -> Option<(String, String
         return Some((return_type, format!("{resolved}()")));
     }
 
+    // Non-optional `Named` field whose default is a resolved core function returning the
+    // *core* type (`CrawlConfig::ssrf`, `#[serde(default = "SsrfPolicy::from_env")]`). The
+    // shared fallback would copy `SsrfPolicy::from_env` verbatim, where `SsrfPolicy` names the
+    // MIRROR struct in this crate, which has no such function (E0599) -- masked until
+    // `extend_nonserializable_records` stopped marking every record holding a data enum
+    // `#[serde(skip)]`. The mirror has `From<core::T>` whenever it is emitted as a DTO, so the
+    // resolved core call converts through `.into()`; only a type this run mirrors qualifies. ~keep
+    if !field.optional
+        && let DefaultValue::PublicFunctionCall(resolved) = default
+        && let TypeRef::Named(name) = &field.ty
+        && mirrored.contains(name)
+    {
+        return Some((format!("super::{name}"), format!("{resolved}().into()")));
+    }
+
     None
 }
 
+/// Names of the structs this run emits as plain DTOs -- the ones that get `From<core::T>` and
+/// so can be produced by `.into()` from a resolved core default. Built by the caller from the
+/// same filters that decide which structs are emitted, so the shim never names a type that is
+/// opaque, excluded, or a trait. ~keep
+pub(super) type MirroredStructs = ahash::AHashSet<String>;
+
 /// The `crate::serde_defaults::…` function name for a field, or `None` when no function will be
 /// generated for it. The reference side must not emit an attribute when this returns `None`.
-pub(super) fn serde_default_fn_name(typ: &TypeDef, field: &FieldDef) -> Option<String> {
-    serde_default_body(typ, field).map(|_| default_fn_ident(&typ.name, &field.name))
+pub(super) fn serde_default_fn_name(typ: &TypeDef, field: &FieldDef, mirrored: &MirroredStructs) -> Option<String> {
+    serde_default_body(typ, field, mirrored).map(|_| default_fn_ident(&typ.name, &field.name))
 }
 
 /// Renders every synthesized default as a single `mod serde_defaults { ... }` item, or `None`
 /// when no field in `api` needs one.
-pub(super) fn gen_serde_defaults_module(api: &ApiSurface) -> Option<String> {
+pub(super) fn gen_serde_defaults_module(api: &ApiSurface, mirrored: &MirroredStructs) -> Option<String> {
     let mut body = String::new();
     for typ in &api.types {
         for field in &typ.fields {
-            let Some((return_type, expr)) = serde_default_body(typ, field) else {
+            let Some((return_type, expr)) = serde_default_body(typ, field, mirrored) else {
                 continue;
             };
             body.push_str(&format!(
@@ -253,7 +274,7 @@ mod tests {
     fn synthesizes_named_function_for_unresolvable_private_default() {
         let typ = config_with_field(use_cache_field());
         assert_eq!(
-            serde_default_fn_name(&typ, &typ.fields[0]),
+            serde_default_fn_name(&typ, &typ.fields[0], &MirroredStructs::default()),
             Some("extraction_config_use_cache".to_string())
         );
     }
@@ -265,7 +286,7 @@ mod tests {
             types: vec![typ],
             ..Default::default()
         };
-        let module = gen_serde_defaults_module(&api).expect("module generated");
+        let module = gen_serde_defaults_module(&api, &MirroredStructs::default()).expect("module generated");
         assert!(
             module.contains("pub fn extraction_config_use_cache() -> bool { true }"),
             "expected synthesized bool-literal default, got:\n{module}"
@@ -277,7 +298,10 @@ mod tests {
         let mut field = use_cache_field();
         field.default = Some("/* serde(default) */".to_string());
         let typ = config_with_field(field);
-        assert_eq!(serde_default_fn_name(&typ, &typ.fields[0]), None);
+        assert_eq!(
+            serde_default_fn_name(&typ, &typ.fields[0], &MirroredStructs::default()),
+            None
+        );
     }
 
     #[test]
@@ -286,7 +310,10 @@ mod tests {
         field.default = None;
         field.typed_default = None;
         let typ = config_with_field(field);
-        assert_eq!(serde_default_fn_name(&typ, &typ.fields[0]), None);
+        assert_eq!(
+            serde_default_fn_name(&typ, &typ.fields[0], &MirroredStructs::default()),
+            None
+        );
     }
 
     #[test]
@@ -297,10 +324,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            serde_default_fn_name(&typ, &typ.fields[0]),
+            serde_default_fn_name(&typ, &typ.fields[0], &MirroredStructs::default()),
             Some("extraction_config_extraction_timeout_secs".to_string())
         );
-        let module = gen_serde_defaults_module(&api).expect("module generated");
+        let module = gen_serde_defaults_module(&api, &MirroredStructs::default()).expect("module generated");
         assert!(
             module.contains(
                 "pub fn extraction_config_extraction_timeout_secs() -> Option<u64> { \
@@ -322,7 +349,10 @@ mod tests {
             "ExtractionConfig::default_extraction_timeout".to_string(),
         ));
         let typ = config_with_field(field);
-        assert_eq!(serde_default_fn_name(&typ, &typ.fields[0]), None);
+        assert_eq!(
+            serde_default_fn_name(&typ, &typ.fields[0], &MirroredStructs::default()),
+            None
+        );
     }
 
     #[test]
@@ -333,6 +363,68 @@ mod tests {
         let mut field = extraction_timeout_field();
         field.ty = TypeRef::Named("OcrConfig".to_string());
         let typ = config_with_field(field);
-        assert_eq!(serde_default_fn_name(&typ, &typ.fields[0]), None);
+        assert_eq!(
+            serde_default_fn_name(&typ, &typ.fields[0], &MirroredStructs::default()),
+            None
+        );
+    }
+
+    /// The `CrawlConfig::ssrf` shape: a non-optional `Named` field defaulted by a resolved core
+    /// function that returns the core type. The shim must call the RESOLVED path and convert
+    /// into the mirror, and must name the mirror through `super::` (the module is nested).
+    fn ssrf_field() -> FieldDef {
+        FieldDef {
+            name: "ssrf".to_string(),
+            ty: TypeRef::Named("SsrfPolicy".to_string()),
+            optional: false,
+            default: Some("serde(default = \"SsrfPolicy::from_env\")".to_string()),
+            typed_default: Some(DefaultValue::PublicFunctionCall(
+                "crawlberg::SsrfPolicy::from_env".to_string(),
+            )),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn named_field_with_resolved_core_function_converts_into_the_mirror() {
+        let typ = TypeDef {
+            name: "CrawlConfig".to_string(),
+            has_default: true,
+            fields: vec![ssrf_field()],
+            ..Default::default()
+        };
+        let api = ApiSurface {
+            types: vec![typ.clone()],
+            ..Default::default()
+        };
+        let mirrored: MirroredStructs = ["SsrfPolicy".to_string()].into_iter().collect();
+
+        assert_eq!(
+            serde_default_fn_name(&typ, &typ.fields[0], &mirrored),
+            Some("crawl_config_ssrf".to_string())
+        );
+        let module = gen_serde_defaults_module(&api, &mirrored).expect("module generated");
+        assert!(
+            module.contains(
+                "pub fn crawl_config_ssrf() -> super::SsrfPolicy { crawlberg::SsrfPolicy::from_env().into() }"
+            ),
+            "expected the resolved core call converted into the mirror, got:\n{module}"
+        );
+    }
+
+    /// A `Named` type this run does not mirror has no `From<core::T>` to convert through, so
+    /// no shim may be emitted for it.
+    #[test]
+    fn named_field_whose_type_is_not_mirrored_gets_no_function() {
+        let typ = TypeDef {
+            name: "CrawlConfig".to_string(),
+            has_default: true,
+            fields: vec![ssrf_field()],
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_default_fn_name(&typ, &typ.fields[0], &MirroredStructs::default()),
+            None
+        );
     }
 }
