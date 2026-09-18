@@ -2,6 +2,10 @@
 	// This ensures function pointers are correctly populated in C, fixing ARM64 macOS issues.
 	vtable := C.{{ vtable_constructor }}()
 	if vtable == nil {
+		// Every other exit deletes the handle or stores it in the registry; a
+		// failed allocation must not keep the bridge reachable for the life of
+		// the process (GHSA-q5pq-8g86-v9j9).
+		handle.Delete()
 		return fmt.Errorf("failed to allocate %s vtable", impl.Name())
 	}
 	defer C.free(unsafe.Pointer(vtable))

@@ -342,6 +342,92 @@ fn trait_bridge_register_uses_c_vtable_helper_and_free_string_callback() {
     assert!(out.contains("C.free(unsafe.Pointer(ptr))"));
 }
 
+/// GHSA-q5pq-8g86-v9j9: the register wrapper creates its `cgo.Handle` before allocating
+/// the C vtable, and the allocation-failure branch returned without deleting it, so the
+/// bridge -- and the caller's implementation behind it -- stayed reachable for the life of
+/// the process. Every other exit from the function deletes the handle or stores it in the
+/// registry; this branch must too. Asserted on the rendered function, in order, so a
+/// `handle.Delete()` anywhere else in the output cannot satisfy it. ~keep
+#[test]
+fn register_wrapper_deletes_the_handle_when_vtable_allocation_fails() {
+    let trait_def = TypeDef {
+        name: "OcrBackend".to_string(),
+        rust_path: "sample_crate::OcrBackend".to_string(),
+        original_rust_path: String::new(),
+        fields: vec![],
+        methods: vec![],
+        is_opaque: false,
+        is_clone: false,
+        is_copy: false,
+        is_trait: true,
+        has_default: false,
+        has_stripped_cfg_fields: false,
+        is_return_type: false,
+        serde_rename_all: None,
+        has_serde: false,
+        serde_container_default: false,
+        serde_container_conversion: Default::default(),
+        super_traits: vec![],
+        doc: String::new(),
+        cfg: None,
+        binding_excluded: false,
+        binding_exclusion_reason: None,
+        is_variant_wrapper: false,
+        has_lifetime_params: false,
+        has_private_fields: false,
+        version: Default::default(),
+    };
+    let bridge_cfg = TraitBridgeConfig {
+        trait_name: "OcrBackend".to_string(),
+        super_trait: Some("Plugin".to_string()),
+        registry_getter: None,
+        register_fn: Some("register_ocr_backend".to_string()),
+        unregister_fn: None,
+        clear_fn: None,
+        type_alias: None,
+        param_name: None,
+        register_extra_args: None,
+        exclude_languages: Vec::new(),
+        bind_via: crate::core::config::BridgeBinding::FunctionParam,
+        options_type: None,
+        options_field: None,
+        context_type: None,
+        result_type: None,
+        ffi_skip_methods: Vec::new(),
+    };
+    let mut out = String::new();
+    let excluded = HashSet::new();
+
+    gen_trait_bridge(
+        &mut out,
+        &trait_def,
+        &bridge_cfg,
+        "sample_crate",
+        &excluded,
+        "ocr_backend",
+    );
+
+    let handle_created = out
+        .find("handle := cgo.NewHandle(bridge)")
+        .expect("register wrapper creates the handle");
+    let nil_check = out
+        .find("if vtable == nil {")
+        .expect("register wrapper checks the vtable allocation");
+    let allocation_failure_return = out
+        .find("return fmt.Errorf(\"failed to allocate %s vtable\", impl.Name())")
+        .expect("register wrapper returns on a failed vtable allocation");
+    assert!(
+        handle_created < nil_check && nil_check < allocation_failure_return,
+        "fixture assumption: handle creation precedes the vtable nil check, which precedes its return:\n{out}"
+    );
+
+    let branch = &out[nil_check..allocation_failure_return];
+    assert!(
+        branch.contains("handle.Delete()"),
+        "the vtable allocation-failure branch must delete the handle it would otherwise leak:\n{branch}"
+    );
+}
+
 #[test]
 fn substitute_excluded_types_passes_through_primitives_and_other_atoms() {
     let excluded: HashSet<&str> = HashSet::new();

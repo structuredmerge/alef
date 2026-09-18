@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.91.6] - 2026-09-17
+## [0.91.6] - 2026-09-18
 
 ### Fixed
+
+- **The generated Go `Register*` wrappers leaked their `cgo.Handle` when the C vtable
+  allocation failed.** The wrapper creates the handle before calling the C `*_vtable_new`
+  helper, and that helper is hand-written C over plain `malloc` -- it returns NULL rather than
+  throwing the way `C.malloc` does -- so the `vtable == nil` branch is reachable, and it returned
+  without `handle.Delete()`. A handle that is never deleted keeps its referent, the bridge
+  holding the caller's implementation, reachable for the life of the process. Every other exit
+  from the function deletes the handle or stores it in the registry; the failure branch now does
+  too (`vtable_allocation_via_c_helper.jinja`). Guarded by
+  `register_wrapper_deletes_the_handle_when_vtable_allocation_fails`, which asserts the delete
+  inside the nil-check branch of the rendered wrapper and was confirmed to fail with the line
+  removed. Reported by @OvOhao (xberg-io/xberg GHSA-q5pq-8g86-v9j9).
 
 - **The PHP and Ruby e2e emitters built a delimited regex literal around a declared error value
   without escaping the value's control characters**, so a value carrying a newline split the
