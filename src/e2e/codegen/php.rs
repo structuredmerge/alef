@@ -229,6 +229,7 @@ impl E2eCodegen for PhpCodegen {
                 &cargo_package_name,
                 &php_binding_crate_dir,
                 &pkg_version,
+                e2e_config.dep_mode,
             )?,
             generated_header: true,
         });

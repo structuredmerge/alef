@@ -486,7 +486,17 @@ pub(super) fn render_run_tests_php(
     cargo_package_name: &str,
     binding_crate_dir: &str,
     pkg_version: &str,
+    dep_mode: crate::e2e::config::DependencyMode,
 ) -> anyhow::Result<String> {
+    // Only a registry-mode runner may default to whatever `extension_dir` holds: there the
+    // extension under test IS the PIE install. A local-mode harness tests this checkout's cargo
+    // build, and a PIE/PECL copy of an earlier release sitting in `extension_dir` is exactly the
+    // stale ambient code the missing-build guard below refuses to run against. ~keep
+    let resolve_pie_from_extension_dir = if dep_mode == crate::e2e::config::DependencyMode::Registry {
+        "true"
+    } else {
+        "false"
+    };
     let header = hash::header(CommentStyle::DoubleSlash);
     // Cargo names the cdylib `lib` + the package name with hyphens replaced by underscores.
     // Deriving it from the same `cargo_package_name` the build hint below prints keeps the path
@@ -546,12 +556,15 @@ $extPath = $localExtPath;
 // install.sh`, then `composer test`, in two different shells -- so an `export`
 // in install.sh's process never reaches this one. PIE_INSTALLED_EXTENSION_PATH
 // is still honored as an explicit override when a caller arranges to pass it
-// through, but by default the path is recomputed directly from the running
-// PHP's own `extension_dir`, exactly as install.sh derived it. PHP extensions
-// are `.so` on every PIE-relevant platform, including Darwin -- unlike the
-// cargo cdylib above, there is no `.dylib` variant to consider here.
+// through, but in registry mode the path is recomputed by default directly
+// from the running PHP's own `extension_dir`, exactly as install.sh derived it.
+// A local-mode harness never defaults to it: the build under test is the cargo
+// cdylib above, and a copy of an earlier release in `extension_dir` is stale.
+// PHP extensions are `.so` on every PIE-relevant platform, including Darwin --
+// unlike the cargo cdylib above, there is no `.dylib` variant to consider here.
+$resolvePieFromExtensionDir = __RESOLVE_PIE_FROM_EXTENSION_DIR__;
 $pieInstalledExtPath = getenv('PIE_INSTALLED_EXTENSION_PATH');
-if (!$pieInstalledExtPath) {
+if (!$pieInstalledExtPath && $resolvePieFromExtensionDir) {
     $registryExtDir = rtrim((string) ini_get('extension_dir'), '/');
     if ($registryExtDir !== '') {
         $pieInstalledExtPath = $registryExtDir . '/__EXTENSION_NAME__.so';
@@ -740,6 +753,7 @@ exit($exitCode);
         .replace("__EXT_LIB_NAME__", &ext_lib_name)
         .replace("__CRATE_LOCAL_TARGET__", &crate_local_target)
         .replace("__VERSION_MISMATCH_CONDITION__", &version_mismatch_condition)
+        .replace("__RESOLVE_PIE_FROM_EXTENSION_DIR__", resolve_pie_from_extension_dir)
         .replace("__EXTENSION_NAME__", extension_name)
         .replace("__PKG_VERSION__", pkg_version)
         .replace("__CARGO_PACKAGE_NAME__", cargo_package_name))
@@ -783,6 +797,7 @@ fn php_version_mismatch_condition(pkg_version: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::e2e::config::DependencyMode;
     use std::collections::BTreeMap;
 
     fn make_e2e_config_with_env(env: BTreeMap<String, String>) -> E2eConfig {
@@ -831,8 +846,14 @@ mod tests {
     /// project without a server harness must not grow a spawn it does not need.
     #[test]
     fn run_tests_exports_the_path_and_a_harnessless_project_spawns_nothing() {
-        let run_tests = render_run_tests_php("spikard_php", "spikard-php", "crates/spikard-php", "0.1.0")
-            .expect("run_tests renders");
+        let run_tests = render_run_tests_php(
+            "spikard_php",
+            "spikard-php",
+            "crates/spikard-php",
+            "0.1.0",
+            DependencyMode::Local,
+        )
+        .expect("run_tests renders");
         assert!(
             run_tests.contains("putenv('ALEF_PHP_EXTENSION_PATH=' . $extPath)"),
             "run_tests must export the verified extension path: {run_tests}"
@@ -916,8 +937,14 @@ mod tests {
 
     #[test]
     fn test_render_run_tests_php_fails_loudly_when_extension_missing() {
-        let result = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", "1.2.3")
-            .expect("bare version renders");
+        let result = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Local,
+        )
+        .expect("bare version renders");
 
         let expected_failure_branch = "\
 if (!file_exists($extPath)) {
@@ -952,8 +979,14 @@ if (!file_exists($extPath)) {
     /// writes, which no amount of building could satisfy.
     #[test]
     fn the_extension_library_name_comes_from_the_cargo_package_name() {
-        let result = render_run_tests_php("sample_ext_php", "sample-ext-php", "crates/sample-ext-php", "1.2.3")
-            .expect("bare version renders");
+        let result = render_run_tests_php(
+            "sample_ext_php",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Local,
+        )
+        .expect("bare version renders");
 
         assert!(
             result.contains("libsample_ext_php'"),
@@ -969,8 +1002,14 @@ if (!file_exists($extPath)) {
     /// already generates.
     #[test]
     fn a_bare_version_still_compares_by_strict_equality() {
-        let result = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", "1.2.3")
-            .expect("bare version renders");
+        let result = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Local,
+        )
+        .expect("bare version renders");
 
         assert!(
             result.contains("if ($loadedVersion !== '1.2.3') {"),
@@ -984,8 +1023,14 @@ if (!file_exists($extPath)) {
     /// error named the extension rather than the configuration that made passing impossible.
     #[test]
     fn a_comparison_constraint_is_evaluated_rather_than_string_compared() {
-        let result = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", ">=3.12.3")
-            .expect("a comparison constraint renders");
+        let result = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            ">=3.12.3",
+            DependencyMode::Local,
+        )
+        .expect("a comparison constraint renders");
 
         assert!(
             result.contains("version_compare($loadedVersion, '3.12.3', '<')"),
@@ -1002,8 +1047,14 @@ if (!file_exists($extPath)) {
     /// extension build, arbitrarily far from the configuration that caused it.
     #[test]
     fn a_constraint_that_cannot_be_evaluated_is_refused_at_generation_time() {
-        let error = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", "^3.12.3")
-            .expect_err("a caret constraint must be refused");
+        let error = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "^3.12.3",
+            DependencyMode::Local,
+        )
+        .expect_err("a caret constraint must be refused");
 
         assert!(
             error.to_string().contains("cannot \nevaluate") || error.to_string().contains("cannot evaluate"),
@@ -1016,8 +1067,14 @@ if (!file_exists($extPath)) {
     /// would pass for a member crate and silently fail for every excluded one.
     #[test]
     fn the_harness_checks_both_the_workspace_and_the_crate_local_target_dir() {
-        let result = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", "1.2.3")
-            .expect("bare version renders");
+        let result = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Local,
+        )
+        .expect("bare version renders");
 
         assert!(
             result.contains("$repoRoot . 'target/release/libsample_ext_php'"),
@@ -1031,8 +1088,14 @@ if (!file_exists($extPath)) {
 
     #[test]
     fn test_render_run_tests_php_asserts_preflight_extension_version() {
-        let result = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", "1.2.3")
-            .expect("bare version renders");
+        let result = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Local,
+        )
+        .expect("bare version renders");
 
         let expected_version_branch = "\
 $loadedVersion = $preflightStdout;
@@ -1053,8 +1116,14 @@ if ($loadedVersion !== '1.2.3') {
 
     #[test]
     fn test_render_run_tests_php_detects_already_loaded_warning() {
-        let result = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", "1.2.3")
-            .expect("bare version renders");
+        let result = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Local,
+        )
+        .expect("bare version renders");
 
         assert!(
             result.contains("stripos($preflightStderr, 'already loaded') !== false"),
@@ -1070,8 +1139,14 @@ if ($loadedVersion !== '1.2.3') {
 
     #[test]
     fn test_render_run_tests_php_builds_isolated_ini_before_loading_extension() {
-        let result = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", "1.2.3")
-            .expect("bare version renders");
+        let result = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Local,
+        )
+        .expect("bare version renders");
 
         assert!(
             result.contains("function alef_build_isolated_ini(string $php, string $extensionName): string {"),
@@ -1091,8 +1166,14 @@ if ($loadedVersion !== '1.2.3') {
 
     #[test]
     fn test_render_run_tests_php_preflight_runs_unconditionally_before_phpunit() {
-        let result = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", "1.2.3")
-            .expect("bare version renders");
+        let result = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Local,
+        )
+        .expect("bare version renders");
 
         // Regression guard: a previous revision put the version/identity check after a
         // branch that unconditionally `passthru`'d into PHPUnit and then `exit`'d, so the
@@ -1135,8 +1216,14 @@ if ($loadedVersion !== '1.2.3') {
     /// the env var kept only as an explicit override.
     #[test]
     fn run_tests_php_resolves_the_pie_path_from_extension_dir_by_default() {
-        let result = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", "1.2.3")
-            .expect("bare version renders");
+        let result = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Registry,
+        )
+        .expect("bare version renders");
 
         assert!(
             result.contains("$registryExtDir = rtrim((string) ini_get('extension_dir'), '/');"),
@@ -1156,11 +1243,48 @@ if ($loadedVersion !== '1.2.3') {
             .find("$pieInstalledExtPath = getenv('PIE_INSTALLED_EXTENSION_PATH');")
             .expect("getenv call present");
         let fallback_pos = result
-            .find("if (!$pieInstalledExtPath) {")
+            .find("if (!$pieInstalledExtPath && $resolvePieFromExtensionDir) {")
             .expect("fallback guard present");
         assert!(
             getenv_pos < fallback_pos,
             "the env var must be read before the ini_get fallback runs, got:\n{result}"
+        );
+    }
+
+    /// A local-mode harness tests this checkout's cargo build. It must not default to a copy of
+    /// the extension that a PIE/PECL install of an earlier release left in `extension_dir`,
+    /// which `alef e2e generate` at 0.93.0 did: on a machine carrying such an install every e2e
+    /// run aborted on the version-mismatch guard, and without the guard would have tested stale
+    /// code. The env var stays an explicit override in both modes.
+    #[test]
+    fn run_tests_php_only_defaults_to_extension_dir_in_registry_mode() {
+        let local = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Local,
+        )
+        .expect("renders");
+        assert!(
+            local.contains("$resolvePieFromExtensionDir = false;"),
+            "local mode must not read extension_dir by default, got:\n{local}"
+        );
+        assert!(
+            local.contains("if (!$pieInstalledExtPath && $resolvePieFromExtensionDir) {"),
+            "the env var override must remain honoured, got:\n{local}"
+        );
+        let registry = render_run_tests_php(
+            "sample_ext",
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Registry,
+        )
+        .expect("renders");
+        assert!(
+            registry.contains("$resolvePieFromExtensionDir = true;"),
+            "registry mode keeps the #368 default, got:\n{registry}"
         );
     }
 
@@ -1186,8 +1310,14 @@ if ($loadedVersion !== '1.2.3') {
         let extension_name = "sample_ext";
         std::fs::write(ext_dir.join(format!("{extension_name}.so")), b"fake extension").expect("write fake .so");
 
-        let generated = render_run_tests_php(extension_name, "sample-ext-php", "crates/sample-ext-php", "1.2.3")
-            .expect("bare version renders");
+        let generated = render_run_tests_php(
+            extension_name,
+            "sample-ext-php",
+            "crates/sample-ext-php",
+            "1.2.3",
+            DependencyMode::Registry,
+        )
+        .expect("bare version renders");
 
         // Extract exactly the resolution snippet under test from the real generated file,
         // so this proves the shipped code resolves correctly, not a hand-copied stand-in.

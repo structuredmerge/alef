@@ -257,8 +257,14 @@ fn install_sh_and_run_tests_php_agree_on_the_pie_path_across_two_processes() {
     // Process 2: a FRESH process, env cleared (no PIE_INSTALLED_EXTENSION_PATH -- process 1's
     // export cannot reach it), with no local build artifact on disk anywhere the harness would
     // look. This is exactly what `composer test` sees today: the export from process 1 is gone.
-    let run_tests = render_run_tests_php(extension_name, "sample-ext-php", "crates/sample-ext-php", "1.0.0")
-        .expect("run_tests.php renders");
+    let run_tests = render_run_tests_php(
+        extension_name,
+        "sample-ext-php",
+        "crates/sample-ext-php",
+        "1.0.0",
+        crate::e2e::config::DependencyMode::Registry,
+    )
+    .expect("run_tests.php renders");
     let start = run_tests
         .find("// Check for a PIE-installed extension path")
         .expect("resolution comment present");
