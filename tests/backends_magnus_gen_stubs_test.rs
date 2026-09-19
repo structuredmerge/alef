@@ -506,7 +506,6 @@ fn test_enum_stubs() {
         content.contains("# Processing status"),
         "Should include enum documentation"
     );
-
 }
 
 #[test]

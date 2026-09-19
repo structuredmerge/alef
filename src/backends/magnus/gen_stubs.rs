@@ -651,10 +651,8 @@ fn gen_enum_stub(
         );
         if emit_docstrings && !enum_def.doc.is_empty() {
             let doc_lines: Vec<String> = enum_def.doc.lines().map(ToString::to_string).collect();
-            let docs = crate::backends::magnus::template_env::render(
-                "rbs_doc_block.jinja",
-                minijinja::context! { doc_lines },
-            );
+            let docs =
+                crate::backends::magnus::template_env::render("rbs_doc_block.jinja", minijinja::context! { doc_lines });
             return format!("{docs}{alias}");
         }
         return alias;
