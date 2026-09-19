@@ -76,6 +76,19 @@ pub(crate) const SWIFT: ToolchainGate = ToolchainGate {
     require_env: "ALEF_REQUIRE_SWIFT",
 };
 
+/// The Ruby interpreter, needed by the fixture that executes alef's generated magnus Data
+/// variant classes under `sorbet-runtime`.
+///
+/// CI installs Ruby and the pinned `sorbet-runtime` gem on every leg of the test matrix, so
+/// `ALEF_REQUIRE_RUBY` is set everywhere there and this gate never skips in CI. A developer
+/// machine without Ruby skips, and the census reports the skip. ~keep
+pub(crate) const RUBY: ToolchainGate = ToolchainGate {
+    name: "ruby",
+    binary: "ruby",
+    version_arg: "--version",
+    require_env: "ALEF_REQUIRE_RUBY",
+};
+
 /// Per-toolchain attempt/execution counts for this test binary.
 #[derive(Clone, Copy, Default)]
 struct Tally {

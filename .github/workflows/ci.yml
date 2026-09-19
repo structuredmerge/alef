@@ -102,10 +102,12 @@ jobs:
           elixir-version: "1.19"
           otp-version: "28"
       - uses: astral-sh/setup-uv@v10.1.0
-      # The non-ignored generated Data accessor regression executes Ruby with real Sorbet
-      # signatures; missing tooling must fail, not silently skip this runtime gate. ~keep
+      # The generated magnus Data accessor regression executes Ruby with real Sorbet signatures.
+      # `ALEF_REQUIRE_RUBY` below turns a missing interpreter into a hard failure, and the census
+      # step proves the fixture executed rather than skipped. `sorbet-runtime` is pinned to the
+      # exact gem the fixture was measured against. ~keep
       - name: Set up Ruby for generated Data regression
-        uses: ruby/setup-ruby@a0102e0972be65f351c307e2d64b9314a57c8073 # v1
+        uses: ruby/setup-ruby@a0102e0972be65f351c307e2d64b9314a57c8073 # v1.324.0
         with:
           ruby-version: "3.4"
       - name: Install generated Ruby runtime dependency
@@ -165,6 +167,10 @@ jobs:
           # the variable without installing Go only converted a silent skip into a permanently red
           # leg. `ci_requires_go_for_runtime_regressions` now asserts both halves are present.
           ALEF_REQUIRE_GO: "1"
+          # Paired with the `Set up Ruby` step above: the generated magnus Data accessor
+          # regression executes real Ruby under `sorbet-runtime`, and a leg that installed Ruby
+          # must run it rather than count a skip as a pass.
+          ALEF_REQUIRE_RUBY: "1"
         # `--no-fail-fast` is load-bearing, not tidiness: without it cargo stops after the
         # first failing *target*, so every integration binary ordered after it never runs and
         # its result is indistinguishable from a pass. A stale assertion in
@@ -194,9 +200,9 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
-            scripts/toolchain-census.sh --require go --require swift
+            scripts/toolchain-census.sh --require go --require ruby --require swift
           else
-            scripts/toolchain-census.sh --require go
+            scripts/toolchain-census.sh --require go --require ruby
           fi
 
   # Runs the consumer's own toolchain gate over a tree alef emits, in a scratch directory.

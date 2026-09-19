@@ -1,9 +1,15 @@
 use super::gen_tagged_enum_ruby_classes;
 use crate::core::ir::{EnumDef, EnumVariant, FieldDef, PrimitiveType, TypeRef};
-use std::process::Command;
+use crate::test_support::toolchain;
 
+/// Routed through the crate-wide [`toolchain::RUBY`] gate, which counts this fixture as skipped
+/// when no Ruby is on `PATH` and panics instead when `ALEF_REQUIRE_RUBY` is set, so the CI leg
+/// that installs Ruby cannot pass without actually executing the generated classes. ~keep
 #[test]
 fn generated_data_payload_readers_execute_in_ruby() {
+    let Some(ruby) = toolchain::RUBY.open() else {
+        return;
+    };
     let generated = gen_tagged_enum_ruby_classes(&payload_enum(), "Fixture", &[]);
     let assertions = r#"
 payload = "hello"
@@ -22,10 +28,10 @@ raise "unit variant changed" unless empty.empty?
 puts "8 runtime checks passed"
 "#;
     let script = format!("{generated}\n{assertions}");
-    let result = Command::new("ruby")
+    let result = std::process::Command::new(ruby)
         .args(["-rsorbet-runtime", "-e", &script])
         .output()
-        .expect("Ruby 3.2+ with sorbet-runtime is required for the generated Data regression");
+        .expect("spawn ruby for the generated Data regression");
     assert!(
         result.status.success(),
         "generated Ruby failed:\n{}\n{generated}",
@@ -74,4 +80,31 @@ fn field(name: &str, ty: TypeRef, optional: bool) -> FieldDef {
         optional,
         ..Default::default()
     }
+}
+
+/// Keeps required mode wired to a job that actually has `ruby` and `sorbet-runtime` on `PATH`.
+///
+/// `ALEF_REQUIRE_RUBY` alone only converts a silent skip into a permanently red leg when no step
+/// installs the interpreter, and the census `--require ruby` is what proves the fixture executed
+/// rather than skipped. All three halves have to be present together. ~keep
+#[test]
+fn ci_requires_ruby_for_the_generated_data_regression() {
+    let workflow = include_str!("../../../../../.github/workflows/ci.yml");
+
+    assert!(
+        workflow.contains("ALEF_REQUIRE_RUBY: \"1\""),
+        "the test job must make a missing Ruby interpreter a hard failure"
+    );
+    assert!(
+        workflow.contains("uses: ruby/setup-ruby@"),
+        "`ALEF_REQUIRE_RUBY` needs an explicit Ruby install on every leg of the matrix"
+    );
+    assert!(
+        workflow.contains("gem install sorbet-runtime --version"),
+        "the generated classes `extend T::Sig`, so the gem has to be installed alongside Ruby"
+    );
+    assert!(
+        workflow.contains("--require ruby"),
+        "the toolchain census must require ruby so a skipped fixture fails the leg"
+    );
 }
