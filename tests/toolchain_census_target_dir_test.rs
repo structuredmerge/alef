@@ -135,9 +135,13 @@ fn custom_cargo_target_dir_resolves_to_its_own_toolchain_census_subdirectory() {
 
     assert!(output.status.success(), "{}", shell_diagnostics::describe(&output));
     let printed = String::from_utf8(output.stdout).expect("stdout must be utf8");
+    // Compared as paths, not strings: the script always prints forward slashes (see
+    // `json_escaped_windows_target_directory_is_printed_with_forward_slashes` below), while
+    // `Path::join` on Windows produces backslashes. `Path`'s `PartialEq` treats both as
+    // separators, so this still fails if the directory itself is wrong.
     assert_eq!(
-        printed.trim(),
-        target_dir.path().join("toolchain-census").to_str().unwrap(),
+        PathBuf::from(printed.trim()),
+        target_dir.path().join("toolchain-census"),
         "the default census dir must sit under CARGO_TARGET_DIR, not the crate's own target/"
     );
 }
