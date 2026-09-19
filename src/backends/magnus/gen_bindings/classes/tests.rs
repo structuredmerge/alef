@@ -46,6 +46,33 @@ fn untagged_record_enum_retains_native_identity_and_typed_factories() {
 }
 
 #[test]
+fn boxed_native_payload_enum_preserves_boxed_variants_and_unboxed_accessors() {
+    let def = EnumDef {
+        name: "Record".into(),
+        serde_untagged: true,
+        variants: vec![EnumVariant {
+            name: "Canonical".into(),
+            is_tuple: true,
+            fields: vec![FieldDef {
+                name: "_0".into(),
+                ty: TypeRef::Named("Payload".into()),
+                is_boxed: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let code = gen_enum_with_module(&def, "core", None, &[], "Example");
+    assert!(code.contains("Canonical(Box<Payload>)"), "{code}");
+    assert!(code.contains("from_canonical(value: Payload)"), "{code}");
+    assert!(code.contains("Self::Canonical(Box::new(value))"), "{code}");
+    assert!(code.contains("Some((**value).clone())"), "{code}");
+    syn::parse_file(&code).expect("boxed native enum Rust must parse");
+}
+
+#[test]
 fn typed_tagged_newtypes_extract_native_payloads_before_json_fallback() {
     let mut def = EnumDef {
         name: "Policy".into(),

@@ -41,8 +41,8 @@ impl magnus::TryConvert for {{ enum_name }} {
 {%- for variant in variants %}
 {%- if variant.typed_newtype %}
         if class_name.as_deref() == Some("{{ module_name }}::{{ enum_name }}{{ variant.name }}") {
-            let payload: {{ variant.fields[0].field_type }} = val.funcall("value", ())?;
-            return Ok(Self::{{ variant.name }}{% if variant.emits_as_tuple %}(payload){% else %} { _0: payload }{% endif %});
+            let payload: {{ variant.payload_type }} = val.funcall("value", ())?;
+            return Ok(Self::{{ variant.name }}{% if variant.emits_as_tuple %}({% if variant.payload_boxed %}Box::new(payload){% else %}payload{% endif %}){% else %} { _0: {% if variant.payload_boxed %}Box::new(payload){% else %}payload{% endif %} }{% endif %});
         }
 {%- endif %}
 {%- endfor %}
@@ -84,12 +84,12 @@ unsafe impl TryConvertOwned for {{ enum_name }} {}
 {% if native_payload %}
 impl {{ enum_name }} {
 {% for variant in variants %}
-    pub fn from_{{ variant.snake_name }}(value: {{ variant.fields[0].field_type }}) -> Self {
-        Self::{{ variant.name }}(value)
+    pub fn from_{{ variant.snake_name }}(value: {{ variant.payload_type }}) -> Self {
+        Self::{{ variant.name }}({% if variant.payload_boxed %}Box::new(value){% else %}value{% endif %})
     }
-    pub fn {{ variant.snake_name }}(&self) -> Option<{{ variant.fields[0].field_type }}> {
+    pub fn {{ variant.snake_name }}(&self) -> Option<{{ variant.payload_type }}> {
         match self {
-            Self::{{ variant.name }}(value) => Some(value.clone()),
+            Self::{{ variant.name }}(value) => Some({% if variant.payload_boxed %}(**value).clone(){% else %}value.clone(){% endif %}),
             _ => None,
         }
     }
@@ -103,10 +103,10 @@ impl {{ enum_name }} {
 impl {{ enum_name }} {
 {%- for variant in variants %}
 {%- if variant.fields | length == 1 and variant.fields[0].name == "_0" %}
-    pub fn {{ variant.snake_name }}(&self) -> Option<&{{ variant.fields[0].field_type }}> {
+    pub fn {{ variant.snake_name }}(&self) -> Option<&{{ variant.payload_type }}> {
         match self {
-{% if variant.emits_as_tuple %}            Self::{{ variant.name }}(_0) => Some(_0),
-{% else %}            Self::{{ variant.name }} { _0 } => Some(_0),
+{% if variant.emits_as_tuple %}            Self::{{ variant.name }}(_0) => Some({% if variant.payload_boxed %}&**_0{% else %}_0{% endif %}),
+{% else %}            Self::{{ variant.name }} { _0 } => Some({% if variant.payload_boxed %}&**_0{% else %}_0{% endif %}),
 {% endif %}
             _ => None,
         }

@@ -160,10 +160,12 @@ pub fn gen_enum_with_module(
                 snake_name => &snake_name,
                 wire_name => &wire_name,
                 accepted_input_values => accepted_unit_variant_input_spellings(&variant.name, &snake_name, &wire_name),
-                typed_newtype => enum_def.serde_tag.is_some() && variant.fields.len() == 1
+                        typed_newtype => enum_def.serde_tag.is_some() && variant.fields.len() == 1
                     && variant.fields[0].name == "_0"
-                    && matches!(&variant.fields[0].ty, TypeRef::Named(name)
-                        if types.iter().any(|t| t.name == *name && !t.is_opaque && !t.is_trait)),
+                            && matches!(&variant.fields[0].ty, TypeRef::Named(name)
+                                if types.iter().any(|t| t.name == *name && !t.is_opaque && !t.is_trait)),
+                        payload_type => variant.fields.first().map(|field| serde_field_type(&field.ty, field.optional)),
+                        payload_boxed => variant.fields.first().is_some_and(|field| field.is_boxed),
             }
         })
         .collect();
@@ -302,7 +304,7 @@ fn field_type_for_serde_inner(ty: &TypeRef) -> String {
 }
 
 pub(super) fn field_type_for_serde(field: &FieldDef) -> String {
-    serde_field_type(&field.ty, field.optional)
+    serde_field_type_with_box(&field.ty, field.optional, field.is_boxed)
 }
 
 /// Serde-shaped Rust type for a data-enum field of type `ty` (wrapping in `Option<...>` when
@@ -310,7 +312,16 @@ pub(super) fn field_type_for_serde(field: &FieldDef) -> String {
 /// constructor parameters must use it verbatim — the magnus data enum is binding-shaped, so the
 /// constructor assigns parameters into the variant with no core conversion.
 pub(super) fn serde_field_type(ty: &TypeRef, optional: bool) -> String {
+    serde_field_type_with_box(ty, optional, false)
+}
+
+fn serde_field_type_with_box(ty: &TypeRef, optional: bool, is_boxed: bool) -> String {
     let base = field_type_for_serde_inner(ty);
+    let base = if is_boxed && matches!(ty, TypeRef::Named(_)) {
+        format!("Box<{base}>")
+    } else {
+        base
+    };
     if optional { format!("Option<{base}>") } else { base }
 }
 
@@ -368,7 +379,18 @@ pub fn gen_data_enum_variant_constructors(
             let field_inits = ctor
                 .params
                 .iter()
-                .map(|p| p.name.as_str())
+                .zip(ctor.boxed.iter())
+                .map(|(p, is_boxed)| {
+                    if *is_boxed && matches!(p.ty, TypeRef::Named(_)) {
+                        if p.optional {
+                            format!("{}.map(Box::new)", p.name)
+                        } else {
+                            format!("Box::new({})", p.name)
+                        }
+                    } else {
+                        p.name.clone()
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             minijinja::context! {
