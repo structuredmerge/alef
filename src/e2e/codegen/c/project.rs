@@ -616,6 +616,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::print_stderr)] // narrow: reports an unusable `make` on this runner ~keep
     fn makefile_rejects_fragment_that_gnu_make_would_execute() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("make-injection");
@@ -627,6 +628,24 @@ mod tests {
         );
         assert!(!marker.exists(), "configured header executed as GNU Make syntax");
 
+        // Positive control: prove a real GNU Make on this runner would actually have executed
+        // `$(shell ...)` during variable expansion (even under `-n`), so the rejection above is
+        // guarding against something make would really do. Some runners -- Windows CI in
+        // particular -- either lack `make` on PATH, ship a non-GNU `make`, or run a GNU Make
+        // whose configured `SHELL` cannot run `touch` (e.g. falling back to `cmd.exe`). None of
+        // those are a defect in the fixture, so Windows skips with a reason instead of failing; a
+        // POSIX toolchain with a working `sh` never takes this path.
+        let make_is_gnu = std::process::Command::new("make")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| {
+                output.status.success() && String::from_utf8_lossy(&output.stdout).contains("GNU Make")
+            });
+        if !make_is_gnu {
+            eprintln!("skipping GNU Make control: no GNU Make on PATH");
+            return;
+        }
+
         let control = format!("PROBE := {header}\nall:\n\t@true\n");
         std::fs::write(dir.path().join("Makefile"), control).unwrap();
         let status = std::process::Command::new("make")
@@ -634,6 +653,13 @@ mod tests {
             .current_dir(dir.path())
             .status()
             .unwrap();
+        if cfg!(windows) && (!status.success() || !marker.exists()) {
+            eprintln!(
+                "skipping GNU Make control: this runner's GNU Make could not exercise shell \
+                 expansion (its configured SHELL likely cannot run `touch`)"
+            );
+            return;
+        }
         assert!(status.success());
         assert!(marker.exists(), "GNU Make control did not exercise shell expansion");
     }
