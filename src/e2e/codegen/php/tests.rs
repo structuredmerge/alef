@@ -825,6 +825,34 @@ mod composer_json_tests {
             "content with no alef marker must not be recognised as alef-owned, got:\n{content}"
         );
     }
+
+    /// Regression for alef issue #368: install.sh used to swap
+    /// `PIE_INSTALLED_EXTENSION_PATH` to a `.dylib` suffix on Darwin, even though PHP
+    /// extensions built by PIE are `.so` on every platform including macOS. The export must
+    /// always use `.so` and carry no OS-conditional branch at all.
+    #[test]
+    fn registry_install_sh_always_exports_the_so_suffix() {
+        let content = render_install_sh("test/pkg", "my_ext", "1.0.0");
+        assert!(
+            content.contains(r#"export PIE_INSTALLED_EXTENSION_PATH="$EXT_DIR/$EXTENSION_NAME.so""#),
+            "install.sh must export the .so path unconditionally, got:\n{content}"
+        );
+        // Only the export is in scope here: the existence check a few lines above
+        // (`test -f ... .so || test -f ... .dylib || test -f ... .dll`) is a separate,
+        // deliberately platform-agnostic guard and must not be touched by this fix.
+        let export_line = content
+            .lines()
+            .find(|line| line.contains("export PIE_INSTALLED_EXTENSION_PATH="))
+            .expect("export line present");
+        assert!(
+            !export_line.contains(".dylib"),
+            "the exported extension path must never carry a .dylib suffix, got:\n{content}"
+        );
+        assert!(
+            !content.contains("OSTYPE"),
+            "install.sh must carry no OS-conditional branch for the exported extension path, got:\n{content}"
+        );
+    }
 }
 
 #[cfg(test)]

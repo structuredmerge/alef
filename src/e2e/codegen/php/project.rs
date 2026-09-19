@@ -243,11 +243,13 @@ else
 fi
 
 # Export the installed extension path for downstream test runners (composer test).
-# The test app's run_tests.php checks for PIE_INSTALLED_EXTENSION_PATH and loads the extension via `-d`.
+# install.sh and run_tests.php run as separate processes (the canonical registry
+# runner invokes `bash install.sh`, then `composer test`, in two different shells),
+# so this export never reaches run_tests.php on its own -- run_tests.php recomputes
+# the same path by default from `ini_get('extension_dir')` and only treats this
+# variable as an explicit override. PHP extensions are `.so` on every platform PIE
+# targets, including Darwin: there is no `.dylib` variant to export here.
 export PIE_INSTALLED_EXTENSION_PATH="$EXT_DIR/$EXTENSION_NAME.so"
-if [[ "$OSTYPE" == "darwin"* ]]; then
-  export PIE_INSTALLED_EXTENSION_PATH="$EXT_DIR/$EXTENSION_NAME.dylib"
-fi
 
 # Verify the extension loads. Use `extension_loaded()` via `php -r` instead of
 # parsing `php -m` output: `php -m` is fragile when an extension is enabled via
@@ -539,10 +541,22 @@ foreach ($localExtCandidates as $candidate) {
 }
 $extPath = $localExtPath;
 
-// Check for PIE-installed extension path (set by install.sh in registry mode).
-// In registry mode, the extension is installed system-wide via PIE and passed
-// via the PIE_INSTALLED_EXTENSION_PATH environment variable.
+// Check for a PIE-installed extension path (registry mode). install.sh and this
+// script run as separate processes -- the canonical registry runner is `bash
+// install.sh`, then `composer test`, in two different shells -- so an `export`
+// in install.sh's process never reaches this one. PIE_INSTALLED_EXTENSION_PATH
+// is still honored as an explicit override when a caller arranges to pass it
+// through, but by default the path is recomputed directly from the running
+// PHP's own `extension_dir`, exactly as install.sh derived it. PHP extensions
+// are `.so` on every PIE-relevant platform, including Darwin -- unlike the
+// cargo cdylib above, there is no `.dylib` variant to consider here.
 $pieInstalledExtPath = getenv('PIE_INSTALLED_EXTENSION_PATH');
+if (!$pieInstalledExtPath) {
+    $registryExtDir = rtrim((string) ini_get('extension_dir'), '/');
+    if ($registryExtDir !== '') {
+        $pieInstalledExtPath = $registryExtDir . '/__EXTENSION_NAME__.so';
+    }
+}
 if ($pieInstalledExtPath && file_exists($pieInstalledExtPath)) {
     $extPath = $pieInstalledExtPath;
 }
@@ -1112,6 +1126,117 @@ if ($loadedVersion !== '1.2.3') {
             !result.contains("ALEF_PHP_EXT_LOADED"),
             "the dead re-exec gate must not reappear -- the preflight check must be reached by \
              plain sequential execution of this single script, got:\n{result}"
+        );
+    }
+
+    /// Regression for alef issue #368: install.sh and run_tests.php run as separate processes,
+    /// so an `export` in install.sh's shell never reaches run_tests.php's `getenv()`. The
+    /// default resolution must come from this process's own `ini_get('extension_dir')`, with
+    /// the env var kept only as an explicit override.
+    #[test]
+    fn run_tests_php_resolves_the_pie_path_from_extension_dir_by_default() {
+        let result = render_run_tests_php("sample_ext", "sample-ext-php", "crates/sample-ext-php", "1.2.3")
+            .expect("bare version renders");
+
+        assert!(
+            result.contains("$registryExtDir = rtrim((string) ini_get('extension_dir'), '/');"),
+            "the runner must recompute the registry extension dir from ini_get, got:\n{result}"
+        );
+        assert!(
+            result.contains("$pieInstalledExtPath = $registryExtDir . '/sample_ext.so';"),
+            "the recomputed path must use the .so suffix and this extension's own name, got:\n{result}"
+        );
+        assert!(
+            !result.contains("$pieInstalledExtPath = $registryExtDir . '/sample_ext.dylib'"),
+            "PHP extensions built by PIE are .so on every platform, Darwin included, got:\n{result}"
+        );
+        // The env var must still short-circuit the ini_get fallback when set, so an explicit
+        // override is honored.
+        let getenv_pos = result
+            .find("$pieInstalledExtPath = getenv('PIE_INSTALLED_EXTENSION_PATH');")
+            .expect("getenv call present");
+        let fallback_pos = result
+            .find("if (!$pieInstalledExtPath) {")
+            .expect("fallback guard present");
+        assert!(
+            getenv_pos < fallback_pos,
+            "the env var must be read before the ini_get fallback runs, got:\n{result}"
+        );
+    }
+
+    /// Executable proof of the fix in [`run_tests_php_resolves_the_pie_path_from_extension_dir_by_default`]:
+    /// the generated resolution snippet, run through real PHP as its own process with
+    /// `PIE_INSTALLED_EXTENSION_PATH` unset and no local build artifacts on disk, still
+    /// resolves the PIE-installed `.so` -- entirely from `ini_get('extension_dir')` -- exactly
+    /// as it would immediately after `bash install.sh` ran in a separate shell.
+    #[test]
+    #[allow(clippy::print_stderr)] // narrow: reports a toolchain skip on a developer machine without PHP ~keep
+    fn run_tests_php_resolution_snippet_finds_the_extension_across_processes() {
+        let php = match std::process::Command::new("php").arg("--version").output() {
+            Ok(output) if output.status.success() => "php",
+            _ => {
+                eprintln!("skipping: no `php` interpreter on PATH");
+                return;
+            }
+        };
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let ext_dir = root.path().join("ext_dir");
+        std::fs::create_dir_all(&ext_dir).expect("create fake extension_dir");
+        let extension_name = "sample_ext";
+        std::fs::write(ext_dir.join(format!("{extension_name}.so")), b"fake extension").expect("write fake .so");
+
+        let generated = render_run_tests_php(extension_name, "sample-ext-php", "crates/sample-ext-php", "1.2.3")
+            .expect("bare version renders");
+
+        // Extract exactly the resolution snippet under test from the real generated file,
+        // so this proves the shipped code resolves correctly, not a hand-copied stand-in.
+        let start = generated
+            .find("// Check for a PIE-installed extension path")
+            .expect("resolution comment present");
+        let end = generated
+            .find("// Neither a local release build")
+            .expect("end-of-block marker present");
+        let snippet = &generated[start..end];
+        assert!(
+            snippet.contains("getenv('PIE_INSTALLED_EXTENSION_PATH')"),
+            "extracted snippet must be the resolution block, got:\n{snippet}"
+        );
+
+        // No local build artifact exists anywhere the harness would look, so a pass here can
+        // only be explained by the PIE/ini_get fallback, not the local-candidate search.
+        let script = format!(
+            "<?php\n$extPath = '{missing}';\n{snippet}\necho $extPath;",
+            missing = root.path().join("target/release/nonexistent").display(),
+        );
+        let script_path = root.path().join("resolve.php");
+        std::fs::write(&script_path, script).expect("write resolution script");
+
+        // `-n` skips the ambient php.ini/conf.d entirely: this machine's own PHP install may
+        // declare unrelated real extensions there, which would otherwise fail to load from the
+        // overridden `extension_dir` below and spew startup warnings onto stdout, polluting the
+        // very output this assertion reads. `-d extension_dir=...` still applies under `-n`.
+        let output = std::process::Command::new(php)
+            .arg("-n")
+            .arg("-d")
+            .arg(format!("extension_dir={}", ext_dir.display()))
+            .arg(&script_path)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .output()
+            .expect("run resolution snippet under real PHP");
+
+        assert!(
+            output.status.success(),
+            "resolution snippet must run cleanly, stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let resolved = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert_eq!(
+            resolved,
+            format!("{}/{extension_name}.so", ext_dir.display()),
+            "the snippet must resolve the PIE-installed .so via ini_get('extension_dir') alone, \
+             with PIE_INSTALLED_EXTENSION_PATH unset and no local build artifact present"
         );
     }
 }
