@@ -21,10 +21,17 @@
 # `--require` names a toolchain the caller guarantees is installed on this platform, so anything
 # other than "every attempt executed" is a failure. Toolchains not named are reported with their
 # counts and never fail the run.
+#
+# With no `--dir`, the census directory defaults to `scripts/toolchain-census-dir.sh`'s output
+# (`<cargo target_directory>/toolchain-census`), so a custom `CARGO_TARGET_DIR` or
+# `.cargo/config.toml` `build.target-dir` is honored instead of assuming the crate's own
+# `target/` -- which `src/test_support/toolchain.rs` never wrote to in that case.
 
 set -eu
 
-census_dir="target/toolchain-census"
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+
+census_dir=""
 required=""
 
 while [ $# -gt 0 ]; do
@@ -51,6 +58,10 @@ while [ $# -gt 0 ]; do
     ;;
   esac
 done
+
+if [ -z "$census_dir" ]; then
+  census_dir="$("$script_dir/toolchain-census-dir.sh")"
+fi
 
 echo "alef toolchain fixture census -- $census_dir"
 

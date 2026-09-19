@@ -28,6 +28,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/v2`-suffixed block entry or a single-line `require` was skipped silently. It now matches the
   resolved Go module path exactly, in both syntaxes, keeps trailing comments, and still leaves
   locally replaced modules and unrelated dependencies alone. (#359)
+- **Go: the generated `cmd/setup` requests the asset `alef publish package go` actually produces.**
+  Setup asked for `<prefix>-go-<platform>.tar.gz` plus a required `.sha256` sidecar, while the
+  packager emitted `<prefix>-go-v<version>-<platform>.tar.gz` and no checksum, so every
+  `go run …/cmd/setup` returned 404. Setup now uses the versioned name and the packager writes the
+  sidecar. Musl targets still lack the `-musl` suffix in setup's platform label. (#367)
+- **Dart: `bin/download_libs.dart` looks for the native library bundled in the installed pub
+  package before downloading.** It probes the same `src/native/<rid>/` and
+  `src/<module>_bridge_generated/` locations the runtime loader already resolves, so a package that
+  ships its natives no longer needs network access or a release archive that does not exist.
+  Both files are `generated_header: false`; consumers must regenerate to pick this up. (#366)
+- **PHP: the registry runner finds the PIE-installed extension without an environment hand-off.**
+  `install.sh` exported `PIE_INSTALLED_EXTENSION_PATH` inside its own shell, which the separate
+  `composer test` process never saw, and spelled the path `.dylib` on macOS where PHP extensions
+  are `.so`. `run_tests.php` now derives the path from `ini_get('extension_dir')` by default and
+  treats the variable as an explicit override. (#368)
+- **`alef test-apps run` resolves the mock-server binary through `cargo metadata`**, so a
+  `CARGO_TARGET_DIR`, a `.cargo/config.toml` `build.target-dir`, or workspace membership no longer
+  makes the runner look in `<crate>/target/release`; the path also carries `EXE_SUFFIX` on
+  Windows. The generated per-language harnesses still hard-code the default layout (#405). (#365)
+- **The toolchain fixture census follows `CARGO_TARGET_DIR`.** `task test`, `task test:census` and
+  CI cleared and read a hard-coded `target/toolchain-census` while the fixtures wrote beside the
+  test binaries, so a custom target directory measured nothing and exited 0. A shared
+  `scripts/toolchain-census-dir.sh` derives the directory from `cargo metadata` for all three,
+  spelling a Windows target directory with forward slashes. (#379)
 - **kotlin-android: `kotlin.time.Duration` DTO fields now cross the JNI boundary as whole
   milliseconds.** The facade, streaming and value-method Jackson mappers had no codec for the
   inline class, so Jackson wrote its raw bit pattern and the Rust `duration_ms` adapters read

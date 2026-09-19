@@ -40,7 +40,10 @@ tasks:
   test:
     desc: "Run all tests"
     cmds:
-      - rm -rf target/toolchain-census
+      # Derived from `cargo metadata`, not a hard-coded `target/`, so a custom `CARGO_TARGET_DIR`
+      # or `.cargo/config.toml` `build.target-dir` resets the same directory `test:census` (via
+      # `scripts/toolchain-census.sh`'s own default) reads back below.
+      - rm -rf "$(scripts/toolchain-census-dir.sh)"
       - cargo test --workspace
       - task: test:census
 

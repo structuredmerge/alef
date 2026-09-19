@@ -143,7 +143,10 @@ jobs:
       # into this one and could report fixtures as executed that this run never reached.
       - name: Clear the toolchain fixture census
         shell: bash
-        run: rm -rf target/toolchain-census
+        # Derived from `cargo metadata` via the shared helper, not a hard-coded `target/`, so a
+        # `CARGO_TARGET_DIR` override resets the same directory the census step below reads back
+        # (`scripts/toolchain-census.sh` resolves its own default the same way).
+        run: rm -rf "$(scripts/toolchain-census-dir.sh)"
       - name: Run tests
         env:
           ALEF_REQUIRE_ELIXIR: "1"
