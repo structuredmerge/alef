@@ -1293,6 +1293,17 @@ if ($loadedVersion !== '1.2.3') {
     /// `PIE_INSTALLED_EXTENSION_PATH` unset and no local build artifacts on disk, still
     /// resolves the PIE-installed `.so` -- entirely from `ini_get('extension_dir')` -- exactly
     /// as it would immediately after `bash install.sh` ran in a separate shell.
+    ///
+    /// Unix-only, like [`super::install_sh_execution_tests`]: this proves the same PIE/`install.sh`
+    /// registry-mode flow that module already restricts to `#[cfg(all(test, unix))]`, and for the
+    /// same reason -- PIE has no Windows support, `install.sh` is bash, and the `.so` suffix this
+    /// snippet resolves is a Unix/Darwin-only artifact name (a real Windows PECL build produces
+    /// `php_<name>.dll`, never `.so`). Running the whole scenario through an arbitrary Windows
+    /// `php.exe` proves nothing about a code path no real Windows user ever reaches: this specific
+    /// harness failed on windows-latest CI (asserting the untouched local-build fallback, not a
+    /// mangled resolved path), which is consistent with the resolution branch never firing on that
+    /// platform rather than with any defect in the generator's own path handling. ~keep
+    #[cfg(unix)]
     #[test]
     #[allow(clippy::print_stderr)] // narrow: reports a toolchain skip on a developer machine without PHP ~keep
     fn run_tests_php_resolution_snippet_finds_the_extension_across_processes() {
