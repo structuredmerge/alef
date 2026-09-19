@@ -3714,12 +3714,12 @@ fn tagged_enum_public_api_emits_class_hierarchy() {
     );
 
     assert!(
-        content.contains("def content = super"),
-        "variant accessor must delegate to Data's auto-getter via super:\n{content}"
+        content.contains("def content = Data.instance_method(:to_h).bind_call(self).fetch(:content)"),
+        "variant accessor must read the stored Data member:\n{content}"
     );
     assert!(
-        content.contains("rubocop:disable Lint/UselessMethodDefinition"),
-        "accessor def must carry rubocop disable so autocorrect won't strip it:\n{content}"
+        !content.contains("rubocop:disable Lint/UselessMethodDefinition"),
+        "a real payload reader must not need a useless-method lint exemption:\n{content}"
     );
 }
 
