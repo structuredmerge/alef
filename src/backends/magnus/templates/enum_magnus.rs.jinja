@@ -1,7 +1,7 @@
 {# Data enum definition with IntoValue/TryConvert via JSON #}
 {% if has_data %}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-{% if native_record %}#[magnus::wrap(class = "{{ module_name }}::{{ enum_name }}")]
+{% if native_payload %}#[magnus::wrap(class = "{{ module_name }}::{{ enum_name }}")]
 {% endif %}
 {% if serde_tag %}#[serde(tag = "{{ serde_tag }}"{% if serde_content %}, content = "{{ serde_content }}"{% endif %})]
 {% endif %}{% if serde_untagged %}#[serde(untagged)]
@@ -20,7 +20,7 @@ impl Default for {{ enum_name }} {
     fn default() -> Self { Self::{{ default_variant }}{{ first_variant_default }} }
 }
 
-{% if not native_record %}impl magnus::IntoValue for {{ enum_name }} {
+{% if not native_payload %}impl magnus::IntoValue for {{ enum_name }} {
     fn into_value_with(self, handle: &Ruby) -> magnus::Value {
         match serde_json::to_value(&self) {
             Ok(v) => json_to_ruby(handle, v),
@@ -32,7 +32,7 @@ impl Default for {{ enum_name }} {
 
 impl magnus::TryConvert for {{ enum_name }} {
     fn try_convert(val: magnus::Value) -> Result<Self, magnus::Error> {
-{% if native_record %}
+{% if native_payload %}
         <&Self as magnus::TryConvert>::try_convert(val).cloned()
 {% else %}
 {%- if serde_tag %}
@@ -81,7 +81,7 @@ impl magnus::TryConvert for {{ enum_name }} {
 unsafe impl IntoValueFromNative for {{ enum_name }} {}
 unsafe impl TryConvertOwned for {{ enum_name }} {}
 
-{% if native_record %}
+{% if native_payload %}
 impl {{ enum_name }} {
 {% for variant in variants %}
     pub fn from_{{ variant.snake_name }}(value: {{ variant.fields[0].field_type }}) -> Self {
@@ -99,7 +99,7 @@ impl {{ enum_name }} {
 
 {%- if has_data %}
 {# Variant accessor methods for internally-tagged data enums #}
-{%- if serde_tag %}
+{%- if serde_tag and not native_payload %}
 impl {{ enum_name }} {
 {%- for variant in variants %}
 {%- if variant.fields | length == 1 and variant.fields[0].name == "_0" %}

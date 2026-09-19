@@ -771,7 +771,7 @@ mod gen_enum;
 
 #[cfg(test)]
 pub(super) use gen_enum::gen_enum;
-pub(crate) use gen_enum::is_native_record_enum;
+pub(crate) use gen_enum::is_native_payload_enum;
 pub(super) use gen_enum::{
     data_enum_variant_constructor_registrations, gen_data_enum_variant_constructors, gen_enum_with_module,
 };

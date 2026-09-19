@@ -236,10 +236,10 @@ pub(in crate::backends::magnus::gen_bindings) fn gen_module_init(
         {
             continue;
         }
-        if enum_def.serde_tag.is_some() {
+        if enum_def.serde_tag.is_some() && !classes::is_native_payload_enum(enum_def) {
             continue;
         }
-        if classes::is_native_record_enum(enum_def) {
+        if classes::is_native_payload_enum(enum_def) {
             lines.push(format!(
                 "    let class = module.define_class(\"{}\", ruby.class_object())?;",
                 enum_def.name

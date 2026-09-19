@@ -47,7 +47,7 @@ fn untagged_record_enum_retains_native_identity_and_typed_factories() {
 
 #[test]
 fn typed_tagged_newtypes_extract_native_payloads_before_json_fallback() {
-    let def = EnumDef {
+    let mut def = EnumDef {
         name: "Policy".into(),
         serde_tag: Some("operation".into()),
         serde_content: Some("policy".into()),
@@ -67,6 +67,26 @@ fn typed_tagged_newtypes_extract_native_payloads_before_json_fallback() {
         name: "AnalyzePolicy".into(),
         ..Default::default()
     }];
+    let native_code = gen_enum_with_module(&def, "core", None, &types, "CustomModule");
+    assert!(
+        native_code.contains("#[magnus::wrap(class = \"CustomModule::Policy\")]"),
+        "{native_code}"
+    );
+    assert!(
+        native_code.contains("pub fn from_analyze(value: AnalyzePolicy) -> Self"),
+        "{native_code}"
+    );
+    assert!(
+        native_code.contains("pub fn analyze(&self) -> Option<AnalyzePolicy>"),
+        "{native_code}"
+    );
+    assert!(!native_code.contains("json_to_ruby"), "{native_code}");
+    syn::parse_file(&native_code).expect("tagged payloads must use valid native enum Rust");
+    // Mixed unit/payload enums retain the legacy representation and input adapter.
+    def.variants.push(EnumVariant {
+        name: "None".into(),
+        ..Default::default()
+    });
     let code = gen_enum_with_module(&def, "core", None, &types, "CustomModule");
     assert!(code.contains("Some(\"CustomModule::PolicyAnalyze\")"), "{code}");
     assert!(

@@ -1,7 +1,7 @@
 //! Magnus (Ruby) backend for alef: orchestrates struct, enum, and function code generation.
 
 mod classes;
-pub(crate) use classes::is_native_record_enum;
+pub(crate) use classes::is_native_payload_enum;
 pub mod functions;
 mod method_result_wrap;
 pub mod service_api;
@@ -867,7 +867,10 @@ impl Backend for MagnusBackend {
         );
 
         for enum_def in &api.enums {
-            if enum_def.serde_tag.is_some() && enum_def.variants.iter().any(|v| !v.fields.is_empty()) {
+            if enum_def.serde_tag.is_some()
+                && enum_def.variants.iter().any(|v| !v.fields.is_empty())
+                && !is_native_payload_enum(enum_def)
+            {
                 native_content.push('\n');
                 native_content.push_str(&gen_tagged_enum_ruby_classes(enum_def, &module_name, &api.types));
             }

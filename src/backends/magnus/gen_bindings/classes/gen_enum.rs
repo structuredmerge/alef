@@ -5,10 +5,9 @@ use crate::codegen::conversions::{VariantDeclaration, enum_variant_declaration};
 use crate::core::ir::{EnumDef, EnumVariant, FieldDef, TypeRef};
 use std::collections::HashSet;
 
-/// Preserve untagged record identity as a native enum instead of guessing from a Hash.
-pub(crate) fn is_native_record_enum(def: &EnumDef) -> bool {
-    def.serde_untagged
-        && def.serde_tag.is_none()
+/// Preserve payload and variant identity for tagged policies and untagged records.
+pub(crate) fn is_native_payload_enum(def: &EnumDef) -> bool {
+    (def.serde_untagged || def.serde_tag.is_some())
         && def.cfg.is_none()
         && !def.variants.is_empty()
         && def.variants.iter().all(|v| {
@@ -174,7 +173,7 @@ pub fn gen_enum_with_module(
         minijinja::context! {
             enum_name => &enum_def.name,
             module_name => module_name,
-            native_record => is_native_record_enum(enum_def),
+            native_payload => is_native_payload_enum(enum_def),
             has_data => has_data,
             serde_tag => &enum_def.serde_tag,
             serde_content => &enum_def.serde_content,

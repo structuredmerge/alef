@@ -332,6 +332,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Preserve eligible untagged Ruby record enums as native objects with typed variant factories and readers; reject implicit hash variant guessing and default allocation.
 
+- Use native payload enums for eligible tagged Ruby policies, preserving typed readers and explicit factories in both directions and matching the generated RBS class surface.
+
+- Do not invent Python TypedDict discriminator fields for untagged or externally tagged payload enums.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
