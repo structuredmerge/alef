@@ -442,7 +442,17 @@ pub(super) fn swift_stringy_aggregator_contains_assert(
     // is first-class (property-access), that assumption breaks: `item.field()` becomes bare
     // `item.field`, and an enum leaf needs `.rawValue` (unit) or has NO scalar accessor at all
     // (payload-carrying) -- see `stringy_field_text_line`.
-    let is_first_class = field_resolver.swift_is_first_class(Some(&elem_type));
+    //
+    // ~keep The element's own promotion is necessary but not sufficient. The closure's `item`
+    // is whatever `{array_accessor}` yields, and that is decided by the ROOT: a first-class
+    // root stores `items` as a Swift `[T]` (subscript → first-class `T`), but an opaque
+    // (`typealias`-to-`RustBridge`) root only has an `items()` getter returning
+    // `RustVec<RustBridge.T>`, whose elements expose swift-bridge METHODS regardless of `T`
+    // being independently promoted — the same rule `accessor_walk`'s `via_opaque` pins for
+    // traversal chains. crawlberg's `CrawlResult.cookies` (opaque root, promoted `CookieInfo`)
+    // rendered `item.name` against a `CookieInfoRef` and failed to compile.
+    let is_first_class =
+        field_resolver.swift_is_first_class(Some(&root_type)) && field_resolver.swift_is_first_class(Some(&elem_type));
     let mut texts_lines: Vec<String> = Vec::new();
     for sf in stringy {
         if let Some(line) = stringy_field_text_line(field_resolver, &elem_type, is_first_class, sf) {

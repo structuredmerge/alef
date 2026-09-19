@@ -175,7 +175,23 @@ fn e2e_config() -> E2eConfig {
     e2e_config
 }
 
+/// The same shape with the ROOT demoted: `GateResult` stays a `typealias` to the opaque
+/// `RustBridge.GateResult` while `GateItem` is still promoted. This is exactly crawlberg's
+/// `CrawlResult.cookies` — `CookieInfo` is a first-class Codable struct, but the value reached
+/// through the opaque root's `cookies()` getter is a `RustVec<RustBridge.CookieInfo>`, whose
+/// elements only have swift-bridge METHOD accessors. Element promotion alone must not decide
+/// the syntax. ~keep
+fn opaque_root_map() -> SwiftFirstClassMap {
+    let mut map = first_class_map();
+    map.first_class_types.remove("GateResult");
+    map
+}
+
 fn render(fixture: &Fixture) -> String {
+    render_with_map(fixture, first_class_map())
+}
+
+fn render_with_map(fixture: &Fixture, map: SwiftFirstClassMap) -> String {
     let type_defs = [gate_result_type(), gate_item_type()];
     let enums = [unit_tag_enum(), payload_tag_enum()];
     let functions = [FunctionDef {
@@ -183,7 +199,6 @@ fn render(fixture: &Fixture) -> String {
         return_type: TypeRef::Named("GateResult".to_string()),
         ..FunctionDef::default()
     }];
-    let map = first_class_map();
     let e2e_config = e2e_config();
     let config = ResolvedCrateConfig {
         name: "sample".to_string(),
@@ -370,6 +385,42 @@ fn payload_carrying_enum_leaf_renders_a_real_assertion_not_a_skip() {
         assert!(
             out.contains("XCTAssertTrue"),
             "{scenario}: expected a real XCTAssertTrue, got:\n{out}"
+        );
+    }
+}
+
+/// Class 3 with an OPAQUE root: the aggregator must fall back to method-call syntax for every
+/// stringy field, because `result.items()` on a `typealias`-to-`RustBridge` root yields a
+/// `RustVec<RustBridge.GateItem>` — first-class promotion of `GateItem` is irrelevant there.
+/// Regression for crawlberg's `CookiesTests.swift` (alef 0.87.0 → `texts.append(item.name)`
+/// against a `CookieInfoRef`, "cannot convert value of type '() -> RustString' to 'String'").
+#[test]
+fn stringy_aggregator_uses_method_syntax_when_root_is_opaque() {
+    let fixture = wildcard_fixture("aggregator_opaque_root", "contains", "items", Some("x"));
+    let out = render_with_map(&fixture, opaque_root_map());
+    assert!(
+        out.contains("result.items().contains(where:"),
+        "expected the array accessor on an opaque root to be a method call, got:\n{out}"
+    );
+    for needle in [
+        "texts.append(item.label().toString())",
+        "texts.append(item.kind().toString())",
+        "texts.append(item.payload().toString())",
+    ] {
+        assert!(
+            out.contains(needle),
+            "expected the aggregator to lower every element field as an opaque getter, expected \
+             {needle:?}, got:\n{out}"
+        );
+    }
+    for needle in [
+        "texts.append(item.label)",
+        "item.kind.rawValue",
+        "item.payload.toString()",
+    ] {
+        assert!(
+            !out.contains(needle),
+            "an element pulled from a RustVec on an opaque root has no properties, found {needle:?} in:\n{out}"
         );
     }
 }
