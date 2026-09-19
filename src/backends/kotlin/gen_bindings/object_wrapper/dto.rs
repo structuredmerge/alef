@@ -306,6 +306,7 @@ fn emit_value_method_mapper(out: &mut String) {
         "value_method_mapper.jinja",
         minijinja::context! {
             name => VALUE_METHOD_MAPPER,
+            duration_millis_module => super::super::shared::duration_millis_jackson_module(4),
         },
     );
     if !out.contains(&declaration) {

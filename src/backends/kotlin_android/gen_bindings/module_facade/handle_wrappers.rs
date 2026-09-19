@@ -156,7 +156,9 @@ fn add_streaming_imports(imports: &mut BTreeSet<String>) {
 fn append_streaming_mapper(body: &mut String) {
     body.push_str(&template_env::render(
         "android_streaming_mapper.jinja",
-        minijinja::context! {},
+        minijinja::context! {
+            duration_millis_module => crate::backends::kotlin::duration_millis_jackson_module(8),
+        },
     ));
 }
 

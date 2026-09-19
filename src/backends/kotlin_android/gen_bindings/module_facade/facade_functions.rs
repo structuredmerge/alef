@@ -132,7 +132,9 @@ fn jackson_imports() -> [&'static str; 9] {
 fn append_jackson_configuration(body: &mut String) {
     body.push_str(&template_env::render(
         "android_facade_jackson_config.jinja",
-        minijinja::context! {},
+        minijinja::context! {
+            duration_millis_module => crate::backends::kotlin::duration_millis_jackson_module(8),
+        },
     ));
 }
 

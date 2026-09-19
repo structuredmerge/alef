@@ -22,8 +22,8 @@ use std::path::PathBuf;
 
 pub(crate) use object_wrapper::{default_constructible_type_names, kotlin_field_default};
 pub use shared::{
-    ValueMethodBridge, escape_kotlin_ident, kotlin_field_name, kotlin_field_name_with_type, to_lower_camel,
-    to_lower_camel_unescaped, to_pascal_case, to_screaming_snake,
+    ValueMethodBridge, duration_millis_jackson_module, escape_kotlin_ident, kotlin_field_name,
+    kotlin_field_name_with_type, to_lower_camel, to_lower_camel_unescaped, to_pascal_case, to_screaming_snake,
 };
 
 pub fn emit_type_pub(ty: &TypeDef, out: &mut String, imports: &mut BTreeSet<String>) {

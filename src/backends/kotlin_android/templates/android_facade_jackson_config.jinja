@@ -38,6 +38,7 @@
     private val mapper = jacksonObjectMapper()
         .registerModule(com.fasterxml.jackson.datatype.jdk8.Jdk8Module())
         .registerModule(byteArrayModule)
+{{ duration_millis_module }}
         .registerModule(
             com.fasterxml.jackson.module.kotlin.KotlinModule.Builder()
                 .configure(com.fasterxml.jackson.module.kotlin.KotlinFeature.NullIsSameAsDefault, true)
