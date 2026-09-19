@@ -315,6 +315,44 @@ fn test_generate_bindings_emits_cmd_setup_and_native_setup_sentinel() {
     );
 }
 
+/// The asset name `cmd/setup/main.go` requests from GitHub Releases must match what
+/// `publish::package::go::package_go_ffi` actually names its uploaded tarball
+/// (`{name}-go-v{version}-{platform}.tar.gz`) — otherwise every `go run .../cmd/setup`
+/// 404s against a real release. See alef#367.
+#[test]
+fn test_generate_bindings_cmd_setup_requests_versioned_asset_name() {
+    use crate::core::ir::ApiSurface;
+    let config = make_config();
+    let api = ApiSurface {
+        crate_name: "test-lib".to_string(),
+        version: "1.0.0-rc.38".to_string(),
+        types: vec![],
+        functions: vec![],
+        enums: vec![],
+        errors: vec![],
+        excluded_type_paths: ::std::collections::BTreeMap::new(),
+        excluded_trait_names: ::std::collections::HashSet::new(),
+        services: vec![],
+        handler_contracts: vec![],
+        unsupported_public_items: Vec::new(),
+    };
+    let backend = GoBackend;
+    let files = backend.generate_bindings(&api, &config).unwrap();
+
+    let setup = files
+        .iter()
+        .find(|f| f.path.to_string_lossy().ends_with("cmd/setup/main.go"))
+        .expect("cmd/setup/main.go must be generated");
+
+    assert!(
+        setup
+            .content
+            .contains(r#"assetName := fmt.Sprintf("%s-go-v%s-%s.tar.gz", assetPrefix, version, platform)"#),
+        "cmd/setup must request the versioned asset name the Go packager actually produces:\n{}",
+        setup.content
+    );
+}
+
 #[test]
 fn test_gen_go_opaque_constructor_emits_new_function() {
     use crate::core::config::workspace::{ClientConstructorConfig, ConstructorParam};

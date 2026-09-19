@@ -114,7 +114,7 @@ func parseFlags() options {
 
 // platformDir returns the alef platform directory name (e.g. "macos-arm64",
 // "linux-x86_64", "windows-x86_64") matching the layout that ships in the
-// `<assetPrefix>-go-<os>-<arch>.tar.gz` release assets and the LDFLAGS paths
+// `<assetPrefix>-go-v<version>-<os>-<arch>.tar.gz` release assets and the LDFLAGS paths
 // baked into the binding package's cgo preamble.
 func platformDir() (string, error) {
 	osName := runtime.GOOS
@@ -180,7 +180,8 @@ func baseDownloadURL() string {
 // downloadAndVerify downloads the platform tarball, verifies it against its
 // required `.sha256` sidecar, and extracts it into cacheDir.
 func downloadAndVerify(cacheDir, platform string) error {
-	assetName := fmt.Sprintf("%s-go-%s.tar.gz", assetPrefix, platform)
+	version := strings.TrimPrefix(moduleVersion, "v")
+	assetName := fmt.Sprintf("%s-go-v%s-%s.tar.gz", assetPrefix, version, platform)
 	baseURL := baseDownloadURL()
 	assetURL := fmt.Sprintf("%s/%s", baseURL, assetName)
 	sumURL := assetURL + ".sha256"
