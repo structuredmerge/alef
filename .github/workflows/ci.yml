@@ -113,14 +113,11 @@ jobs:
           dotnet-version: "10.0.x"
       # The Kotlin identifier-grammar oracle (`ALEF_REQUIRE_KOTLINC` below) needs a real
       # `kotlinc` on PATH; nothing else in this job installed one before this step existed.
-      # Pinned to the exact commit for `fwilhe2/setup-kotlin` tag v2.0 -- a third-party action,
-      # so SHA-pinned rather than trusting a floating tag, matching the `Goldziher/poly` pin in
-      # the `generated-output-gate` job below. `version:` pins the exact kotlinc release
-      # `codegen::identifier_grammar`'s docs say the Kotlin grammar was measured against, so a
-      # `fwilhe2/setup-kotlin` default-version bump can't silently change what CI verifies
-      # against. ~keep
+      # `version:` pins the exact kotlinc release `codegen::identifier_grammar`'s docs say the
+      # Kotlin grammar was measured against, so a `fwilhe2/setup-kotlin` default-version bump
+      # can't silently change what CI verifies against. ~keep
       - name: Install kotlinc
-        uses: fwilhe2/setup-kotlin@ee9692514da313706b193d808526812102a344e4 # v2.0
+        uses: fwilhe2/setup-kotlin@v2
         with:
           version: "2.4.10"
       # Swift is the one toolchain here that genuinely cannot be installed on every leg: it ships
@@ -219,15 +216,12 @@ jobs:
       # `install.sh`, so this is a true, verified pin, not a presence check. See
       # https://github.com/Goldziher/poly#github-actions. ~keep
       - name: Install poly
-        # Two independent pins live here, and they move independently on purpose. The `uses:`
-        # SHA pins the *action code*: a tag like `v0` or `v0.27.0` is mutable and can be
-        # repointed, so only a full commit SHA is a supply-chain pin -- renovate bumps this one
-        # routinely. `version:` pins the *poly release the action installs*, which the step
+        # The `uses:` major tag selects the *action code*, like every other action in this
+        # workflow. `version:` pins the *poly release the action installs*, which the step
         # below re-checks at runtime; bumping it is a deliberate call, because this repo's lint
-        # output is version-sensitive and has differed between poly patch releases. Do not
-        # assume the trailing `# vX.Y.Z` comment on the `uses:` line and `version:` agree.
-        # `tests/ci_poly_pin_gate.rs` enforces the SHA *shape*, not a specific commit. ~keep
-        uses: Goldziher/poly@27da2cd18de12af901865b3096ad795302f60bc5 # v0.28.0
+        # output is version-sensitive and has differed between poly patch releases.
+        # `tests/ci_poly_pin_gate.rs` enforces both. ~keep
+        uses: Goldziher/poly@v0
         with:
           version: v0.24.0
       # Both tools must be present *before* the lanes run. The lanes fail on a missing
@@ -246,7 +240,7 @@ jobs:
 
           installed_poly_version="$(poly --version | awk '{print $2}')"
           if [ "$installed_poly_version" != "0.24.0" ]; then
-            echo "::error::expected poly 0.24.0 (pinned for the poly.toml added-large-files hook), got ${installed_poly_version:-<empty>}. Update the pinned Goldziher/poly uses: SHA and version: input above together with this check." >&2
+            echo "::error::expected poly 0.24.0 (pinned for the poly.toml added-large-files hook), got ${installed_poly_version:-<empty>}. Update the Goldziher/poly version: input above together with this check." >&2
             exit 1
           fi
           echo "poly ${installed_poly_version} matches the pinned version."

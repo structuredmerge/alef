@@ -15,49 +15,41 @@ use std::path::PathBuf;
 mod workflow_job_block_support;
 use workflow_job_block_support::workflow_job_block;
 
-/// The job whose steps must install poly via a pinned, checksum-verified action rather than an
-/// unpinned Homebrew tap.
+/// The job whose steps must install poly via the checksum-verified action at a pinned poly
+/// release rather than an unpinned Homebrew tap.
 const GATE_JOB: &str = "generated-output-gate";
 
-/// Length of a full git commit SHA, the only `uses:` ref shape that is immutable.
-///
-/// The property under test is *that* the action is pinned to a commit, not *which* commit:
-/// naming one SHA here made the gate fail on every routine `Goldziher/poly` bump, and it did --
-/// twice, masked both times because `cargo test` aborts after the first failing test target and
-/// an unrelated failure in an earlier binary ran first. A gate that cries wolf on green changes
-/// gets its constant bumped on reflex, which is not review. The poly release that actually runs
-/// is pinned separately and exactly by [`PINNED_POLY_VERSION`]. ~keep
-const COMMIT_SHA_LENGTH: usize = 40;
+/// The major tag every `uses:` reference in this org is kept on: the action code floats within
+/// one major, and the poly release that actually runs is pinned separately and exactly by
+/// [`PINNED_POLY_VERSION`]. The property under test is that the step installs poly through the
+/// action at that tag -- not a full release tag or a commit SHA, both of which drift out of step
+/// with the rest of the workflow and get bumped on reflex rather than reviewed. ~keep
+const POLY_ACTION_MAJOR_TAG: &str = "v0";
 
 /// The `version:` value the action's `with:` block, and the "Verify downstream tooling"
 /// step's own runtime check, must both agree on.
 const PINNED_POLY_VERSION: &str = "v0.24.0";
 
-/// Whether `block` has an actual `uses:` step line pinning `Goldziher/poly` to a commit SHA.
+/// Whether `block` has an actual `uses:` step line installing `Goldziher/poly` at its major tag.
 ///
 /// Deliberately line-scoped rather than a whole-block substring search: the surrounding
 /// comments and the version-mismatch error message both mention `Goldziher/poly` refs in prose,
-/// so a whole-block search would pass even if the `uses:` line itself were deleted or reverted
-/// to the tag. Only a line whose trimmed text starts with `uses: Goldziher/poly@` counts, and
-/// the ref that follows must be a full lowercase hex commit SHA -- `@v0` and `@v0.27.0` are
-/// mutable and can be repointed, so they are not supply-chain pins. ~keep
-fn uses_line_pins_poly_at_a_commit(block: &str) -> bool {
+/// so a whole-block search would pass even if the `uses:` line itself were deleted. Only a line
+/// whose trimmed text starts with `uses: Goldziher/poly@` counts, and the ref that follows must
+/// be exactly [`POLY_ACTION_MAJOR_TAG`]. ~keep
+fn uses_line_installs_poly_at_major_tag(block: &str) -> bool {
     const USES_PREFIX: &str = "uses: Goldziher/poly@";
     block.lines().any(|line| {
         let Some(rest) = line.trim_start().strip_prefix(USES_PREFIX) else {
             return false;
         };
-        let git_ref = rest.split_whitespace().next().unwrap_or_default();
-        git_ref.len() == COMMIT_SHA_LENGTH
-            && git_ref
-                .chars()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        rest.split_whitespace().next().unwrap_or_default() == POLY_ACTION_MAJOR_TAG
     })
 }
 
 /// Whether `block` has an actual `with:` mapping line setting `version:` to `version`.
 ///
-/// Line-scoped for the same reason as [`uses_line_pins_poly_at_sha`]: the step's own leading
+/// Line-scoped for the same reason as [`uses_line_installs_poly_at_major_tag`]: the step's own leading
 /// comment says "`version: v0.22.0` in `with:` is kept as..." in prose, which a bare
 /// `block.contains("version: v0.22.0")` would accept even with the real `with:` value deleted.
 /// Only a non-comment line whose trimmed text is exactly `version: <version>` -- the shape a
@@ -94,10 +86,10 @@ fn ci_workflow_pins_poly_in_the_generated_output_gate() {
         .unwrap_or_else(|| panic!("{} has no `{GATE_JOB}` job", workflow_path.display()));
 
     assert!(
-        uses_line_pins_poly_at_a_commit(&block),
-        "the `{GATE_JOB}` job in {} must have a `uses: Goldziher/poly@<commit sha>` step, not \
-         just prose mentioning a ref -- a mutable `@v0`/`@v0.27.0` tag pin, or a step deleted \
-         outright, would not satisfy this:\n\
+        uses_line_installs_poly_at_major_tag(&block),
+        "the `{GATE_JOB}` job in {} must have a `uses: Goldziher/poly@{POLY_ACTION_MAJOR_TAG}` \
+         step, not just prose mentioning a ref -- a full release tag, a commit SHA, or a step \
+         deleted outright would not satisfy this:\n\
          --- job block as parsed ---\n{block}",
         workflow_path.display()
     );
@@ -122,43 +114,38 @@ fn ci_workflow_pins_poly_in_the_generated_output_gate() {
     );
 }
 
-/// [`uses_line_pins_poly_at_a_commit`] must actually discriminate: it should fail when the real
-/// `uses:` line is missing, reverted to a tag, or only described in a comment. Without this, a
-/// future edit could reintroduce the exact vacuity this file exists to close, with nothing here
-/// to catch it. ~keep
+/// [`uses_line_installs_poly_at_major_tag`] must actually discriminate: it should fail when the
+/// real `uses:` line is missing, on a different ref shape, or only described in a comment.
+/// Without this, a future edit could reintroduce the exact vacuity this file exists to close,
+/// with nothing here to catch it. ~keep
 #[test]
-fn uses_line_pins_poly_at_a_commit_rejects_comment_only_and_reverted_pins() {
-    let pinned_uses =
-        "      - name: Install poly\n        uses: Goldziher/poly@fed55c3355480f0d1c23cb6084395e66bbb1cdc8 # v0.22.0\n";
+fn uses_line_installs_poly_at_major_tag_rejects_comment_only_and_other_ref_shapes() {
+    let major_tag_uses = "      - name: Install poly\n        uses: Goldziher/poly@v0\n";
     assert!(
-        uses_line_pins_poly_at_a_commit(pinned_uses),
-        "a real `uses:` line pinning a commit SHA must be accepted"
+        uses_line_installs_poly_at_major_tag(major_tag_uses),
+        "a real `uses:` line at the major tag must be accepted"
     );
     let uses_comment_only =
         "      # Goldziher/poly@v0 currently resolves to fed55c3355480f0d1c23cb6084395e66bbb1cdc8\n";
     assert!(
-        !uses_line_pins_poly_at_a_commit(uses_comment_only),
-        "prose mentioning the tag and SHA, with no `uses:` line, must not satisfy the check"
+        !uses_line_installs_poly_at_major_tag(uses_comment_only),
+        "prose mentioning the tag, with no `uses:` line, must not satisfy the check"
     );
-    let uses_tag_pin = "      - name: Install poly\n        uses: Goldziher/poly@v0\n";
+    let uses_release_tag = "      - name: Install poly\n        uses: Goldziher/poly@v0.27.0\n";
     assert!(
-        !uses_line_pins_poly_at_a_commit(uses_tag_pin),
-        "reverting to the mutable `@v0` tag must not satisfy the commit-pin check"
+        !uses_line_installs_poly_at_major_tag(uses_release_tag),
+        "a full release tag drifts out of step with the rest of the workflow and must not satisfy the check"
     );
-    let uses_release_tag_pin = "      - name: Install poly\n        uses: Goldziher/poly@v0.27.0\n";
+    let uses_sha =
+        "      - name: Install poly\n        uses: Goldziher/poly@fed55c3355480f0d1c23cb6084395e66bbb1cdc8 # v0.22.0\n";
     assert!(
-        !uses_line_pins_poly_at_a_commit(uses_release_tag_pin),
-        "an exact-looking but still mutable release tag must not satisfy the commit-pin check"
-    );
-    let uses_abbreviated_sha = "      - name: Install poly\n        uses: Goldziher/poly@fed55c3\n";
-    assert!(
-        !uses_line_pins_poly_at_a_commit(uses_abbreviated_sha),
-        "an abbreviated SHA is ambiguous and must not satisfy the commit-pin check"
+        !uses_line_installs_poly_at_major_tag(uses_sha),
+        "a commit SHA must not satisfy the check"
     );
     let uses_deleted = "      - name: Some other step\n        run: echo hi\n";
     assert!(
-        !uses_line_pins_poly_at_a_commit(uses_deleted),
-        "deleting the `uses:` step outright must not satisfy the commit-pin check"
+        !uses_line_installs_poly_at_major_tag(uses_deleted),
+        "deleting the `uses:` step outright must not satisfy the check"
     );
 }
 
@@ -173,7 +160,7 @@ fn with_block_pins_poly_version_rejects_comment_only_and_deleted_values() {
         with_block_pins_poly_version(pinned_with, version),
         "a real `with: version:` line must be accepted"
     );
-    let with_comment_only = "        # the SHA is the real supply-chain pin; `version: v0.22.0` in `with:` is kept\n";
+    let with_comment_only = "        # the major tag selects the action code; `version: v0.22.0` in `with:` is kept\n";
     assert!(
         !with_block_pins_poly_version(with_comment_only, version),
         "prose that merely mentions `version: v0.22.0` in a comment must not satisfy the check"
