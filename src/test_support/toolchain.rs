@@ -222,6 +222,15 @@ fn census_file() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// The tests below read the process-wide census before and after opening a gate, so two of
+    /// them running on separate `cargo test` threads would see each other's attempt in their own
+    /// delta. Serialize the ones that open a gate through this lock. ~keep
+    static GATE_TESTS: Mutex<()> = Mutex::new(());
+
+    fn serialize_gate_tests() -> std::sync::MutexGuard<'static, ()> {
+        GATE_TESTS.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
     /// The census file has to land inside the cargo target directory, next to the binaries whose
     /// tallies it holds, or `scripts/toolchain-census.sh` reads an empty directory and reports a
     /// clean run as "no fixtures attempted". ~keep
@@ -246,6 +255,7 @@ mod tests {
     /// what to do about it, so a skip can never go unreported.
     #[test]
     fn opening_a_gate_records_exactly_one_attempt() {
+        let _serialized = serialize_gate_tests();
         let before = tally_of(GO.name());
 
         let resolved = GO.open();
@@ -273,6 +283,7 @@ mod tests {
     /// rather than the in-memory tally so a broken flush is caught here and not in CI. ~keep
     #[test]
     fn the_flushed_row_reports_attempted_executed_and_skipped() {
+        let _serialized = serialize_gate_tests();
         let _ = GO.open();
         let path = census_file().expect("census path resolves");
 
