@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **PyO3 trait bridges now support fallible `Arc<dyn Trait>` parameters.** Callback-only DTOs seed reverse-conversion discovery, and generated optional or required bridges construct the host with `PyResult`-safe error handling without introducing an unnecessary mutex.
 
+- **Generated field conversions preserve named map keys and nested JSON metadata maps.** Optional
+  fields receive the same conversion treatment instead of losing their nested shape.
+
+- **Ruby and Python unit enums are hashable map keys without invented required-field defaults.**
+  Required Python structs and Ruby data enums retain their native construction contracts.
+
+- **Serializable nested Python request DTOs containing data enums remain discoverable.** They are
+  no longer incorrectly skipped as opaque fields during conversion discovery.
+
+- **Explicit opaque Python constructors remain lint-clean without an invented `Default` contract.**
+  The allowance is scoped to wrappers that actually require it.
+
 ## [0.93.1] - 2026-09-19
 
 ### Fixed
@@ -325,14 +337,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pure-Rust-tooling policy holds. Without this, a consumer that needs its shell scripts formatted
   had no choice but to hand-edit the generated (and hash-stamped) `poly.toml` directly, which
   `alef verify` then reports as stale bindings on every subsequent regeneration.
-
-- Convert named map keys and nested vectors of JSON metadata maps in generated core/binding field conversions, including optional fields.
-
-- Generate hashable Ruby/Python unit-enum map keys and avoid invented defaults for required Python structs and Ruby data enums.
-
-- Preserve serializable nested Python request DTOs containing data enums instead of incorrectly skipping them as opaque fields.
-
-- Keep explicit opaque Python constructors lint-clean without inventing a Default contract; scope the allowance to wrappers that need it.
 
 ## [0.89.0] - 2026-09-15
 
