@@ -644,11 +644,20 @@ fn gen_enum_stub(
             .collect();
         // There is no corresponding Ruby class for a unit enum. A standalone
         // alias describes its actual symbol values without inventing a constant.
-        return format!(
+        let alias = format!(
             "  type {} = {}",
             unit_enum_alias(&enum_def.name),
             symbol_variants.join(" | ")
         );
+        if emit_docstrings && !enum_def.doc.is_empty() {
+            let doc_lines: Vec<String> = enum_def.doc.lines().map(ToString::to_string).collect();
+            let docs = crate::backends::magnus::template_env::render(
+                "rbs_doc_block.jinja",
+                minijinja::context! { doc_lines },
+            );
+            return format!("{docs}{alias}");
+        }
+        return alias;
     } else if crate::backends::magnus::gen_bindings::is_native_payload_enum(enum_def) {
         for variant in &enum_def.variants {
             let name = crate::codegen::naming::pascal_to_snake(&variant.name);
