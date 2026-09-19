@@ -2,6 +2,7 @@ use super::context::{CliCommand, CliOption, CliSurface, McpItem, McpSurface};
 use crate::core::config::{DeclaredMcpItem, DeclaredMcpKind};
 use anyhow::Context as _;
 use heck::ToKebabCase;
+use proc_macro2::{TokenStream, TokenTree};
 use quote::ToTokens;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -289,17 +290,18 @@ fn commands_from_enum(
 fn option_from_field(field: &syn::Field) -> CliOption {
     let name = field.ident.as_ref().map(ToString::to_string).unwrap_or_default();
     let arg_tokens = attr_tokens(&field.attrs, "arg").unwrap_or_default();
+    let arg_tokens_text = arg_tokens.to_string();
     let long = if let Some(value) = quoted_value(&arg_tokens, "long") {
         Some(value)
-    } else if has_bare_word(&arg_tokens, "long") {
+    } else if has_bare_word(&arg_tokens_text, "long") {
         Some(name.to_kebab_case())
     } else {
         None
     };
-    let short = quoted_value(&arg_tokens, "short").or_else(|| char_value(&arg_tokens, "short"));
+    let short = quoted_value(&arg_tokens, "short").or_else(|| char_value(&arg_tokens_text, "short"));
     let default = quoted_value(&arg_tokens, "default_value")
         .or_else(|| quoted_value(&arg_tokens, "default_value_t"))
-        .or_else(|| bare_value(&arg_tokens, "default_value_t"));
+        .or_else(|| bare_value(&arg_tokens_text, "default_value_t"));
     CliOption {
         name,
         long,
@@ -307,7 +309,7 @@ fn option_from_field(field: &syn::Field) -> CliOption {
         value_name: quoted_value(&arg_tokens, "value_name"),
         ty: type_to_string(&field.ty),
         default,
-        required: has_bare_word(&arg_tokens, "required"),
+        required: has_bare_word(&arg_tokens_text, "required"),
         help: first_doc_paragraph(&field.attrs).unwrap_or_default(),
     }
 }
@@ -336,11 +338,20 @@ fn has_derive(attrs: &[syn::Attribute], derive_name: &str) -> bool {
     })
 }
 
-fn attr_tokens(attrs: &[syn::Attribute], attr_name: &str) -> Option<String> {
+/// Returns the tokens inside an attribute's delimiters, e.g. the `description = "...", ...` in
+/// `#[tool(description = "...", ...)]`. Kept as a `TokenStream` (not stringified) so
+/// [`quoted_value`] can read string literals through `syn`'s own unescaping instead of
+/// re-deriving Rust string-literal syntax (backslash-newline continuations, `\"`, raw strings)
+/// from text.
+fn attr_tokens(attrs: &[syn::Attribute], attr_name: &str) -> Option<TokenStream> {
     attrs.iter().find_map(|attr| {
-        attr.path()
-            .is_ident(attr_name)
-            .then(|| attr.meta.to_token_stream().to_string())
+        if !attr.path().is_ident(attr_name) {
+            return None;
+        }
+        match &attr.meta {
+            syn::Meta::List(list) => Some(list.tokens.clone()),
+            _ => None,
+        }
     })
 }
 
@@ -355,7 +366,7 @@ fn command_about(attrs: &[syn::Attribute]) -> Option<String> {
 }
 
 fn has_attr_word(attrs: &[syn::Attribute], attr_name: &str, word: &str) -> bool {
-    attr_tokens(attrs, attr_name).is_some_and(|tokens| has_bare_word(&tokens, word))
+    attr_tokens(attrs, attr_name).is_some_and(|tokens| has_bare_word(&tokens.to_string(), word))
 }
 
 fn first_doc_paragraph(attrs: &[syn::Attribute]) -> Option<String> {
@@ -381,12 +392,12 @@ fn first_doc_paragraph(attrs: &[syn::Attribute]) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join(" "))
 }
 
-fn annotation_map(tokens: &str) -> BTreeMap<String, String> {
-    let Some(start) = tokens.find("annotations") else {
+fn annotation_map(tokens: &TokenStream) -> BTreeMap<String, String> {
+    let Some(inner) = group_tokens(tokens, "annotations") else {
         return BTreeMap::new();
     };
+    let inner_text = inner.to_string();
     let mut map = BTreeMap::new();
-    let tail = &tokens[start..];
     for key in [
         "title",
         "read_only_hint",
@@ -394,19 +405,58 @@ fn annotation_map(tokens: &str) -> BTreeMap<String, String> {
         "idempotent_hint",
         "open_world_hint",
     ] {
-        if let Some(value) = quoted_value(tail, key).or_else(|| bare_value(tail, key)) {
+        if let Some(value) = quoted_value(&inner, key).or_else(|| bare_value(&inner_text, key)) {
             map.insert(key.to_string(), value);
         }
     }
     map
 }
 
-fn quoted_value(tokens: &str, key: &str) -> Option<String> {
-    let needle = format!("{key} = \"");
-    let start = tokens.find(&needle)? + needle.len();
-    let rest = &tokens[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+/// Finds `name(...)` at the top level of `tokens` and returns the tokens inside its
+/// parentheses, e.g. `group_tokens(tokens, "annotations")` on
+/// `description = "...", annotations(title = "...")` returns `title = "..."`.
+fn group_tokens(tokens: &TokenStream, name: &str) -> Option<TokenStream> {
+    let mut iter = tokens.clone().into_iter().peekable();
+    while let Some(tree) = iter.next() {
+        if let TokenTree::Ident(ident) = &tree
+            && ident == name
+            && let Some(TokenTree::Group(group)) = iter.peek()
+        {
+            return Some(group.stream());
+        }
+    }
+    None
+}
+
+/// Reads `key = "..."` at the top level of `tokens` and returns the literal's decoded value,
+/// using `syn`'s own string-literal unescaping rather than a naive quote-to-quote scan — the
+/// naive form has no way to skip `\"` inside the literal, and copies a `\`-newline continuation
+/// (and the indentation of the wrapped line) verbatim instead of collapsing it per Rust's string
+/// literal syntax.
+fn quoted_value(tokens: &TokenStream, key: &str) -> Option<String> {
+    let mut iter = tokens.clone().into_iter().peekable();
+    while let Some(tree) = iter.next() {
+        let TokenTree::Ident(ident) = &tree else {
+            continue;
+        };
+        if ident != key {
+            continue;
+        }
+        let Some(TokenTree::Punct(punct)) = iter.peek() else {
+            continue;
+        };
+        if punct.as_char() != '=' {
+            continue;
+        }
+        iter.next();
+        let Some(TokenTree::Literal(literal)) = iter.next() else {
+            continue;
+        };
+        if let Ok(lit_str) = syn::parse_str::<syn::LitStr>(&literal.to_string()) {
+            return Some(lit_str.value());
+        }
+    }
+    None
 }
 
 fn char_value(tokens: &str, key: &str) -> Option<String> {
@@ -648,6 +698,54 @@ mod tests {
         assert_eq!(surface.tools[0].name, "do_work");
         assert_eq!(surface.tools[0].description, "Do work");
         assert_eq!(surface.tools[0].title, "Do Work");
+    }
+
+    #[test]
+    fn tool_description_backslash_continuation_collapses_to_a_single_space() {
+        // Proves defect 1 of #374 fixed: a wrapped `#[tool(description = "...")]` literal that
+        // continues with a `\` + newline + indentation must decode per Rust string-literal
+        // syntax (the continuation and the next line's leading whitespace are dropped), not be
+        // copied verbatim into the generated docs. ~keep
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("mcp.rs");
+        std::fs::write(
+            &source,
+            r#"
+            struct Server;
+            #[tool_router]
+            impl Server {
+                #[tool(description = "list, groups, or all=true. \
+        Set fresh=true to bypass cache.")]
+                async fn do_work(&self, Parameters(params): Parameters<crate::Params>) {}
+            }
+            "#,
+        )
+        .unwrap();
+        let surface = extract_mcp_surface(&[source], &[]).unwrap();
+        assert_eq!(
+            surface.tools[0].description,
+            "list, groups, or all=true. Set fresh=true to bypass cache."
+        );
+    }
+
+    #[test]
+    fn tool_description_with_escaped_quote_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("mcp.rs");
+        std::fs::write(
+            &source,
+            r#"
+            struct Server;
+            #[tool_router]
+            impl Server {
+                #[tool(description = "Say \"hello\" to the user")]
+                async fn do_work(&self, Parameters(params): Parameters<crate::Params>) {}
+            }
+            "#,
+        )
+        .unwrap();
+        let surface = extract_mcp_surface(&[source], &[]).unwrap();
+        assert_eq!(surface.tools[0].description, "Say \"hello\" to the user");
     }
 
     #[test]
