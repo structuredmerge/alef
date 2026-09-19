@@ -332,6 +332,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Preserve serializable nested Python request DTOs containing data enums instead of incorrectly skipping them as opaque fields.
 
+- Keep explicit opaque Python constructors lint-clean without inventing a Default contract; scope the allowance to wrappers that need it.
+
 ## [0.89.0] - 2026-09-15
 
 ### Fixed
