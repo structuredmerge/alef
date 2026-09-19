@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.93.1] - 2026-09-19
+
+### Fixed
+
+- **PHP e2e: a wildcard string assertion on a labeled-string enum field compiles and passes.**
+  The e2e classifier restated the PHP backend's `is_tagged_data_enum` and the copy fell behind
+  when the backend started lowering the `Other(String)` shape to a flat class with getters, so
+  `structure[].kind` rendered `$e->kind` (0.87.x, `Undefined property`) and then
+  `(string)$e->getKind()` (0.93.0, `could not be converted to string`). The classifier now calls
+  the backend's own predicates and compares the flat class's discriminator (`->type_tag`), as the
+  node renderer already does.
+- **PHP e2e: a local-mode harness no longer prefers a PIE/PECL-installed copy of the extension.**
+  The #368 change made `run_tests.php` default to `ini_get('extension_dir')` in every harness;
+  only registry-mode runners do so now, and local-mode harnesses test this checkout's cargo build
+  unless `PIE_INSTALLED_EXTENSION_PATH` is set explicitly.
+
 ## [0.93.0] - 2026-09-19
 
 ### Added
