@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.92.2] - 2026-09-19
+
 ### Fixed
 
+- **kotlin-android: `kotlin.time.Duration` DTO fields now cross the JNI boundary as whole
+  milliseconds.** The facade, streaming and value-method Jackson mappers had no codec for the
+  inline class, so Jackson wrote its raw bit pattern and the Rust `duration_ms` adapters read
+  `100.milliseconds` as ~2.3 days; crawlberg's `browser_wait_fixed` e2e test hung to the CI
+  timeout on every run. All three mappers register the millisecond codec the generated test-side
+  mapper already used.
+- **Swift e2e: the `contains` aggregator keeps swift-bridge method syntax under an opaque root.**
+  An array reached through an opaque (`typealias`-to-`RustBridge`) root's getter is a
+  `RustVec<RustBridge.T>` whose elements only expose methods, even when `T` itself is promoted
+  to a first-class struct. The aggregator checked only the element's promotion (a 0.87.0
+  regression) and emitted `item.name` against a `CookieInfoRef`, which did not compile.
 - Trait bridge lookup now prefers a matching type alias over a shared parameter name for each function parameter. Configuration order no longer routes a typed callback to another trait; name-only fallback, parameter order, and options-field exclusions remain unchanged.
 - Magnus: generated tagged-enum Data payload readers now read the stored member instead of calling a nonexistent superclass method. Newtype and named fields retain their payloads, including false and nil. A non-ignored regression executes generated classes with Ruby and sorbet-runtime, both installed in the CI test matrix.
 
