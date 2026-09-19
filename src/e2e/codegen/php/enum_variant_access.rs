@@ -14,29 +14,29 @@
 //! The real condition is the enum's PHP *lowering*, which is a property of the enum's own IR
 //! shape and nothing else.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use crate::backends::php::{flat_field_name, is_tagged_data_enum, is_untagged_data_enum};
 use crate::codegen::serde_enum_repr::tagged_object_tag_key;
-use crate::core::ir::{EnumDef, EnumVariant};
+use crate::core::ir::EnumDef;
 use crate::e2e::field_access::PhpGetterMap;
 
 /// How `backends::php` lowers each IR enum, partitioned exactly as
 /// `backends::php::gen_bindings::rust_bindings::generate_bindings` partitions `api.enums`.
 ///
-/// ~keep The predicates behind the partition (`is_tagged_data_enum`, `is_untagged_data_enum`,
-/// `flat_field_name` in `backends::php::gen_bindings::types::enums`) are the source of truth for
-/// this file, but `backends::php`'s `gen_bindings` module is private so they cannot be called
-/// from here. They are restated below rather than approximated — each is a direct read of IR
-/// fields — and `should_match_the_binding_backends_partition` pins the resulting shapes.
-/// Re-exporting the three from `backends::php` and deleting the copies is the right follow-up;
-/// `is_php_prop_scalar` is already re-exported and IS called directly, which is why this type
-/// exposes the enum-name set that predicate takes rather than restating the predicate too.
+/// ~keep The partition calls the binding backend's own predicates (`is_tagged_data_enum`,
+/// `is_untagged_data_enum`, `flat_field_name`, re-exported from `backends::php`) rather than
+/// restating them: a restated copy silently fell behind when the backend started lowering the
+/// labeled-string shape (`Other(String)`) to a flat class, so the e2e classifier kept rendering
+/// `$item->kind` against a type that only had `get_kind()`.
+/// `should_match_the_binding_backends_partition` pins the resulting shapes.
 #[derive(Debug, Default)]
 pub(super) struct PhpEnumLowering {
     /// Lowered to a flat `#[php_class]` struct: an `Option<T>` field per variant payload plus a
     /// discriminator, each payload exposed through `#[php(getter)] pub fn get_<flat>()`, which
-    /// ext-php-rs registers as the read-only PHP property `<flat>`.
-    flat_class: HashSet<String>,
+    /// ext-php-rs registers as the read-only PHP property `<flat>`. Keyed by enum name; the value
+    /// is the discriminator's PHP property (`<tag>_tag`, e.g. `type_tag`).
+    flat_class: HashMap<String, String>,
     /// Lowered to a PHP `string` and therefore accepted as a `#[php(prop)]` scalar on any struct
     /// field that names one. This is the exact set `backends::php` passes to
     /// [`crate::backends::php::is_php_prop_scalar`] as its `enum_names` argument.
@@ -52,7 +52,10 @@ impl PhpEnumLowering {
         let mut lowering = Self::default();
         for enum_def in enums {
             if is_tagged_data_enum(enum_def) {
-                lowering.flat_class.insert(enum_def.name.clone());
+                lowering.flat_class.insert(
+                    enum_def.name.clone(),
+                    format!("{}_tag", tagged_object_tag_key(enum_def)),
+                );
             } else if is_untagged_data_enum(enum_def) {
                 lowering.json_bridged.insert(enum_def.name.clone());
             } else {
@@ -70,9 +73,7 @@ impl PhpEnumLowering {
     /// Every readable PHP property on the flat class for `enum_def`, or `None` when the enum is
     /// not lowered to a flat class.
     pub(super) fn flat_class_properties(&self, enum_def: &EnumDef) -> Option<Vec<FlatProperty>> {
-        if !self.flat_class.contains(&enum_def.name) {
-            return None;
-        }
+        let tag_property = self.flat_class.get(&enum_def.name)?;
         let mut seen: HashSet<String> = HashSet::new();
         let mut properties = Vec::new();
         for variant in &enum_def.variants {
@@ -87,7 +88,7 @@ impl PhpEnumLowering {
             }
         }
         properties.push(FlatProperty {
-            name: format!("{}_tag", tagged_object_tag_key(enum_def)),
+            name: tag_property.clone(),
             payload_type: None,
         });
         Some(properties)
@@ -100,7 +101,7 @@ impl PhpEnumLowering {
     }
 
     fn is_flat_class(&self, name: &str) -> bool {
-        self.flat_class.contains(name)
+        self.flat_class.contains_key(name)
     }
 }
 
@@ -213,34 +214,21 @@ impl<'a> PhpVariantAccess<'a> {
     pub(super) fn is_unavailable(&self, field: &str) -> bool {
         self.classify(field) != VariantAccess::Available
     }
-}
 
-/// Return true if an enum is a "tagged data enum" — has a serde tag AND at least one variant
-/// carrying data. Restated from `backends::php::gen_bindings::types::enums::is_tagged_data_enum`;
-/// see [`PhpEnumLowering`]'s note. ~keep
-fn is_tagged_data_enum(enum_def: &EnumDef) -> bool {
-    enum_def.serde_tag.is_some() && enum_def.variants.iter().any(|variant| !variant.fields.is_empty())
-}
-
-/// Return true if an enum is an "untagged data enum" — `#[serde(untagged)]` AND at least one
-/// variant carrying data. Restated from
-/// `backends::php::gen_bindings::types::enums::is_untagged_data_enum`. ~keep
-fn is_untagged_data_enum(enum_def: &EnumDef) -> bool {
-    enum_def.serde_untagged && enum_def.variants.iter().any(|variant| !variant.fields.is_empty())
-}
-
-/// The flat struct field name for one field of one variant. Restated from
-/// `backends::php::gen_bindings::types::enums::flat_field_name`. ~keep
-fn flat_field_name(variant: &EnumVariant, field_index: usize) -> String {
-    if crate::codegen::conversions::is_tuple_variant(&variant.fields) {
-        let base = crate::codegen::naming::pascal_to_snake(&variant.name);
-        if variant.fields.len() == 1 {
-            base
-        } else {
-            format!("{base}_{field_index}")
+    /// The discriminator property to read when `field` ends ON an enum the binding lowered to a
+    /// flat class, so a string assertion compares the variant name (`->type_tag`) instead of
+    /// casting a PHP object to string, which throws. `None` when the leaf is anything else or the
+    /// walk cannot positively resolve it. Same owner walk as [`Self::classify`].
+    pub(super) fn flat_class_tag_property(&self, field: &str) -> Option<&str> {
+        let mut owner = self.getter_map.root_type.clone()?;
+        let mut next = None;
+        for segment in field.split('.') {
+            let name = segment.split('[').next().unwrap_or(segment);
+            let resolved = self.getter_map.advance(Some(&owner), name)?;
+            next = Some(resolved.clone());
+            owner = resolved;
         }
-    } else {
-        variant.fields[field_index].name.clone()
+        self.lowering.flat_class.get(&next?).map(String::as_str)
     }
 }
 
@@ -277,7 +265,10 @@ mod tests {
         let type_defs = vec![
             TypeDef {
                 name: "DocumentResult".to_string(),
-                fields: vec![field("metadata", named("DocumentMetadata"))],
+                fields: vec![
+                    field("metadata", named("DocumentMetadata")),
+                    field("structure", TypeRef::Vec(Box::new(named("StructureItem")))),
+                ],
                 ..TypeDef::default()
             },
             TypeDef {
@@ -287,6 +278,11 @@ mod tests {
                     field("kind", named("DocumentKind")),
                     field("payload", named("Payload")),
                 ],
+                ..TypeDef::default()
+            },
+            TypeDef {
+                name: "StructureItem".to_string(),
+                fields: vec![field("kind", named("StructureKind"))],
                 ..TypeDef::default()
             },
             TypeDef {
@@ -334,13 +330,35 @@ mod tests {
                 }],
                 ..EnumDef::default()
             },
+            // Externally tagged, unit variants plus one `Other(String)` label: the backend
+            // lowers this to a flat class with `#[php(getter)]`s, not a PHP string.
+            EnumDef {
+                name: "StructureKind".to_string(),
+                variants: vec![
+                    EnumVariant {
+                        name: "Function".to_string(),
+                        ..EnumVariant::default()
+                    },
+                    EnumVariant {
+                        name: "Other".to_string(),
+                        is_tuple: true,
+                        fields: vec![field("_0", TypeRef::String)],
+                        ..EnumVariant::default()
+                    },
+                ],
+                ..EnumDef::default()
+            },
         ];
         (type_defs, enums)
     }
 
     fn render(field_path: &str) -> String {
+        render_assertion_of("equals", field_path, serde_json::json!(3))
+    }
+
+    fn render_assertion_of(assertion_type: &str, field_path: &str, value: serde_json::Value) -> String {
         let (type_defs, enums) = ir();
-        let result_fields: HashSet<String> = ["metadata".to_string()].into_iter().collect();
+        let result_fields: HashSet<String> = ["metadata".to_string(), "structure".to_string()].into_iter().collect();
         let lowering = PhpEnumLowering::from_enums(&enums);
         let getter_map =
             super::super::types::build_php_getter_map(&type_defs, &enums, &CallConfig::default(), &result_fields);
@@ -356,9 +374,9 @@ mod tests {
         )
         .with_ir_fields(reachable, excluded, optional);
         let assertion = Assertion {
-            assertion_type: "equals".to_string(),
+            assertion_type: assertion_type.to_string(),
             field: Some(field_path.to_string()),
-            value: Some(serde_json::json!(3)),
+            value: Some(value),
             ..Assertion::default()
         };
         let mut out = String::new();
@@ -453,6 +471,26 @@ mod tests {
         assert!(out.contains("$result->getMetadata()->kind"), "got: {out}");
     }
 
+    /// `structure[].kind` ends on a labeled-string enum the binding lowers to a flat class. A
+    /// string `contains` must compare the class's discriminator: `(string)` on the object itself
+    /// throws `could not be converted to string` (the 0.93.0 consumer PHP e2e
+    /// failure, 18 tests), and `$e->kind` is not a property at all (the 0.87.1 failure).
+    #[test]
+    fn a_wildcard_contains_on_a_flat_class_enum_leaf_compares_the_tag_property() {
+        let out = render_assertion_of("contains", "structure[].kind", serde_json::json!("Function"));
+        assert_eq!(
+            out,
+            "        $this->assertTrue((bool)array_filter($result->getStructure(), fn($e) => str_contains((string)$e->getKind()->type_tag, \"Function\")));\n",
+        );
+    }
+
+    /// CONTROL: a wildcard leaf that is a plain `#[php(prop)]` string enum keeps the bare cast.
+    #[test]
+    fn a_wildcard_contains_on_a_string_enum_leaf_keeps_the_plain_cast() {
+        let out = render_assertion_of("contains", "metadata.kind", serde_json::json!("Report"));
+        assert!(!out.contains("_tag"), "got: {out}");
+    }
+
     /// The partition must reproduce the binding backend's three-way split, since it is what
     /// decides both the skip verdict and whether a field is a `#[php(prop)]` scalar.
     #[test]
@@ -472,9 +510,19 @@ mod tests {
             !scalars.contains("Payload"),
             "an untagged data enum is bridged as JSON, not a #[php(prop)] scalar"
         );
+        assert!(
+            !scalars.contains("StructureKind"),
+            "a labeled-string enum (unit variants plus `Other(String)`) is a flat class with \
+             getters, not a #[php(prop)] scalar -- the backend's is_tagged_data_enum says so"
+        );
         assert!(lowering.flat_class_properties(&enums[1]).is_none());
         let properties = lowering.flat_class_properties(&enums[0]).expect("flat class");
         let names: Vec<&str> = properties.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["spreadsheet", "fiction_book", "type_tag"]);
+        let labeled = lowering
+            .flat_class_properties(&enums[3])
+            .expect("labeled-string flat class");
+        let names: Vec<&str> = labeled.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["other", "type_tag"]);
     }
 }

@@ -309,7 +309,12 @@ pub(super) fn render_assertion(
         // question than "is the ELEMENT type's field a getter" whenever a result envelope and its
         // collection elements classify differently -- `php_element_accessor` takes `array_part` so
         // it can resolve the actual element owner type instead. ~keep
-        let elem_accessor = field_resolver.php_element_accessor(&elem_part, &array_part, "$e");
+        let mut elem_accessor = field_resolver.php_element_accessor(&elem_part, &array_part, "$e");
+        // A leaf the binding lowered to a flat data-enum class has no string form; compare its
+        // discriminator, as the node renderer's `?.["type"]` does. ~keep
+        if let Some(tag_property) = variant_access.flat_class_tag_property(f) {
+            elem_accessor = format!("{elem_accessor}->{tag_property}");
+        }
         match assertion.assertion_type.as_str() {
             "contains" | "contains_all" | "not_contains" => {
                 let assert_fn = if assertion.assertion_type == "not_contains" {
