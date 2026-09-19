@@ -8,7 +8,7 @@ use crate::core::hash;
 use crate::process::{configure_process_group, kill_process_tree, termination};
 use anyhow::Context as _;
 use rayon::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
 #[cfg(all(test, unix))]
@@ -133,13 +133,69 @@ fn has_mock_server_bin(manifest_path: &std::path::Path) -> anyhow::Result<bool> 
     Ok(content.contains("[[bin]]") && content.contains("name = \"mock-server\""))
 }
 
+/// Resolve the built mock-server binary's path by asking cargo where it actually put it,
+/// rather than assuming `<manifest's dir>/target/release/mock-server`.
+///
+/// That hard-coded join is wrong whenever `CARGO_TARGET_DIR`, a `.cargo/config.toml`
+/// `build.target-dir`, or workspace membership redirects the build output elsewhere, and it
+/// never adds `EXE_SUFFIX`, so it silently misses the binary on Windows.
+///
+/// Mirrors the `cargo metadata` shell-out in `crate::core::config::registry`.
+///
+/// # Errors
+///
+/// Returns an error when `cargo metadata` fails to run or exits non-zero, or when its JSON
+/// output cannot be parsed (see [`mock_server_binary_path_from_metadata`]).
+fn mock_server_binary_path(manifest_path: &Path) -> anyhow::Result<PathBuf> {
+    let output = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps", "--manifest-path"])
+        .arg(manifest_path)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run `cargo metadata --manifest-path {}`",
+                manifest_path.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "`cargo metadata --manifest-path {}` failed: {}",
+            manifest_path.display(),
+            stderr.trim()
+        );
+    }
+
+    let json = String::from_utf8_lossy(&output.stdout);
+    mock_server_binary_path_from_metadata(&json)
+        .with_context(|| format!("resolving mock-server binary path for {}", manifest_path.display()))
+}
+
+/// Pure function: parse `cargo metadata --format-version 1` JSON and join the release
+/// mock-server binary's path onto its `target_directory`, appending `EXE_SUFFIX`.
+///
+/// Kept separate from [`mock_server_binary_path`] so this logic is unit-testable without
+/// running cargo.
+fn mock_server_binary_path_from_metadata(metadata_json: &str) -> anyhow::Result<PathBuf> {
+    let metadata: serde_json::Value =
+        serde_json::from_str(metadata_json).context("failed to parse cargo metadata JSON")?;
+    let target_directory = metadata["target_directory"]
+        .as_str()
+        .context("cargo metadata JSON missing `target_directory`")?;
+    Ok(Path::new(target_directory)
+        .join("release")
+        .join(format!("mock-server{}", std::env::consts::EXE_SUFFIX)))
+}
+
 /// Build and start the shared e2e mock-server, returning a handle whose env vars
 /// (`MOCK_SERVER_URL`, optional `MOCK_SERVERS`) must be injected into every
 /// test-app `run` command.
 ///
 /// The mock-server crate is the alef-generated `<e2e.output>/rust` project, built
-/// in release (mirroring sample_project's Taskfile `e2e:build`), producing the
-/// `mock-server` binary at `<e2e.output>/rust/target/release/mock-server`. On
+/// in release (mirroring sample_project's Taskfile `e2e:build`); its built binary's path
+/// is resolved via `cargo metadata` (see [`mock_server_binary_path`]) rather than assumed,
+/// since `CARGO_TARGET_DIR` and workspace membership can move it elsewhere. On
 /// startup the binary prints `MOCK_SERVER_URL=http://127.0.0.1:<port>` (and, when
 /// host-root fixtures exist, `MOCK_SERVERS={...}`) to stdout, then blocks reading
 /// stdin until the parent closes the pipe.
@@ -181,7 +237,7 @@ fn start_mock_server(config: &ResolvedCrateConfig) -> anyhow::Result<Option<Mock
     )
     .context("failed to build the e2e mock-server")?;
 
-    let bin_path = rust_crate_dir.join("target").join("release").join("mock-server");
+    let bin_path = mock_server_binary_path(&manifest_path)?;
     if !bin_path.exists() {
         anyhow::bail!("e2e mock-server binary not found after build: {}", bin_path.display());
     }
@@ -743,6 +799,147 @@ run = "test \"$ALLOW_PRIVATE_NETWORK\" = true"
         assert!(
             wait_until_gone(pid),
             "a plain child with no descendants must still be reaped on drop"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mock_server_binary_path_tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Serializes tests in this module that export `CARGO_TARGET_DIR` process-globally so a real
+    /// `cargo` subprocess sees it -- the only way to prove [`mock_server_binary_path`] actually
+    /// follows it, since it spawns `cargo metadata` itself and offers no env-injection hook.
+    ///
+    /// This only protects tests that take this lock, not an unrelated concurrent test elsewhere
+    /// in this binary shelling out to `cargo` at the same instant; the codebase accepts that same
+    /// trade-off in `test_apps::env_exactness_tests` for the identical reason. The window here is
+    /// small (building one `fn main() {}` binary) and `mock-server` is not a variable name any
+    /// other test's env-dependent assertion could collide with. ~keep
+    static CARGO_TARGET_DIR_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that holds [`CARGO_TARGET_DIR_LOCK`] and exports `CARGO_TARGET_DIR` in this
+    /// process for its lifetime, restoring the previous value (or absence) on drop.
+    struct CargoTargetDirGuard {
+        _lock: MutexGuard<'static, ()>,
+        previous: Option<String>,
+    }
+
+    impl CargoTargetDirGuard {
+        fn set(path: &Path) -> Self {
+            let lock = CARGO_TARGET_DIR_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+            let previous = std::env::var("CARGO_TARGET_DIR").ok();
+            // SAFETY: `_lock` is held for this guard's whole lifetime, so no other test in this
+            // module can read or write `CARGO_TARGET_DIR` concurrently.
+            unsafe { std::env::set_var("CARGO_TARGET_DIR", path) };
+            Self { _lock: lock, previous }
+        }
+    }
+
+    impl Drop for CargoTargetDirGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `set` -- `_lock` is still held during `Drop`.
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var("CARGO_TARGET_DIR", value),
+                    None => std::env::remove_var("CARGO_TARGET_DIR"),
+                }
+            }
+        }
+    }
+
+    /// Whether `cargo` runs at all, not merely resolves -- mirrors the `dart_is_runnable`
+    /// convention in `cli::pipeline::generate::scaffold_lockfile_relock_tests`. Cargo is
+    /// expected to be present everywhere this suite runs; the check exists so the test fails
+    /// closed (skips) rather than confusingly, on the rare host where it is not.
+    fn cargo_is_runnable() -> bool {
+        static RUNNABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *RUNNABLE.get_or_init(|| {
+            std::process::Command::new("cargo")
+                .arg("--version")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+    }
+
+    #[test]
+    fn resolves_release_binary_path_from_an_external_target_directory() {
+        let json = r#"{"target_directory": "/var/tmp/some-external-target"}"#;
+        let path = mock_server_binary_path_from_metadata(json).unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from(format!(
+                "/var/tmp/some-external-target/release/mock-server{}",
+                std::env::consts::EXE_SUFFIX
+            ))
+        );
+    }
+
+    #[test]
+    fn errors_when_target_directory_is_missing() {
+        let err = mock_server_binary_path_from_metadata(r#"{"packages": []}"#).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("missing `target_directory`"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn errors_on_invalid_json() {
+        let err = mock_server_binary_path_from_metadata("not json").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("failed to parse cargo metadata JSON"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// End-to-end: builds a tiny throwaway crate under a custom `CARGO_TARGET_DIR` and asserts
+    /// [`mock_server_binary_path`] resolves the real binary cargo produced there, proving the fix
+    /// actually follows `CARGO_TARGET_DIR` instead of assuming `<crate>/target`.
+    #[test]
+    fn resolves_binary_built_under_a_custom_cargo_target_dir() {
+        if !cargo_is_runnable() {
+            return;
+        }
+
+        let crate_dir = tempfile::tempdir().expect("tempdir for crate");
+        let target_dir = tempfile::tempdir().expect("tempdir for CARGO_TARGET_DIR");
+
+        std::fs::write(
+            crate_dir.path().join("Cargo.toml"),
+            "[package]\nname = \"mock-server\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
+             [[bin]]\nname = \"mock-server\"\npath = \"src/main.rs\"\n",
+        )
+        .expect("write Cargo.toml");
+        std::fs::create_dir_all(crate_dir.path().join("src")).expect("create src dir");
+        std::fs::write(crate_dir.path().join("src/main.rs"), "fn main() {}\n").expect("write main.rs");
+
+        let manifest_path = crate_dir.path().join("Cargo.toml");
+        let _guard = CargoTargetDirGuard::set(target_dir.path());
+
+        let status = std::process::Command::new("cargo")
+            .args(["build", "--release", "--manifest-path"])
+            .arg(&manifest_path)
+            .status()
+            .expect("run cargo build");
+        assert!(status.success(), "cargo build for the throwaway crate failed");
+
+        let resolved = mock_server_binary_path(&manifest_path).expect("resolve mock-server binary path");
+        assert_eq!(
+            resolved,
+            target_dir
+                .path()
+                .join("release")
+                .join(format!("mock-server{}", std::env::consts::EXE_SUFFIX))
+        );
+        assert!(
+            resolved.exists(),
+            "resolved path {} does not exist after cargo build",
+            resolved.display()
         );
     }
 }
