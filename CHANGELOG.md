@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test binaries, so a custom target directory measured nothing and exited 0. A shared
   `scripts/toolchain-census-dir.sh` derives the directory from `cargo metadata` for all three,
   spelling a Windows target directory with forward slashes. (#379)
+- **Docs extraction decodes `#[tool(description = "...")]` and friends as Rust string literals.**
+  A `\`-newline continuation was copied byte-for-byte (with the next line's indentation) into the
+  generated SKILL.md, and an escaped `\"` was taken as the closing quote. Attribute values are now
+  read from the token tree through `syn::LitStr`, so continuations, escapes and raw strings all
+  round-trip. (#374)
+- **`sync-versions` natively updates `[crates.<name>.e2e.packages.<lang>].version`**, keeping the
+  `v` prefix rule already applied to the `e2e.registry.packages` override. The base block had no
+  native sync, and the `sync.text_replacements` workaround is refused on `alef.toml` (no provenance
+  marker), so the pin drifted silently. (#373)
 - **kotlin-android: `kotlin.time.Duration` DTO fields now cross the JNI boundary as whole
   milliseconds.** The facade, streaming and value-method Jackson mappers had no codec for the
   inline class, so Jackson wrote its raw bit pattern and the Rust `duration_ms` adapters read
