@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **PyO3 trait bridges now support fallible `Arc<dyn Trait>` parameters.** Callback-only DTOs seed reverse-conversion discovery, and generated optional or required bridges construct the host with `PyResult`-safe error handling without introducing an unnecessary mutex.
 
+- **Ruby trait dispatchers process VM shutdown interrupts while idle.** Protected Magnus checks
+  prevent shutdown from waiting indefinitely for live registry senders.
+
 ## [0.93.1] - 2026-09-19
 
 ### Fixed
@@ -325,8 +328,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pure-Rust-tooling policy holds. Without this, a consumer that needs its shell scripts formatted
   had no choice but to hand-edit the generated (and hash-stamped) `poly.toml` directly, which
   `alef verify` then reports as stale bindings on every subsequent regeneration.
-
-- Let idle Ruby trait dispatchers process VM shutdown interrupts through protected Magnus checks instead of waiting indefinitely for live registry senders.
 
 ## [0.89.0] - 2026-09-15
 
