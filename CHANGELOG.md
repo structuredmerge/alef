@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **PyO3 trait bridges now support fallible `Arc<dyn Trait>` parameters.** Callback-only DTOs seed reverse-conversion discovery, and generated optional or required bridges construct the host with `PyResult`-safe error handling without introducing an unnecessary mutex.
 
+- **Clone read-only opaque handles cross Ruby and Python callbacks as native objects.** They are
+  no longer serialized or exposed as raw Rust values.
+
 ## [0.93.1] - 2026-09-19
 
 ### Fixed
@@ -325,8 +328,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pure-Rust-tooling policy holds. Without this, a consumer that needs its shell scripts formatted
   had no choice but to hand-edit the generated (and hash-stamped) `poly.toml` directly, which
   `alef verify` then reports as stale bindings on every subsequent regeneration.
-
-- Pass Clone read-only opaque handles as native Ruby callback objects and native owned synchronous Python callback objects instead of serializing or exposing raw Rust values.
 
 ## [0.89.0] - 2026-09-15
 
