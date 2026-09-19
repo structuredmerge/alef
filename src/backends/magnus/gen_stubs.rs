@@ -48,6 +48,7 @@ pub fn gen_stubs(
     // (the bare trait name is never declared — only the `_Name` interface is). ~keep
     let trait_interfaces: std::collections::HashSet<&str> = trait_bridges
         .iter()
+        .filter(|bridge| crate::backends::magnus::trait_bridge::active_bridge_trait(bridge, api).is_some())
         .filter(|bridge| !bridge.resolve_methods(api).is_empty())
         .filter(|bridge| api.types.iter().any(|t| t.name == bridge.trait_name))
         .map(|bridge| bridge.trait_name.as_str())
@@ -101,6 +102,9 @@ pub fn gen_stubs(
         lines.push("".to_string());
     }
     for bridge in trait_bridges {
+        if crate::backends::magnus::trait_bridge::active_bridge_trait(bridge, api).is_none() {
+            continue;
+        }
         if let Some(stub) = gen_plugin_interface_stub(bridge, api) {
             lines.push(stub);
             lines.push("".to_string());

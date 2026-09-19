@@ -147,6 +147,43 @@ fn test_rbs_plugin_bridge_emits_typed_interface_and_typed_register() {
 }
 
 #[test]
+fn test_rbs_plugin_interface_respects_ruby_exclusion() {
+    let backend = MagnusBackend;
+    let mut config = make_config_with_stubs();
+    config.trait_bridges = vec![alef::core::config::TraitBridgeConfig {
+        trait_name: "Greeter".to_string(),
+        exclude_languages: vec!["ruby".to_string()],
+        ..Default::default()
+    }];
+    let greeter = TypeDef {
+        name: "Greeter".to_string(),
+        rust_path: "test_lib::Greeter".to_string(),
+        is_trait: true,
+        is_opaque: true,
+        methods: vec![MethodDef {
+            name: "process".to_string(),
+            return_type: TypeRef::String,
+            receiver: Some(ReceiverKind::Ref),
+            ..MethodDef::default()
+        }],
+        ..TypeDef::default()
+    };
+    let api = ApiSurface {
+        crate_name: "test_lib".to_string(),
+        version: "0.1.0".to_string(),
+        types: vec![greeter],
+        ..Default::default()
+    };
+
+    let content = backend.generate_type_stubs(&api, &config).unwrap()[0].content.clone();
+
+    assert!(
+        !content.contains("interface _Greeter"),
+        "an excluded Ruby bridge must not emit an RBS interface:\n{content}"
+    );
+}
+
+#[test]
 fn test_rbs_plugin_interface_omits_defaulted_methods_and_documents_them() {
     let backend = MagnusBackend;
     let mut config = make_config_with_stubs();
