@@ -160,12 +160,12 @@ pub fn gen_enum_with_module(
                 snake_name => &snake_name,
                 wire_name => &wire_name,
                 accepted_input_values => accepted_unit_variant_input_spellings(&variant.name, &snake_name, &wire_name),
-                        typed_newtype => enum_def.serde_tag.is_some() && variant.fields.len() == 1
+                typed_newtype => enum_def.serde_tag.is_some() && variant.fields.len() == 1
                     && variant.fields[0].name == "_0"
-                            && matches!(&variant.fields[0].ty, TypeRef::Named(name)
-                                if types.iter().any(|t| t.name == *name && !t.is_opaque && !t.is_trait)),
-                        payload_type => variant.fields.first().map(|field| serde_field_type(&field.ty, field.optional)),
-                        payload_boxed => variant.fields.first().is_some_and(|field| field.is_boxed),
+                    && matches!(&variant.fields[0].ty, TypeRef::Named(name)
+                        if types.iter().any(|t| t.name == *name && !t.is_opaque && !t.is_trait)),
+                payload_type => variant.fields.first().map(|field| serde_field_type(&field.ty, field.optional)),
+                payload_boxed => variant.fields.first().is_some_and(|field| field.is_boxed),
             }
         })
         .collect();
