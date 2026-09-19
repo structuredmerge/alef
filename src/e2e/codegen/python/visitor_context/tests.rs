@@ -457,6 +457,5 @@ fn python_config_excluding(exclude_types: &[&str]) -> crate::core::config::Pytho
         extra_init_imports: Default::default(),
         reexported_types: Vec::new(),
         target_dep_overrides: Vec::new(),
-        send_sync_types: Vec::new(),
     }
 }

@@ -37,7 +37,6 @@ fn python_config(exclude_types: &[&str], capsule_types: &[&str]) -> PythonConfig
         extra_init_imports: Default::default(),
         reexported_types: Vec::new(),
         target_dep_overrides: Vec::new(),
-        send_sync_types: Vec::new(),
     }
 }
 

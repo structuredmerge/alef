@@ -175,7 +175,6 @@ fn test_scaffold_language_level_extra_deps_override_crate_level() {
         extra_init_imports: std::collections::BTreeMap::new(),
         reexported_types: Vec::new(),
         target_dep_overrides: Vec::new(),
-        send_sync_types: Vec::new(),
     });
     let rendered = render_extra_deps(&config, Language::Python);
     assert!(rendered.contains("shared-dep = \"2.0\""), "got: {rendered}");
