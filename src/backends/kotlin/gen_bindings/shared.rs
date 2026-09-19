@@ -215,7 +215,7 @@ fn is_primitive_or_stdlib_type(type_name: &str) -> bool {
 /// ~keep Without this, Jackson serializes a `kotlin.time.Duration` (an inline class over a
 /// `Long`) as its raw bit pattern — nanoseconds shifted left by the unit bit — so a
 /// `100.milliseconds` `extra_wait` crossed the JNI boundary as `200000000`, which Rust read as
-/// ~2.3 days of milliseconds and crawlberg's kotlin_android e2e suite hung until the CI job
+/// ~2.3 days of milliseconds and a consumer's kotlin_android e2e suite hung until the CI job
 /// timeout. Every mapper that marshals a generated DTO to or from the native side must carry
 /// this link; `indent` is the column the chain's `.registerModule(` lines sit at.
 pub fn duration_millis_jackson_module(indent: usize) -> String {

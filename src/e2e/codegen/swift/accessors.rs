@@ -449,8 +449,8 @@ pub(super) fn swift_stringy_aggregator_contains_assert(
     // (`typealias`-to-`RustBridge`) root only has an `items()` getter returning
     // `RustVec<RustBridge.T>`, whose elements expose swift-bridge METHODS regardless of `T`
     // being independently promoted — the same rule `accessor_walk`'s `via_opaque` pins for
-    // traversal chains. crawlberg's `CrawlResult.cookies` (opaque root, promoted `CookieInfo`)
-    // rendered `item.name` against a `CookieInfoRef` and failed to compile.
+    // traversal chains. A consumer's opaque root with a promoted element type rendered
+    // `item.name` against a `<T>Ref` and failed to compile.
     let is_first_class =
         field_resolver.swift_is_first_class(Some(&root_type)) && field_resolver.swift_is_first_class(Some(&elem_type));
     let mut texts_lines: Vec<String> = Vec::new();

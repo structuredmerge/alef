@@ -176,9 +176,9 @@ fn e2e_config() -> E2eConfig {
 }
 
 /// The same shape with the ROOT demoted: `GateResult` stays a `typealias` to the opaque
-/// `RustBridge.GateResult` while `GateItem` is still promoted. This is exactly crawlberg's
-/// `CrawlResult.cookies` — `CookieInfo` is a first-class Codable struct, but the value reached
-/// through the opaque root's `cookies()` getter is a `RustVec<RustBridge.CookieInfo>`, whose
+/// `RustBridge.GateResult` while `GateItem` is still promoted. This is the consumer shape that
+/// motivated it — the element is a first-class Codable struct, but the value reached through
+/// the opaque root's collection getter is a `RustVec<RustBridge.T>`, whose
 /// elements only have swift-bridge METHOD accessors. Element promotion alone must not decide
 /// the syntax. ~keep
 fn opaque_root_map() -> SwiftFirstClassMap {
@@ -392,8 +392,8 @@ fn payload_carrying_enum_leaf_renders_a_real_assertion_not_a_skip() {
 /// Class 3 with an OPAQUE root: the aggregator must fall back to method-call syntax for every
 /// stringy field, because `result.items()` on a `typealias`-to-`RustBridge` root yields a
 /// `RustVec<RustBridge.GateItem>` — first-class promotion of `GateItem` is irrelevant there.
-/// Regression for crawlberg's `CookiesTests.swift` (alef 0.87.0 → `texts.append(item.name)`
-/// against a `CookieInfoRef`, "cannot convert value of type '() -> RustString' to 'String'").
+/// Regression for a consumer's generated suite (alef 0.87.0 → `texts.append(item.name)`
+/// against a `<T>Ref`, "cannot convert value of type '() -> RustString' to 'String'").
 #[test]
 fn stringy_aggregator_uses_method_syntax_when_root_is_opaque() {
     let fixture = wildcard_fixture("aggregator_opaque_root", "contains", "items", Some("x"));

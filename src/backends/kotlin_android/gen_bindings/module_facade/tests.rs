@@ -232,7 +232,7 @@ fn facade_jackson_config_uses_the_non_deprecated_default_property_inclusion_sett
 /// Regression: `kotlin.time.Duration` is an inline class over a `Long`, and Jackson with no
 /// codec writes its raw bit pattern (nanoseconds shifted by the unit bit) — `100.milliseconds`
 /// became `200000000` on the wire, which the Rust `duration_ms` adapter read as ~2.3 days.
-/// crawlberg's `browser_wait_fixed` kotlin_android e2e test hung on exactly that until the CI
+/// a consumer's fixed-wait kotlin_android e2e test hung on exactly that until the CI
 /// job timeout. Every mapper that marshals a DTO across JNI must carry the millisecond codec.
 #[test]
 fn every_android_dto_mapper_encodes_kotlin_duration_as_milliseconds() {
