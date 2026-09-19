@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Preserve explicit null assertion values when loading and round-tripping e2e fixtures, while keeping omitted expected values absent.
+- **An explicit `"value": null` in a fixture assertion is no longer read as "no expected value".**
+  Serde's `Option` visitor collapsed a present `null` and a missing `value` key to `None`, so
+  `{"type":"equals","field":"output","value":null}` reached every backend without an expectation
+  (the Zig `expectEqual(.null, …)` branch was unreachable), and serializing an assertion with no
+  value wrote `"value": null` back. A present value now deserializes as-is, including `null`, and
+  an absent one stays absent on round-trip. (#406)
 
 ## [0.93.1] - 2026-09-19
 
