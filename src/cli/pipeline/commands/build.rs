@@ -28,6 +28,8 @@ mod build_orchestration_tests;
 #[cfg(test)]
 mod ffi_stage_post_build_tests;
 #[cfg(all(test, unix))]
+mod napi_cli_test_support;
+#[cfg(all(test, unix))]
 mod napi_js_ownership_tests;
 #[cfg(all(test, unix))]
 mod napi_package_json_path_tests;

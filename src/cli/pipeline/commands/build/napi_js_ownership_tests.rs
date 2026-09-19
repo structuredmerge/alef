@@ -17,26 +17,11 @@
 //!
 //! [`NAPI_AUTO_DTS_FILENAME`]: crate::core::template_versions::npm::NAPI_AUTO_DTS_FILENAME
 
+use super::napi_cli_test_support::napi_cli_is_runnable;
 use super::*;
 use crate::core::backend::{BuildConfig, BuildDependency};
 use crate::core::config::NewAlefConfig;
 use crate::core::template_versions as tv;
-
-/// Whether `npx` runs, not merely resolves: a version-manager shim (e.g. nvm) spawns fine then
-/// exits non-zero, so a PATH-only check would leave the skip below unreachable and fire the
-/// assert everywhere Node is absent. ~keep
-fn npx_is_runnable() -> bool {
-    static RUNNABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *RUNNABLE.get_or_init(|| {
-        std::process::Command::new("npx")
-            .arg("--version")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-    })
-}
 
 fn napi_build_config() -> BuildConfig {
     BuildConfig {
@@ -146,7 +131,7 @@ const USER_OWNED_INDEX_JS: &str = "// USER-AUTHORED after alef scaffold -- napi 
 /// tests.
 #[test]
 fn napi_build_never_clobbers_alefs_scaffolded_index_js() {
-    if !npx_is_runnable() {
+    if !napi_cli_is_runnable() {
         return;
     }
 
