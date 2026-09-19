@@ -64,65 +64,6 @@ fn sync_e2e_java_pom_no_system_scope_returns_none() {
     );
 }
 
-const GO_MOD_E2E: &str = "\
-module e2e_go
-
-go 1.26
-
-require (
-\tgithub.com/sample_crate-dev/sample_crawler/packages/go v0.3.0-rc.27
-\tgithub.com/stretchr/testify v1.11.1
-)
-";
-
-const GO_MOD_E2E_LOCAL_REPLACE: &str = "\
-module e2e_go
-
-go 1.26
-
-require (
-\tgithub.com/sample_crate-dev/sample_crawler/packages/go v0.3.0-rc.27
-\tgithub.com/stretchr/testify v1.11.1
-)
-
-replace github.com/sample_crate-dev/sample_crawler/packages/go => ../../packages/go
-";
-
-#[test]
-fn sync_e2e_go_mod_updates_library_require_line() {
-    let fragment = "github.com/sample_crate-dev/sample_crawler/packages/go";
-    let result = sync_e2e_go_mod(GO_MOD_E2E, fragment, "0.3.0-rc.28");
-    assert!(result.is_some(), "expected Some when version changes");
-    let new = result.unwrap();
-    assert!(
-        new.contains("github.com/sample_crate-dev/sample_crawler/packages/go v0.3.0-rc.28"),
-        "library require line must be updated:\n{new}"
-    );
-    assert!(
-        new.contains("github.com/stretchr/testify v1.11.1"),
-        "testify version must be unchanged:\n{new}"
-    );
-    assert!(!new.contains("v0.3.0-rc.27"), "old version must be gone:\n{new}");
-}
-
-#[test]
-fn sync_e2e_go_mod_is_idempotent() {
-    let fragment = "github.com/sample_crate-dev/sample_crawler/packages/go";
-    let first = sync_e2e_go_mod(GO_MOD_E2E, fragment, "0.3.0-rc.28").unwrap();
-    let second = sync_e2e_go_mod(&first, fragment, "0.3.0-rc.28");
-    assert!(second.is_none(), "second call with same version must be a no-op");
-}
-
-#[test]
-fn sync_e2e_go_mod_skips_local_replace_placeholder_version() {
-    let fragment = "github.com/sample_crate-dev/sample_crawler/packages/go";
-    let result = sync_e2e_go_mod(GO_MOD_E2E_LOCAL_REPLACE, fragment, "0.3.0-rc.28");
-    assert!(
-        result.is_none(),
-        "local replace entries keep generated placeholder versions"
-    );
-}
-
 const SWIFT_PACKAGE_FIRST_PARTY_FIRST: &str = "\
 // swift-tools-version: 6.0
 import PackageDescription

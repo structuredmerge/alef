@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`alef publish validate` accepts a Go module whose `/vN` major suffix is omitted from its package
+  directory.** Go permits the layout (`packages/go` hosting `…/packages/go/v2`), and `alef go-tag`
+  already tags both; only a directory carrying a *different* `vM` suffix is flagged, and the message
+  names both directories. (#364)
+- **Version sync rewrites every form of the library's `require` in the e2e `go.mod`.** The rewrite
+  used to find the module through a regex that needed an indented, un-suffixed `…/packages/go`, so a
+  `/v2`-suffixed block entry or a single-line `require` was skipped silently. It now matches the
+  resolved Go module path exactly, in both syntaxes, keeps trailing comments, and still leaves
+  locally replaced modules and unrelated dependencies alone. (#359)
 - **kotlin-android: `kotlin.time.Duration` DTO fields now cross the JNI boundary as whole
   milliseconds.** The facade, streaming and value-method Jackson mappers had no codec for the
   inline class, so Jackson wrote its raw bit pattern and the Rust `duration_ms` adapters read

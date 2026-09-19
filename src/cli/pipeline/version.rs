@@ -210,7 +210,7 @@ pub fn sync_versions(
     sync_node_and_ruby_packages(config, &version, &ruby_version, &writable, &mut state)?;
     sync_remaining_package_manifests(config, &version, &writable, &mut state)?;
     sync_go_and_swift(config, &version, &writable, &mut state)?;
-    sync_e2e_harness_files(&version, &ruby_version, &writable, &mut state)?;
+    sync_e2e_harness_files(config, &version, &ruby_version, &writable, &mut state)?;
     sync_citation_and_extra_paths(config, &version, release_date_override, &writable, &mut state)?;
 
     finalize_version_sync(config, config_path, &version, no_regen, skip_swift_checksum, &mut state)
@@ -757,23 +757,17 @@ fn sync_e2e_java_pom_file(version: &str, updated: &mut Vec<String>) -> anyhow::R
 }
 
 fn sync_e2e_go_mod_file(
+    go_module: &str,
     writable: &crate::cli::git::IgnoreFilter,
     version: &str,
     updated: &mut Vec<String>,
 ) -> anyhow::Result<()> {
     for entry in writable.glob("e2e/go/go.mod") {
-        if let Ok(content) = std::fs::read_to_string(&entry) {
-            static GO_MOD_REQUIRE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-                regex::Regex::new(r"(?m)^\s+([\w./\-]+/packages/go)\s+v[\w.\-]+").expect("valid regex")
-            });
-            if let Some(caps) = GO_MOD_REQUIRE_RE.captures(&content) {
-                let fragment = caps[1].to_string();
-                if let Some(new_content) = sync_e2e_go_mod(&content, &fragment, version) {
-                    std::fs::write(&entry, &new_content)
-                        .with_context(|| format!("failed to write {}", entry.display()))?;
-                    updated.push(entry.to_string_lossy().to_string());
-                }
-            }
+        if let Ok(content) = std::fs::read_to_string(&entry)
+            && let Some(new_content) = sync_e2e_go_mod(&content, go_module, version)
+        {
+            std::fs::write(&entry, &new_content).with_context(|| format!("failed to write {}", entry.display()))?;
+            updated.push(entry.to_string_lossy().to_string());
         }
     }
     Ok(())
@@ -792,6 +786,7 @@ fn sync_e2e_dart_pubspec_lock_file(version: &str, updated: &mut Vec<String>) -> 
 }
 
 fn sync_e2e_harness_files(
+    config: &ResolvedCrateConfig,
     version: &str,
     ruby_version: &str,
     writable: &crate::cli::git::IgnoreFilter,
@@ -800,7 +795,7 @@ fn sync_e2e_harness_files(
     sync_download_ffi_scripts(writable, version, &mut state.updated)?;
     sync_e2e_java_pom_file(version, &mut state.updated)?;
     sync_ruby_gemfile_lock_at("e2e/ruby/Gemfile.lock", ruby_version, &mut state.updated)?;
-    sync_e2e_go_mod_file(writable, version, &mut state.updated)?;
+    sync_e2e_go_mod_file(&config.go_module(), writable, version, &mut state.updated)?;
     sync_e2e_dart_pubspec_lock_file(version, &mut state.updated)?;
     Ok(())
 }

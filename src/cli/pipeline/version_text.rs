@@ -226,14 +226,20 @@ pub(super) fn sync_e2e_java_pom(content: &str, new_version: &str) -> Option<Stri
 
 /// Rewrite the version for a module in a `go.mod` `require` block.
 ///
-/// The e2e `go.mod` has a line like:
+/// The e2e `go.mod` requires the library module in one of two shapes:
 /// ```text
-/// github.com/sample-core-dev/sample-widget/packages/go v0.3.0-rc.27
+/// require github.com/sample-core-dev/sample-widget/packages/go v0.3.0-rc.27
 /// ```
-/// We want to update ONLY lines whose module path matches `module_path_fragment`
-/// — a substring that uniquely identifies the library module (e.g.
-/// `"sample-core-dev/sample-widget/packages/go"`). All other `require` entries are
-/// left untouched.
+/// or, inside a parenthesized `require ( ... )` block:
+/// ```text
+/// require (
+/// \tgithub.com/sample-core-dev/sample-widget/packages/go/v2 v2.0.3
+/// )
+/// ```
+/// We want to update ONLY the line whose module path is *exactly* `module_path`
+/// (e.g. `"github.com/sample-core-dev/sample-widget/packages/go"`, or that same
+/// path with a `/vN` major-version suffix). All other `require` entries are left
+/// untouched.
 ///
 /// When the same module is the target of a local `replace` directive
 /// (`require ... => ../../packages/go`), Go ignores the `require` version and
@@ -242,12 +248,12 @@ pub(super) fn sync_e2e_java_pom(content: &str, new_version: &str) -> Option<Stri
 /// output, so this function leaves a locally-replaced module untouched.
 ///
 /// Returns `Some(new_content)` when a replacement was made, `None` otherwise.
-pub(super) fn sync_e2e_go_mod(content: &str, module_path_fragment: &str, new_version: &str) -> Option<String> {
+pub(super) fn sync_e2e_go_mod(content: &str, module_path: &str, new_version: &str) -> Option<String> {
     let has_local_replace = content.lines().any(|line| {
         let trimmed = line.trim_start();
         let trimmed = trimmed.strip_prefix("replace ").unwrap_or(trimmed);
         if let Some((lhs, rhs)) = trimmed.split_once("=>") {
-            lhs.trim().starts_with(module_path_fragment) && {
+            lhs.trim() == module_path && {
                 let dest = rhs.trim();
                 dest.starts_with("./") || dest.starts_with("../") || dest.starts_with('/')
             }
@@ -262,21 +268,15 @@ pub(super) fn sync_e2e_go_mod(content: &str, module_path_fragment: &str, new_ver
     let mut changed = false;
     let lines: Vec<String> = content
         .lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if (trimmed.starts_with(module_path_fragment) || line.trim_start().starts_with(module_path_fragment))
-                && let Some(pos) = trimmed.rfind(" v")
-            {
-                let current_ver = &trimmed[pos + 2..];
-                if current_ver != new_version {
+        .map(
+            |line| match rewrite_go_mod_require_line(line, module_path, new_version) {
+                Some(new_line) => {
                     changed = true;
-                    let indent = &line[..line.len() - line.trim_start().len()];
-                    let module_path = &trimmed[..pos];
-                    return format!("{indent}{module_path} v{new_version}");
+                    new_line
                 }
-            }
-            line.to_string()
-        })
+                None => line.to_string(),
+            },
+        )
         .collect();
 
     if !changed {
@@ -289,6 +289,37 @@ pub(super) fn sync_e2e_go_mod(content: &str, module_path_fragment: &str, new_ver
         new_content
     };
     Some(new_content)
+}
+
+/// Rewrite one `go.mod` line's version pin when it requires exactly `module_path`, whether
+/// written as a single-line `require <module> v<version>` or as a bare `<module> v<version>`
+/// entry inside a `require ( ... )` block. A trailing comment (e.g. `// indirect`) is preserved.
+/// Returns `None` when the line does not require `module_path` or its pin already matches
+/// `new_version`.
+fn rewrite_go_mod_require_line(line: &str, module_path: &str, new_version: &str) -> Option<String> {
+    let indent_len = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_len);
+    let (keyword, rest) = match rest.strip_prefix("require ") {
+        Some(rest) => ("require ", rest),
+        None => ("", rest),
+    };
+    let (body, trailing_comment) = match rest.find("//") {
+        Some(pos) => (&rest[..pos], rest[pos..].trim_end()),
+        None => (rest, ""),
+    };
+    let mut fields = body.split_whitespace();
+    let module = fields.next()?;
+    let version = fields.next()?;
+    if fields.next().is_some() || module != module_path {
+        return None;
+    }
+    if version == format!("v{new_version}") {
+        return None;
+    }
+    let comment_sep = if trailing_comment.is_empty() { "" } else { " " };
+    Some(format!(
+        "{indent}{keyword}{module} v{new_version}{comment_sep}{trailing_comment}"
+    ))
 }
 
 /// Rewrite the `from:` version bound on the *first-party* SwiftPM dependency in

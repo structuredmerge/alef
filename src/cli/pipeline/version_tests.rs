@@ -10,6 +10,8 @@ use crate::test_support::CWD_LOCK;
 mod basic;
 #[path = "version_tests/catch_all_ownership.rs"]
 mod catch_all_ownership;
+#[path = "version_tests/e2e_go_mod.rs"]
+mod e2e_go_mod;
 #[path = "version_tests/e2e_manifests.rs"]
 mod e2e_manifests;
 #[path = "version_tests/e2e_rust_manifest.rs"]
