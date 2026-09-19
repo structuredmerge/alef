@@ -632,6 +632,111 @@ fn validate_dart_and_zig_check_central_metadata() {
     );
 }
 
+fn write_node_crate_with_platforms(root: &Path, platforms: &[&str]) {
+    let pkg_dir = root.join("crates/my-lib-node");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(pkg_dir.join("package.json"), "{}").unwrap();
+    for platform in platforms {
+        std::fs::create_dir_all(pkg_dir.join("npm").join(platform)).unwrap();
+    }
+}
+
+/// Regression test for alef#358: a root `pnpm-workspace.yaml` whose `packages:` list does not
+/// cover `crates/<crate>-node/npm/*` lets a frozen pnpm install try to resolve the not-yet-
+/// published platform package from the registry instead of linking it locally.
+#[test]
+fn validate_node_reports_pnpm_workspace_missing_native_platform_glob() {
+    let temp_dir = TempDir::new().unwrap();
+    let root = temp_dir.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"my-lib\"\nversion = \"1.2.3\"\n",
+    )
+    .unwrap();
+    write_node_crate_with_platforms(root, &["linux-x64-gnu", "darwin-arm64"]);
+    std::fs::write(root.join("pnpm-workspace.yaml"), "packages:\n  - 'packages/*'\n").unwrap();
+
+    let config = validate_config_for(root, "node", "");
+    let issues = validate(&config, &[Language::Node]).unwrap();
+
+    assert!(
+        issues.iter().any(|issue| issue.contains("crates/my-lib-node/npm/*")),
+        "a pnpm-workspace.yaml missing the native platform glob must be reported; got: {issues:?}"
+    );
+}
+
+/// A `pnpm-workspace.yaml` that already covers `crates/<crate>-node/npm/*` should report no
+/// finding.
+#[test]
+fn validate_node_accepts_pnpm_workspace_with_native_platform_glob() {
+    let temp_dir = TempDir::new().unwrap();
+    let root = temp_dir.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"my-lib\"\nversion = \"1.2.3\"\n",
+    )
+    .unwrap();
+    write_node_crate_with_platforms(root, &["linux-x64-gnu", "darwin-arm64"]);
+    std::fs::write(
+        root.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'packages/*'\n  - 'crates/my-lib-node/npm/*'\n",
+    )
+    .unwrap();
+
+    let config = validate_config_for(root, "node", "");
+    let issues = validate(&config, &[Language::Node]).unwrap();
+
+    assert!(
+        !issues.iter().any(|issue| issue.contains("npm")),
+        "a pnpm-workspace.yaml already covering the native platform glob must be clean; got: {issues:?}"
+    );
+}
+
+/// A broader workspace glob that still reaches every platform directory is just as good as the
+/// exact one; the check is about coverage, not spelling.
+#[test]
+fn validate_node_accepts_pnpm_workspace_with_a_broader_glob() {
+    let temp_dir = TempDir::new().unwrap();
+    let root = temp_dir.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"my-lib\"\nversion = \"1.2.3\"\n",
+    )
+    .unwrap();
+    write_node_crate_with_platforms(root, &["linux-x64-gnu", "darwin-arm64"]);
+    std::fs::write(root.join("pnpm-workspace.yaml"), "packages:\n  - 'crates/*/npm/*'\n").unwrap();
+
+    let config = validate_config_for(root, "node", "");
+    let issues = validate(&config, &[Language::Node]).unwrap();
+
+    assert!(
+        !issues.iter().any(|issue| issue.contains("npm")),
+        "a `crates/*/npm/*` entry covers every platform directory and must be clean; got: {issues:?}"
+    );
+}
+
+/// No `pnpm-workspace.yaml` at all means pnpm workspaces are not in play, so there is nothing to
+/// validate.
+#[test]
+fn validate_node_is_clean_without_a_pnpm_workspace_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let root = temp_dir.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"my-lib\"\nversion = \"1.2.3\"\n",
+    )
+    .unwrap();
+    write_node_crate_with_platforms(root, &["linux-x64-gnu", "darwin-arm64"]);
+
+    let config = validate_config_for(root, "node", "");
+    let issues = validate(&config, &[Language::Node]).unwrap();
+
+    assert!(
+        !issues.iter().any(|issue| issue.contains("npm")),
+        "no pnpm-workspace.yaml must produce no node workspace finding; got: {issues:?}"
+    );
+}
+
 #[test]
 fn test_run_publish_after_hooks_no_after_is_noop() {
     let config = PublishLanguageConfig::default();

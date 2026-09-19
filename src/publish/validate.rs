@@ -94,6 +94,7 @@ fn validate_language_manifest(
         Language::Dart => validate_dart_manifest(config, pkg_dir, pkg_path, issues),
         Language::Swift => validate_swift_manifest(pkg_dir, pkg_path, issues),
         Language::Zig => validate_zig_manifest(config, pkg_dir, pkg_path, issues),
+        Language::Node => validate_node_workspace(pkg_dir, pkg_path, workspace_root, issues),
         _ => {}
     }
 }
@@ -352,6 +353,91 @@ fn validate_zig_manifest(config: &ResolvedCrateConfig, pkg_dir: &str, pkg_path: 
             issues.push(format!("zig: {pkg_dir}/build.zig.zon paths must include {path}"));
         }
     }
+}
+
+/// Validate that a root `pnpm-workspace.yaml` links the generated native platform packages
+/// (`{pkg_dir}/npm/<platform>/package.json`, emitted by `scaffold_node`) into the pnpm
+/// workspace.
+///
+/// Those platform packages are declared as exact-version `optionalDependencies` on the main
+/// node package before they are ever published, so a frozen (`--frozen-lockfile`) pnpm install
+/// run ahead of a release resolves them from the registry unless pnpm can link them locally
+/// instead -- and the not-yet-published version does not exist there yet. Workspace membership
+/// is what makes the local link possible, so this only checks it; fixing it is left to whoever
+/// owns `pnpm-workspace.yaml`, since that file is user-owned and alef must not rewrite it (#358).
+///
+/// No `pnpm-workspace.yaml` at the workspace root means pnpm workspaces are not in use here, so
+/// there is nothing to check. Likewise, a node crate with no generated `npm/<platform>` directory
+/// (every platform excluded) has no local package for pnpm to link, so there is nothing to cover.
+fn validate_node_workspace(pkg_dir: &str, pkg_path: &Path, workspace_root: &Path, issues: &mut Vec<String>) {
+    let workspace_yaml = workspace_root.join("pnpm-workspace.yaml");
+    let Ok(content) = std::fs::read_to_string(&workspace_yaml) else {
+        return;
+    };
+
+    let active_platforms = node_active_platforms(pkg_path);
+    if active_platforms.is_empty() {
+        return;
+    }
+
+    let Some(packages) = parse_pnpm_workspace_packages(&content) else {
+        return;
+    };
+
+    let expected_glob = format!("{pkg_dir}/npm/*");
+    // Any workspace entry that globs to every platform directory counts -- the exact
+    // `{pkg_dir}/npm/*`, a broader `crates/*/npm/*`, or one entry per platform.
+    let patterns: Vec<glob::Pattern> = packages
+        .iter()
+        .filter_map(|entry| glob::Pattern::new(entry).ok())
+        .collect();
+    let every_platform_covered = active_platforms.iter().all(|platform| {
+        let platform_dir = format!("{pkg_dir}/npm/{platform}");
+        patterns.iter().any(|pattern| pattern.matches(&platform_dir))
+    });
+
+    if !every_platform_covered {
+        issues.push(format!(
+            "node: pnpm-workspace.yaml packages must include \"{expected_glob}\" (or list each \
+             platform directory under it) so a frozen install can link the generated native \
+             platform packages locally instead of resolving their unpublished version from the \
+             registry"
+        ));
+    }
+}
+
+/// The platform directory names already scaffolded under `{pkg_path}/npm/`, e.g.
+/// `linux-x64-gnu`. Mirrors what [`crate::scaffold::languages::node::scaffold_node`] writes
+/// there, read back from disk rather than recomputed, since this runs at publish time against
+/// whatever was actually generated.
+fn node_active_platforms(pkg_path: &Path) -> Vec<String> {
+    let npm_dir = pkg_path.join("npm");
+    let Ok(entries) = std::fs::read_dir(&npm_dir) else {
+        return Vec::new();
+    };
+    let mut platforms: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    platforms.sort();
+    platforms
+}
+
+/// Parse the `packages:` list out of a `pnpm-workspace.yaml`, using the same `serde-saphyr` YAML
+/// parser [`validate_dart_manifest`] already relies on elsewhere in this file (there is no
+/// `serde_yaml`/`yaml-rust` dependency in this crate). Returns `None` when the file is not valid
+/// YAML or has no `packages` array, in which case the caller has nothing to compare against and
+/// skips silently rather than guessing.
+fn parse_pnpm_workspace_packages(content: &str) -> Option<Vec<String>> {
+    let yaml = serde_saphyr::from_str::<serde_json::Value>(content).ok()?;
+    let packages = yaml.get("packages")?.as_array()?;
+    Some(
+        packages
+            .iter()
+            .filter_map(|entry| entry.as_str().map(str::to_string))
+            .collect(),
+    )
 }
 
 fn read_json(path: &Path) -> Result<serde_json::Value> {

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.93.0] - 2026-09-19
 
+### Added
+
+- **`alef publish validate` checks that a root `pnpm-workspace.yaml` links a node crate's generated
+  native platform packages** (`crates/<crate>-node/npm/*`, or any glob reaching every platform
+  directory). A frozen pre-release install otherwise tries to resolve the not-yet-published platform
+  version from the registry. The user-owned workspace file is never rewritten; the check reports one
+  actionable message. (#358)
+
 ### Fixed
 
 - **kotlin-android: `kotlin.time.Duration` DTO fields now cross the JNI boundary as whole
