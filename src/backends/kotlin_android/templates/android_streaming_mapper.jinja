@@ -1,5 +1,6 @@
 
     private val mapper = ObjectMapper()
         .registerModule(Jdk8Module())
+{{ duration_millis_module }}
         .findAndRegisterModules()
         .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)

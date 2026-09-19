@@ -3,6 +3,7 @@
 // must match the module facade's mapper — both feed the same Rust serde types.
 private val {{ name }} = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
     .registerModule(com.fasterxml.jackson.datatype.jdk8.Jdk8Module())
+{{ duration_millis_module }}
     .registerModule(
         com.fasterxml.jackson.module.kotlin.KotlinModule.Builder()
             .configure(com.fasterxml.jackson.module.kotlin.KotlinFeature.NullIsSameAsDefault, true)

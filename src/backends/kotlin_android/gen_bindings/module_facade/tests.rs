@@ -213,7 +213,9 @@ fn android_trait_bridge_lifecycle_functions_are_managed_by_bridge_object() {
 fn facade_jackson_config_uses_the_non_deprecated_default_property_inclusion_setter() {
     let rendered = crate::backends::kotlin_android::template_env::render(
         "android_facade_jackson_config.jinja",
-        minijinja::context! {},
+        minijinja::context! {
+            duration_millis_module => crate::backends::kotlin::duration_millis_jackson_module(8),
+        },
     );
 
     assert!(
@@ -225,4 +227,51 @@ fn facade_jackson_config_uses_the_non_deprecated_default_property_inclusion_sett
         !rendered.contains(".setSerializationInclusion("),
         "facade mapper must not call the deprecated (since Jackson 2.13) setSerializationInclusion: {rendered}"
     );
+}
+
+/// Regression: `kotlin.time.Duration` is an inline class over a `Long`, and Jackson with no
+/// codec writes its raw bit pattern (nanoseconds shifted by the unit bit) — `100.milliseconds`
+/// became `200000000` on the wire, which the Rust `duration_ms` adapter read as ~2.3 days.
+/// crawlberg's `browser_wait_fixed` kotlin_android e2e test hung on exactly that until the CI
+/// job timeout. Every mapper that marshals a DTO across JNI must carry the millisecond codec.
+#[test]
+fn every_android_dto_mapper_encodes_kotlin_duration_as_milliseconds() {
+    let module = crate::backends::kotlin::duration_millis_jackson_module(8);
+    let facade = crate::backends::kotlin_android::template_env::render(
+        "android_facade_jackson_config.jinja",
+        minijinja::context! { duration_millis_module => module.clone() },
+    );
+    let streaming = crate::backends::kotlin_android::template_env::render(
+        "android_streaming_mapper.jinja",
+        minijinja::context! { duration_millis_module => module.clone() },
+    );
+    let value_method = crate::backends::kotlin::template_env::render(
+        "value_method_mapper.jinja",
+        minijinja::context! {
+            name => "VALUE_METHOD_MAPPER",
+            duration_millis_module => crate::backends::kotlin::duration_millis_jackson_module(4),
+        },
+    );
+    for (name, rendered) in [
+        ("facade", facade),
+        ("streaming", streaming),
+        ("value-method", value_method),
+    ] {
+        assert!(
+            rendered.contains("gen.writeNumber(value.inWholeMilliseconds)"),
+            "{name} mapper must serialize kotlin.time.Duration as whole milliseconds, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("with(kotlin.time.Duration) { p.longValue.milliseconds }"),
+            "{name} mapper must deserialize a millisecond integer into kotlin.time.Duration, got:\n{rendered}"
+        );
+        let codec_at = rendered
+            .find("kotlin.time.Duration::class.java")
+            .expect("codec present");
+        let kotlin_module_at = rendered.find("KotlinModule.Builder()").unwrap_or(usize::MAX);
+        assert!(
+            codec_at < kotlin_module_at,
+            "{name} mapper must register the Duration codec before the KotlinModule, got:\n{rendered}"
+        );
+    }
 }

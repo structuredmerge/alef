@@ -207,6 +207,52 @@ fn is_primitive_or_stdlib_type(type_name: &str) -> bool {
     )
 }
 
+/// The `.registerModule(...)` chain link that teaches a Jackson mapper the wire shape of
+/// `kotlin.time.Duration`: a plain millisecond integer, the same shape the Rust side's
+/// `duration_ms` serde adapters read and write, and the same shape the generated e2e suites'
+/// test-side mapper already used (`e2e::codegen::kotlin::test_file`).
+///
+/// ~keep Without this, Jackson serializes a `kotlin.time.Duration` (an inline class over a
+/// `Long`) as its raw bit pattern — nanoseconds shifted left by the unit bit — so a
+/// `100.milliseconds` `extra_wait` crossed the JNI boundary as `200000000`, which Rust read as
+/// ~2.3 days of milliseconds and crawlberg's kotlin_android e2e suite hung until the CI job
+/// timeout. Every mapper that marshals a generated DTO to or from the native side must carry
+/// this link; `indent` is the column the chain's `.registerModule(` lines sit at.
+pub fn duration_millis_jackson_module(indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    let lines = [
+        ".registerModule(",
+        "    com.fasterxml.jackson.databind.module.SimpleModule()",
+        "        .addSerializer(",
+        "            kotlin.time.Duration::class.java,",
+        "            object : com.fasterxml.jackson.databind.JsonSerializer<kotlin.time.Duration>() {",
+        "                override fun serialize(",
+        "                    value: kotlin.time.Duration,",
+        "                    gen: com.fasterxml.jackson.core.JsonGenerator,",
+        "                    serializers: com.fasterxml.jackson.databind.SerializerProvider,",
+        "                ) {",
+        "                    gen.writeNumber(value.inWholeMilliseconds)",
+        "                }",
+        "            },",
+        "        )",
+        "        .addDeserializer(",
+        "            kotlin.time.Duration::class.java,",
+        "            object : com.fasterxml.jackson.databind.JsonDeserializer<kotlin.time.Duration>() {",
+        "                override fun deserialize(",
+        "                    p: com.fasterxml.jackson.core.JsonParser,",
+        "                    ctxt: com.fasterxml.jackson.databind.DeserializationContext,",
+        "                ): kotlin.time.Duration = with(kotlin.time.Duration) { p.longValue.milliseconds }",
+        "            },",
+        "        ),",
+        ")",
+    ];
+    lines
+        .iter()
+        .map(|line| format!("{pad}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Assemble a complete `.kt` file from package, imports, and body with file-level suppression.
 ///
 /// Emits the generated file header, file-level @file:Suppress annotation to silence
