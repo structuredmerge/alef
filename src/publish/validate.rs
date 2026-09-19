@@ -278,14 +278,29 @@ fn validate_go_module(config: &ResolvedCrateConfig, pkg_dir: &str, pkg_path: &Pa
         issues.push(format!("go: {pkg_dir}/go.mod module must be {expected}"));
         return;
     }
-    if let Some(major) = go_major_suffix(&expected) {
-        let expected_dir = format!("packages/go/{major}");
-        if pkg_dir != expected_dir {
-            issues.push(format!(
-                "go: module path {expected} requires package directory {expected_dir}; set go scaffold output or use a non-/vN module path"
-            ));
-        }
+    // Go permits the `/vN` module-path suffix to be omitted from the package directory
+    // (https://go.dev/ref/mod#module-path), and `go_tag::run` already tags both layouts, so a
+    // bare `packages/go` directory is valid for a `/vN` module. Only a directory that carries a
+    // *different* `vM` suffix is an actual layout mismatch. ~keep
+    if let Some(expected_major) = go_major_suffix(&expected)
+        && let Some(dir_major) = go_dir_major_suffix(pkg_dir)
+        && dir_major != expected_major
+    {
+        let base_dir = pkg_dir.strip_suffix(&format!("/{dir_major}")).unwrap_or(pkg_dir);
+        let expected_dir = format!("{base_dir}/{expected_major}");
+        issues.push(format!(
+            "go: module path {expected} requires package directory {base_dir} or {expected_dir}, but found {pkg_dir}"
+        ));
     }
+}
+
+/// Extract a `vN` (N >= 2) major-version suffix from the final path segment of a package
+/// directory, if present.
+fn go_dir_major_suffix(pkg_dir: &str) -> Option<&str> {
+    let suffix = pkg_dir.rsplit('/').next()?;
+    let digits = suffix.strip_prefix('v')?;
+    (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) && digits.parse::<u32>().ok()? >= 2)
+        .then_some(suffix)
 }
 
 fn validate_java_manifest(config: &ResolvedCrateConfig, pkg_dir: &str, pkg_path: &Path, issues: &mut Vec<String>) {

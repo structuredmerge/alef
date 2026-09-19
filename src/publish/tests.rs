@@ -242,8 +242,11 @@ license = "MIT"
     config
 }
 
+/// Go permits the `/vN` module-path suffix to be omitted from the package directory
+/// (https://go.dev/ref/mod#module-path), and `go_tag::run` already tags both layouts, so a
+/// `/v2` module living in a bare `packages/go` directory is a valid layout, not a mismatch.
 #[test]
-fn validate_go_reports_v2_layout_mismatch() {
+fn validate_go_accepts_v2_module_with_suffix_omitted_from_directory() {
     let temp_dir = TempDir::new().unwrap();
     let root = temp_dir.path();
     std::fs::write(
@@ -269,10 +272,77 @@ module = "github.com/acme/my-lib/v2"
     let issues = validate(&config, &[Language::Go]).unwrap();
 
     assert!(
+        issues.iter().all(|issue| !issue.starts_with("go:")),
+        "a /v2 module in a bare packages/go directory is a valid Go layout; got: {issues:?}"
+    );
+}
+
+#[test]
+fn validate_go_accepts_v2_module_in_v2_directory() {
+    let temp_dir = TempDir::new().unwrap();
+    let root = temp_dir.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"my-lib\"\nversion = \"1.2.3\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("packages/go/v2")).unwrap();
+    std::fs::write(
+        root.join("packages/go/v2/go.mod"),
+        "module github.com/acme/my-lib/v2\n\ngo 1.26\n",
+    )
+    .unwrap();
+
+    let config = validate_config_for(
+        root,
+        "go",
+        r#"
+[crates.go]
+module = "github.com/acme/my-lib/v2"
+module_major = 2
+"#,
+    );
+    let issues = validate(&config, &[Language::Go]).unwrap();
+
+    assert!(
+        issues.iter().all(|issue| !issue.starts_with("go:")),
+        "a /v2 module in a packages/go/v2 directory is a valid Go layout; got: {issues:?}"
+    );
+}
+
+#[test]
+fn validate_go_reports_mismatched_directory_suffix() {
+    let temp_dir = TempDir::new().unwrap();
+    let root = temp_dir.path();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"my-lib\"\nversion = \"1.2.3\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("packages/go/v3")).unwrap();
+    std::fs::write(
+        root.join("packages/go/v3/go.mod"),
+        "module github.com/acme/my-lib/v2\n\ngo 1.26\n",
+    )
+    .unwrap();
+
+    let config = validate_config_for(
+        root,
+        "go",
+        r#"
+[crates.go]
+module = "github.com/acme/my-lib/v2"
+module_major = 3
+"#,
+    );
+    let issues = validate(&config, &[Language::Go]).unwrap();
+
+    assert!(
         issues
             .iter()
-            .any(|issue| issue.contains("requires package directory packages/go/v2")),
-        "v2 module layout mismatch must be reported; got: {issues:?}"
+            .any(|issue| issue.contains("packages/go/v3") && issue.contains("packages/go/v2")),
+        "a mismatched vM directory suffix must be reported, naming both the found and expected \
+         directories; got: {issues:?}"
     );
 }
 
