@@ -27,6 +27,12 @@ Future<void> _run() async {
     return;
   }
 
+  final bundled = await nativeBundledLibPath();
+  if (bundled != null) {
+    stdout.writeln('Native library bundled with the package at $bundled; skipping download.');
+    return;
+  }
+
   final cached = nativeCachedLibPath();
   if (cached != null && File(cached).existsSync()) {
     stdout.writeln('Native library already cached at $cached.');

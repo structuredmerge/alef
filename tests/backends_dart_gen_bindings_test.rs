@@ -696,6 +696,51 @@ fn download_libs_dart_uses_package_qualified_native_loader_import() {
     );
 }
 
+/// `bin/download_libs.dart` must probe the package's bundled native library
+/// (staged inside the published pub package) before falling back to the
+/// versioned cache and then the network — otherwise every install of a
+/// package that already ships its native library re-downloads it, and 404s
+/// entirely for releases with no Dart-specific archives.
+#[test]
+fn download_libs_dart_checks_bundled_lib_before_cache() {
+    let api = ApiSurface {
+        crate_name: "demo-crate".into(),
+        version: "0.1.0".into(),
+        types: vec![],
+        functions: vec![],
+        enums: vec![],
+        errors: vec![],
+        excluded_type_paths: ::std::collections::BTreeMap::new(),
+        excluded_trait_names: ::std::collections::HashSet::new(),
+        services: vec![],
+        handler_contracts: vec![],
+        unsupported_public_items: Vec::new(),
+    };
+
+    let files = DartBackend.generate_bindings(&api, &make_config()).unwrap();
+    let content = files
+        .iter()
+        .find(|f| {
+            f.path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .ends_with("bin/download_libs.dart")
+        })
+        .map(|f| f.content.as_str())
+        .expect("missing bin/download_libs.dart");
+
+    let bundled_check_pos = content
+        .find("nativeBundledLibPath()")
+        .expect("missing bundled-lib probe: {content}");
+    let cache_check_pos = content
+        .find("nativeCachedLibPath()")
+        .expect("missing cache check: {content}");
+    assert!(
+        bundled_check_pos < cache_check_pos,
+        "bundled-lib probe must run before the cache check: {content}"
+    );
+}
+
 #[test]
 fn default_config_param_uses_default_constructor_for_empty_default_type() {
     let mut pack_config = make_type("PackConfig", vec![]);

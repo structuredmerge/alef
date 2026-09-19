@@ -271,6 +271,7 @@ impl Backend for DartBackend {
             version => &crate_version,
             repo_url => &repo_url,
             package_name => package_name.as_str(),
+            module_name => module_name.as_str(),
         };
 
         let helper_dir = resolve_output_dir(None, &config.name, "packages/dart/lib/src");
