@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Magnus: generated tagged-enum Data payload readers now read the stored member instead of calling a nonexistent superclass method. Newtype and named fields retain their payloads, including false and nil. A non-ignored regression executes generated classes with Ruby and sorbet-runtime, both installed in the CI test matrix.
+
 ## [0.92.1] - 2026-09-18
 
 ### Fixed

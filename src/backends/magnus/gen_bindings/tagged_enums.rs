@@ -164,7 +164,7 @@ pub(super) fn gen_tagged_enum_ruby_classes(
             if !field.doc.is_empty() {
                 emit_yard_doc(&mut doc_comment, &field.doc, "    ");
             }
-            // `# rubocop:disable Lint/UselessMethodDefinition` keeps `rubocop -a` from
+            // Data's reader lives on this class, not its superclass; `super` cannot reach it. ~keep
             field_accessors.push_str(&crate::backends::magnus::template_env::render(
                 "tagged_enum_field_accessor.rb.jinja",
                 minijinja::context! {
@@ -309,6 +309,9 @@ pub(super) fn magnus_variant_wrapper_constructor(
         name = typ.name,
     ))
 }
+
+#[cfg(test)]
+mod runtime_tests;
 
 #[cfg(test)]
 mod tests {
