@@ -609,6 +609,119 @@ fn sync_registry_package_versions_handles_go_and_bare_semver_langs() {
     );
 }
 
+/// Regression test for #373: `[crates.e2e.packages.<lang>].version` (the base package
+/// reference, distinct from the registry-mode override) had no native sync at all, so a
+/// consumer's only recourse was a `sync.text_replacements` rule that `catch_all_rewrite_is_permitted`
+/// refuses without an alef provenance marker on `alef.toml`.
+#[test]
+fn sync_registry_package_versions_also_rewrites_base_e2e_packages_block() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let alef_toml_path = tmp.path().join("alef.toml");
+    std::fs::write(
+        &alef_toml_path,
+        concat!(
+            "[workspace]\nlanguages = []\n\n",
+            "[[crates]]\nname = \"mylib\"\nsources = []\n\n",
+            "[crates.e2e.packages.go]\n",
+            "module = \"github.com/myorg/mylib\"\n",
+            "version = \"v0.1.0-rc.9\"\n",
+        ),
+    )
+    .expect("write alef.toml");
+
+    let changed = sync_registry_package_versions(&alef_toml_path, "0.3.0-rc.28").expect("sync ok");
+    assert!(changed, "must report at least one change");
+
+    let updated = std::fs::read_to_string(&alef_toml_path).expect("read alef.toml");
+    assert!(
+        updated.contains("version = \"v0.3.0-rc.28\""),
+        "base e2e.packages.go version must be updated, v prefix preserved: {updated}"
+    );
+}
+
+/// The base `[e2e.packages.<lang>]` block and the registry-mode
+/// `[e2e.registry.packages.<lang>]` override must both be rewritten in the same call, and an
+/// absent block on either side must be left alone (no field inserted).
+#[test]
+fn sync_registry_package_versions_updates_base_and_registry_blocks_independently() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let alef_toml_path = tmp.path().join("alef.toml");
+    std::fs::write(
+        &alef_toml_path,
+        concat!(
+            "[workspace]\nlanguages = []\n\n",
+            "[[crates]]\nname = \"mylib\"\nsources = []\n\n",
+            "[crates.e2e.packages.python]\n",
+            "name = \"mylib\"\n",
+            "version = \">=0.1.0rc9\"\n\n",
+            "[crates.e2e.registry.packages.python]\n",
+            "name = \"mylib\"\n",
+            "version = \">=0.1.0rc9\"\n\n",
+            "[crates.e2e.packages.go]\n",
+            "module = \"github.com/myorg/mylib\"\n",
+        ),
+    )
+    .expect("write alef.toml");
+
+    let changed = sync_registry_package_versions(&alef_toml_path, "0.3.0-rc.28").expect("sync ok");
+    assert!(changed, "must report at least one change");
+
+    let updated = std::fs::read_to_string(&alef_toml_path).expect("read alef.toml");
+    let base_pos = updated
+        .find("[crates.e2e.packages.python]")
+        .expect("base block present");
+    let registry_pos = updated
+        .find("[crates.e2e.registry.packages.python]")
+        .expect("registry block present");
+    let base_section = &updated[base_pos..registry_pos];
+    let registry_section = &updated[registry_pos..];
+    assert!(
+        base_section.contains("version = \">=0.3.0rc28\""),
+        "base e2e.packages.python version must be updated: {updated}"
+    );
+    assert!(
+        registry_section.contains("version = \">=0.3.0rc28\""),
+        "registry e2e.registry.packages.python version must still be updated: {updated}"
+    );
+    assert!(
+        !updated.contains("module = \"github.com/myorg/mylib\"\nversion"),
+        "an e2e.packages block without a version field must not gain one: {updated}"
+    );
+}
+
+/// `sync_registry_package_versions` must preserve comments and key order for the base
+/// `[e2e.packages.<lang>]` block the same way it already does for the registry block.
+#[test]
+fn sync_registry_package_versions_preserves_comments_in_base_e2e_packages_block() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let alef_toml_path = tmp.path().join("alef.toml");
+    let original = concat!(
+        "# Top-level comment\n",
+        "[workspace]\nlanguages = []\n\n",
+        "[[crates]]\nname = \"mylib\"\nsources = []\n\n",
+        "# Base package comment\n",
+        "[crates.e2e.packages.python]\n",
+        "name = \"mylib\"\n",
+        "version = \">=0.1.0rc9\"\n",
+    );
+    std::fs::write(&alef_toml_path, original).expect("write");
+
+    sync_registry_package_versions(&alef_toml_path, "0.3.0-rc.28").expect("sync ok");
+
+    let updated = std::fs::read_to_string(&alef_toml_path).expect("read");
+    assert!(
+        updated.contains("# Top-level comment"),
+        "top-level comment must be preserved: {updated}"
+    );
+    assert!(
+        updated.contains("# Base package comment"),
+        "base package section comment must be preserved: {updated}"
+    );
+    let name_pos = updated.find("name = ").expect("name field present");
+    let ver_pos = updated.find("version = ").expect("version field present");
+    assert!(name_pos < ver_pos, "name must appear before version in output");
+}
+
 /// `sync_versions` must not stamp the release version onto a workspace
 /// member whose `[package].publish` is `false` — those are local-only
 /// compatibility shims kept only to satisfy a path dependency, and stamping

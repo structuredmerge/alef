@@ -88,12 +88,73 @@ pub(super) fn update_zig_package_hash(existing_hash: &str, old_version: &str, ne
     None
 }
 
-/// Rewrite `version` fields under `[crates.<name>.e2e.registry.packages.<lang>]`
-/// in `alef.toml` to track the current workspace version.
+/// Rewrite `version` fields inside a `[….packages.<lang>]` table (either the base
+/// `[crates.<name>.e2e.packages.<lang>]` block or the registry-mode
+/// `[crates.<name>.e2e.registry.packages.<lang>]` block — both hold the same
+/// per-language package shape) to track the current workspace version.
+///
+/// Only entries that already have a `version` field are touched — this never inserts a new
+/// `version` field. Returns `true` when at least one field was rewritten.
+fn patch_packages_table(packages: &mut dyn toml_edit::TableLike, workspace_version: &str) -> bool {
+    let lang_keys: Vec<String> = packages.iter().map(|(k, _)| k.to_string()).collect();
+    let mut any = false;
+    for lang in &lang_keys {
+        let pkg = match packages.get_mut(lang.as_str()).and_then(|i| i.as_table_like_mut()) {
+            Some(t) => t,
+            None => continue,
+        };
+        let existing_version_opt = pkg.get("version").and_then(|i| i.as_str()).map(|s| s.to_string());
+
+        let existing_version = match existing_version_opt.clone() {
+            Some(v) => v,
+            None if lang == "zig" => {
+                match pkg
+                    .get("hash")
+                    .and_then(|i| i.as_str())
+                    .and_then(extract_zig_hash_version)
+                {
+                    Some(v) => v,
+                    None => continue,
+                }
+            }
+            None => continue,
+        };
+        if let Some(new_ver) = render_registry_version(lang, workspace_version, &existing_version) {
+            if existing_version_opt.is_some()
+                && let Some(ver_item) = pkg.get_mut("version")
+            {
+                *ver_item = toml_edit::value(new_ver.clone());
+                any = true;
+            }
+
+            if lang == "zig"
+                && let Some(hash_item) = pkg.get_mut("hash")
+                && let Some(existing_hash) = hash_item.as_str()
+                && let Some(new_hash) = update_zig_package_hash(existing_hash, &existing_version, &new_ver)
+            {
+                *hash_item = toml_edit::value(new_hash);
+                any = true;
+            }
+        }
+    }
+    any
+}
+
+/// Rewrite `version` fields under both `[crates.<name>.e2e.packages.<lang>]` and
+/// `[crates.<name>.e2e.registry.packages.<lang>]` in `alef.toml` to track the current
+/// workspace version.
 ///
 /// Uses `toml_edit` for format-preserving surgery: comments, blank lines, and
 /// key ordering are all preserved.  Only entries that already have a `version`
 /// field are touched — this function never inserts a new `version` field.
+///
+/// `[crates.<name>.e2e.packages.<lang>]` is the base per-language package reference
+/// (`E2eConfig::packages`) that local-mode e2e generation and `effective_package_for`
+/// both read; `[crates.<name>.e2e.registry.packages.<lang>]` is the registry-mode override
+/// layered on top of it. Both carry an independent `version` field, so both need a native
+/// sync — before this, only the registry block was kept current, leaving the base block to
+/// drift unless a consumer worked around it with a `sync.text_replacements` rule (which
+/// `catch_all_rewrite_is_permitted` refuses without an alef provenance marker on `alef.toml`).
 ///
 /// Returns `true` when at least one field was rewritten.
 pub(crate) fn sync_registry_package_versions(
@@ -121,58 +182,17 @@ pub(crate) fn sync_registry_package_versions(
         };
 
         fn patch_crate_table(crate_table: &mut dyn toml_edit::TableLike, workspace_version: &str) -> bool {
-            let e2e = match crate_table.get_mut("e2e").and_then(|i| i.as_table_like_mut()) {
-                Some(t) => t,
-                None => return false,
+            let Some(e2e) = crate_table.get_mut("e2e").and_then(|i| i.as_table_like_mut()) else {
+                return false;
             };
-            let registry = match e2e.get_mut("registry").and_then(|i| i.as_table_like_mut()) {
-                Some(t) => t,
-                None => return false,
-            };
-            let packages = match registry.get_mut("packages").and_then(|i| i.as_table_like_mut()) {
-                Some(t) => t,
-                None => return false,
-            };
-            let lang_keys: Vec<String> = packages.iter().map(|(k, _)| k.to_string()).collect();
             let mut any = false;
-            for lang in &lang_keys {
-                let pkg = match packages.get_mut(lang.as_str()).and_then(|i| i.as_table_like_mut()) {
-                    Some(t) => t,
-                    None => continue,
-                };
-                let existing_version_opt = pkg.get("version").and_then(|i| i.as_str()).map(|s| s.to_string());
-
-                let existing_version = match existing_version_opt.clone() {
-                    Some(v) => v,
-                    None if lang == "zig" => {
-                        match pkg
-                            .get("hash")
-                            .and_then(|i| i.as_str())
-                            .and_then(extract_zig_hash_version)
-                        {
-                            Some(v) => v,
-                            None => continue,
-                        }
-                    }
-                    None => continue,
-                };
-                if let Some(new_ver) = render_registry_version(lang, workspace_version, &existing_version) {
-                    if existing_version_opt.is_some()
-                        && let Some(ver_item) = pkg.get_mut("version")
-                    {
-                        *ver_item = toml_edit::value(new_ver.clone());
-                        any = true;
-                    }
-
-                    if lang == "zig"
-                        && let Some(hash_item) = pkg.get_mut("hash")
-                        && let Some(existing_hash) = hash_item.as_str()
-                        && let Some(new_hash) = update_zig_package_hash(existing_hash, &existing_version, &new_ver)
-                    {
-                        *hash_item = toml_edit::value(new_hash);
-                        any = true;
-                    }
-                }
+            if let Some(packages) = e2e.get_mut("packages").and_then(|i| i.as_table_like_mut()) {
+                any |= patch_packages_table(packages, workspace_version);
+            }
+            if let Some(registry) = e2e.get_mut("registry").and_then(|i| i.as_table_like_mut())
+                && let Some(packages) = registry.get_mut("packages").and_then(|i| i.as_table_like_mut())
+            {
+                any |= patch_packages_table(packages, workspace_version);
             }
             any
         }
