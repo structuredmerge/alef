@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Windows toolchain-census target-directory regression test now normalizes path separators.**
+  Git-for-Windows shell output intentionally uses forward slashes, while `PathBuf` renders
+  backslashes on Windows; the test now compares equivalent spellings instead of failing on the
+  separator style.
+
 - **An explicit `"value": null` in a fixture assertion is no longer read as "no expected value".**
   Serde's `Option` visitor collapsed a present `null` and a missing `value` key to `None`, so
   `{"type":"equals","field":"output","value":null}` reached every backend without an expectation
