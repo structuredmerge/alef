@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Trait bridge lookup now prefers a matching type alias over a shared parameter name for each function parameter. Configuration order no longer routes a typed callback to another trait; name-only fallback, parameter order, and options-field exclusions remain unchanged.
+
 ## [0.92.1] - 2026-09-18
 
 ### Fixed

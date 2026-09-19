@@ -202,6 +202,76 @@ fn find_bridge_field_detects_field_via_alias() {
 }
 
 #[test]
+fn bridge_type_wins_over_shared_parameter_name_in_either_order() {
+    for optional in [false, true] {
+        for reverse in [false, true] {
+            let named = TypeRef::Named("WriterHandle".into());
+            let ty = if optional {
+                TypeRef::Optional(Box::new(named))
+            } else {
+                named
+            };
+            let func = make_func("use_writer", vec![make_param("host", ty, optional)]);
+            let mut bridges = vec![
+                lookup_bridge(Some("ReaderHandle"), Some("host")),
+                lookup_bridge(Some("WriterHandle"), Some("host")),
+            ];
+            if reverse {
+                bridges.reverse();
+            }
+            let (index, bridge) = find_bridge_param(&func, &bridges).expect("typed bridge");
+            assert_eq!(index, 0);
+            assert_eq!(bridge.type_alias.as_deref(), Some("WriterHandle"));
+        }
+    }
+}
+
+#[test]
+fn bridge_lookup_retains_name_fallback_and_first_parameter_precedence() {
+    let bridges = vec![
+        lookup_bridge(None, Some("host")),
+        lookup_bridge(Some("WriterHandle"), None),
+    ];
+    let func = make_func(
+        "use_hosts",
+        vec![
+            make_param("host", TypeRef::Named("OtherHandle".into()), false),
+            make_param("writer", TypeRef::Named("WriterHandle".into()), false),
+        ],
+    );
+    let (index, bridge) = find_bridge_param(&func, &bridges).expect("name fallback");
+    assert_eq!(index, 0);
+    assert!(std::ptr::eq(bridge, &bridges[0]));
+    let unmatched = make_func("other", vec![make_param("other", TypeRef::String, false)]);
+    assert!(find_bridge_param(&unmatched, &bridges).is_none());
+}
+
+#[test]
+fn bridge_lookup_ignores_options_field_type_matches() {
+    let func = make_func(
+        "use_writer",
+        vec![make_param("host", TypeRef::Named("WriterHandle".into()), false)],
+    );
+    let mut options = lookup_bridge(Some("WriterHandle"), Some("host"));
+    options.bind_via = BridgeBinding::OptionsField;
+    let bridges = vec![options, lookup_bridge(None, Some("host"))];
+    let (_, bridge) = find_bridge_param(&func, &bridges).expect("function bridge");
+    assert!(std::ptr::eq(bridge, &bridges[1]));
+}
+
+fn lookup_bridge(type_alias: Option<&str>, param_name: Option<&str>) -> TraitBridgeConfig {
+    make_bridge(
+        type_alias,
+        param_name,
+        BridgeBinding::FunctionParam,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+#[test]
 fn find_bridge_field_returns_none_for_function_param_bridge() {
     let opts_type = TypeDef {
         name: "ConversionOptions".to_string(),

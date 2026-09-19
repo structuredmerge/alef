@@ -34,7 +34,7 @@ pub fn is_trait_bridge_managed_fn(func_name: &str, bridges: &[TraitBridgeConfig]
 }
 
 /// Find the first function parameter that matches a trait bridge configuration
-/// (by type alias or parameter name).
+/// (by type alias before falling back to parameter name).
 ///
 /// Bridges configured with `bind_via = "options_field"` are skipped — they live on a
 /// struct field rather than directly as a parameter, and are returned by
@@ -64,7 +64,13 @@ pub fn find_bridge_param<'a>(
             {
                 return Some((idx, bridge));
             }
-            if bridge.param_name.as_deref() == Some(param.name.as_str()) {
+        }
+        // A generic name such as `host` may be shared by unrelated traits. Search all type
+        // aliases first so configuration order cannot override an explicit type match. ~keep
+        for bridge in bridges {
+            if bridge.bind_via == BridgeBinding::FunctionParam
+                && bridge.param_name.as_deref() == Some(param.name.as_str())
+            {
                 return Some((idx, bridge));
             }
         }
