@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value wrote `"value": null` back. A present value now deserializes as-is, including `null`, and
   an absent one stays absent on round-trip. (#406)
 
+- **Required arguments after a required Python `Arc<dyn Trait>` parameter remain required.** The
+  generated bridge preserves the native call signature and Rust argument type instead of making
+  later arguments optional as a side effect of the trait parameter.
+
 - **PyO3 trait bridges now support fallible `Arc<dyn Trait>` parameters.** Callback-only DTOs seed reverse-conversion discovery, and generated optional or required bridges construct the host with `PyResult`-safe error handling without introducing an unnecessary mutex.
 
 ## [0.93.1] - 2026-09-19
@@ -321,8 +325,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pure-Rust-tooling policy holds. Without this, a consumer that needs its shell scripts formatted
   had no choice but to hand-edit the generated (and hash-stamped) `poly.toml` directly, which
   `alef verify` then reports as stale bindings on every subsequent regeneration.
-
-- Keep required arguments following a required Python Arc trait-bridge parameter non-optional, preserving the generated call signature and Rust argument type.
 
 ## [0.89.0] - 2026-09-15
 
