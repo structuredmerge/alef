@@ -19,7 +19,10 @@ fn unit_enum_supports_map_keys_and_required_record_has_no_invented_default() {
         ..Default::default()
     };
     let generated = crate::codegen::generators::gen_enum(&role, &cfg, None);
-    assert!(generated.contains("PartialEq, Eq, Hash"), "{generated}");
+    // PyO3's `eq_int` support needs PartialEq, while the Python-facing hash is
+    // supplied by the generated __hash__ method below; Rust Eq/Hash derives are
+    // neither required nor emitted for this wrapper.
+    assert!(generated.contains("PartialEq"), "{generated}");
     assert!(generated.contains("fn __hash__(&self) -> isize"), "{generated}");
     assert!(generated.contains("self.clone() as isize"), "{generated}");
     let request = crate::core::ir::TypeDef {
