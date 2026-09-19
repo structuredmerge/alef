@@ -214,14 +214,6 @@ fn render_python_smoke_test(pip_name: &str) -> String {
     crate::e2e::template_env::render("python/test_smoke.py.jinja", ctx)
 }
 
-#[test]
-fn registry_smoke_imports_python_package_not_distribution_name() {
-    let smoke = render_python_smoke_test("structuredmerge-core");
-    assert!(smoke.contains("importlib.import_module(\"structuredmerge_core\")"));
-    assert!(!smoke.contains("importlib.import_module(\"structuredmerge-core\")"));
-    assert!(render_python_smoke_test("sample_pkg").contains("importlib.import_module(\"sample_pkg\")"));
-}
-
 fn is_python_fixture_runnable(fixture: &Fixture, e2e_config: &E2eConfig) -> bool {
     if !super::fixture_inclusion(fixture, "python", e2e_config).is_included() {
         return false;
@@ -281,6 +273,14 @@ mod tests {
             "assertions": []
         }))
         .expect("minimal fixture JSON must parse")
+    }
+
+    #[test]
+    fn registry_smoke_imports_python_package_not_distribution_name() {
+        let smoke = render_python_smoke_test("structuredmerge-core");
+        assert!(smoke.contains("importlib.import_module(\"structuredmerge_core\")"));
+        assert!(!smoke.contains("importlib.import_module(\"structuredmerge-core\")"));
+        assert!(render_python_smoke_test("sample_pkg").contains("importlib.import_module(\"sample_pkg\")"));
     }
 
     fn make_http_fixture(id: &str) -> crate::e2e::fixture::Fixture {

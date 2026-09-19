@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **PyO3 trait bridges now support fallible `Arc<dyn Trait>` parameters.** Callback-only DTOs seed reverse-conversion discovery, and generated optional or required bridges construct the host with `PyResult`-safe error handling without introducing an unnecessary mutex.
 
+- **Root-array e2e paths no longer render an empty field.** Renderers now preserve an index such as
+  `[0].id` instead of emitting a spurious `.id` path segment.
+
+- **Generated Python registry smoke tests import the normalized package name.** A distribution name
+  such as `structuredmerge-core` is now imported as `structuredmerge_core`.
+
 ## [0.93.1] - 2026-09-19
 
 ### Fixed
@@ -325,10 +331,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pure-Rust-tooling policy holds. Without this, a consumer that needs its shell scripts formatted
   had no choice but to hand-edit the generated (and hash-stamped) `poly.toml` directly, which
   `alef verify` then reports as stale bindings on every subsequent regeneration.
-
-- Render root-array indices without an empty field in Ruby, Python, and Rust e2e assertions.
-
-- Import the normalized Python package name, not the hyphenated distribution name, in generated registry smoke tests.
 
 ## [0.89.0] - 2026-09-15
 
