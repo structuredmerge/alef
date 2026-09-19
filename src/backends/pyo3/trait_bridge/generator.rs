@@ -6,38 +6,6 @@ fn exported_pyfunction_symbol(fn_name: &str) -> String {
     fn_name.to_string()
 }
 
-#[cfg(test)]
-mod opaque_tests {
-    use super::*;
-
-    #[test]
-    fn owned_opaque_callback_argument_is_native_not_serialized() {
-        let generator = Pyo3BridgeGenerator {
-            core_import: "sample_core".into(),
-            type_paths: HashMap::new(),
-            error_type: "Error".into(),
-            struct_param_types: Default::default(),
-            struct_return_types: Default::default(),
-            opaque_param_types: std::collections::HashSet::from(["Control".into()]),
-            forwardable_defaulted: Default::default(),
-            options_dataclass_types: Default::default(),
-            unit_enum_return_types: Default::default(),
-        };
-        let method = MethodDef {
-            params: vec![crate::core::ir::ParamDef {
-                name: "control".into(),
-                ty: TypeRef::Named("Control".into()),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        assert_eq!(
-            generator.sync_py_args(&method),
-            "Control { inner: std::sync::Arc::new(control.clone()) },"
-        );
-    }
-}
-
 /// PyO3-specific trait bridge generator.
 /// Implements code generation for bridging Python objects to Rust traits.
 pub struct Pyo3BridgeGenerator {
@@ -596,5 +564,37 @@ impl Pyo3BridgeGenerator {
             TypeRef::Named(n) if self.struct_return_types.contains(n) => Some(n.as_str()),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod opaque_tests {
+    use super::*;
+
+    #[test]
+    fn owned_opaque_callback_argument_is_native_not_serialized() {
+        let generator = Pyo3BridgeGenerator {
+            core_import: "sample_core".into(),
+            type_paths: HashMap::new(),
+            error_type: "Error".into(),
+            struct_param_types: Default::default(),
+            struct_return_types: Default::default(),
+            opaque_param_types: std::collections::HashSet::from(["Control".into()]),
+            forwardable_defaulted: Default::default(),
+            options_dataclass_types: Default::default(),
+            unit_enum_return_types: Default::default(),
+        };
+        let method = MethodDef {
+            params: vec![crate::core::ir::ParamDef {
+                name: "control".into(),
+                ty: TypeRef::Named("Control".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            generator.sync_py_args(&method),
+            "Control { inner: std::sync::Arc::new(control.clone()) },"
+        );
     }
 }
